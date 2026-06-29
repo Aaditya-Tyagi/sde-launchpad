@@ -9,9 +9,11 @@ export default defineConfig({
   output: 'static',
   // Pretty, predictable URLs that also behave well when self-hosted.
   trailingSlash: 'ignore',
-  // Prefetch internal links as they enter the viewport → near-instant
-  // lesson navigation, with zero backend.
-  prefetch: { prefetchAll: true, defaultStrategy: 'viewport' },
+  // Prefetch on hover/tap intent only. The lesson sidebar lists ~100 links;
+  // a blanket `viewport` + `prefetchAll` strategy downloaded every one of them
+  // on page load, saturating the network and main thread. Prev/Next links are
+  // opted into eager prefetch individually via `data-astro-prefetch`.
+  prefetch: { prefetchAll: false, defaultStrategy: 'hover' },
   build: { inlineStylesheets: 'auto' },
   markdown: {
     shikiConfig: {

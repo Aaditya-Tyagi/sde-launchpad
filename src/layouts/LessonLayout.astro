@@ -97,10 +97,10 @@ const priClass = d.priority ? `p-${d.priority}` : '';
 
         <div class="lesson-foot">
           {prev ? (
-            <a class="navbtn" href={`${base}/lessons/${prev.id}`}><small>← Previous</small><div>{prev.data.title}</div></a>
+            <a class="navbtn" href={`${base}/lessons/${prev.id}`} data-astro-prefetch="viewport"><small>← Previous</small><div>{prev.data.title}</div></a>
           ) : <span class="navbtn" style="opacity:.4"><small>Start of track</small><div>—</div></span>}
           {next ? (
-            <a class="navbtn" href={`${base}/lessons/${next.id}`} style="text-align:right"><small>Next →</small><div>{next.data.title}</div></a>
+            <a class="navbtn" href={`${base}/lessons/${next.id}`} data-astro-prefetch="viewport" style="text-align:right"><small>Next →</small><div>{next.data.title}</div></a>
           ) : <span class="navbtn" style="opacity:.4;text-align:right"><small>End of track</small><div>🎉 Done</div></span>}
         </div>
       </div>
