@@ -1,0 +1,400 @@
+---
+title: "Output Questions: Event Loop & Async"
+track: js-output
+summary: "Predict execution order — setTimeout vs Promise vs queueMicrotask, async/await unwrapping, and nested async patterns."
+order: 3
+est: 30
+difficulty: hard
+priority: must
+tags: [event-loop, promises, async-await, setTimeout, microtasks, macrotasks]
+whyAsked: "Async ordering is the #1 hardest JS output question category. Getting A/D/C/B right signals you genuinely understand the call stack, microtask queue, and macrotask queue."
+followUps:
+  - "What is the difference between microtask and macrotask queues?"
+  - "Why do Promise callbacks run before setTimeout(fn, 0)?"
+  - "What does await actually do to execution?"
+  - "What is queueMicrotask?"
+  - "When does the microtask queue drain?"
+resources:
+  - { label: "javascript.info: Event loop", url: "https://javascript.info/event-loop" }
+  - { label: "MDN: Microtask guide", url: "https://developer.mozilla.org/en-US/docs/Web/API/HTML_DOM_API/Microtask_guide" }
+---
+import JsPlayground from '../../../components/JsPlayground.astro';
+
+**The mental model before you start:**
+- **Call stack** — synchronous code runs here, one frame at a time.
+- **Microtask queue** — Promise `.then`, `.catch`, `.finally`, `async/await` continuations, `queueMicrotask`. Drains **completely** after each task.
+- **Macrotask queue** (task queue) — `setTimeout`, `setInterval`, `setImmediate` (Node), I/O callbacks. One task per loop tick.
+
+**Order**: current synchronous task → drain all microtasks → pick one macrotask → drain all microtasks → pick next macrotask → ...
+
+---
+
+## Q1 — the classic A/D/C/B
+
+<JsPlayground code={`console.log('A');
+
+setTimeout(() => console.log('B'), 0);
+
+Promise.resolve().then(() => console.log('C'));
+
+console.log('D');`} height={130} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+A
+D
+C
+B
+```
+1. `A` — synchronous, runs immediately.
+2. `B` — `setTimeout` schedules a **macrotask**.
+3. `C` — `Promise.resolve().then` schedules a **microtask**.
+4. `D` — synchronous, runs immediately.
+5. After the script finishes: drain microtasks → `C` fires.
+6. Pick the next macrotask → `B` fires.
+</details>
+
+---
+
+## Q2 — Promise constructor is synchronous
+
+<JsPlayground code={`console.log('1');
+
+new Promise((resolve) => {
+  console.log('2');   // ?
+  resolve('3');
+  console.log('4');   // ?
+}).then((v) => console.log(v));
+
+console.log('5');`} height={155} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+1
+2
+4
+5
+3
+```
+The **executor function** (the callback you pass to `new Promise`) runs **synchronously**. Only `.then` is asynchronous (microtask). So `2` and `4` log before the script reaches `5`. After the script, the microtask runs and logs `3`.
+</details>
+
+---
+
+## Q3 — chained promises ordering
+
+<JsPlayground code={`Promise.resolve()
+  .then(() => {
+    console.log('A');
+    return 'B';
+  })
+  .then((v) => console.log(v))
+  .then(() => console.log('C'));
+
+Promise.resolve()
+  .then(() => console.log('D'));
+
+console.log('E');`} height={195} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+E
+A
+D
+B
+C
+```
+Both chains queue their first `.then` as microtasks at the same time. After `E` (sync), the microtask queue is: [A-handler, D-handler]. 
+- A-handler runs → logs `A`, returns `'B'` → queues B-handler.
+- D-handler runs → logs `D`.
+- B-handler runs → logs `B`, queues C-handler.
+- C-handler runs → logs `C`.
+
+Microtasks interleave between chains — it's a single FIFO queue.
+</details>
+
+---
+
+## Q4 — async/await unwrapping
+
+<JsPlayground code={`async function foo() {
+  console.log('1');
+  await Promise.resolve();
+  console.log('2');
+}
+
+console.log('3');
+foo();
+console.log('4');`} height={145} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+3
+1
+4
+2
+```
+`foo()` starts synchronously: logs `1`, then hits `await`. `await` suspends `foo` (schedules the continuation as a microtask) and returns control to the caller. The caller logs `4`. After the synchronous script ends, the microtask queue runs and resumes `foo` → logs `2`.
+</details>
+
+---
+
+## Q5 — await inside a loop (series not parallel)
+
+<JsPlayground code={`function delay(ms, val) {
+  return new Promise(r => setTimeout(() => r(val), ms));
+}
+
+async function run() {
+  console.log('start');
+  const a = await delay(0, 'A');
+  console.log(a);
+  const b = await delay(0, 'B');
+  console.log(b);
+  console.log('done');
+}
+
+run();
+console.log('sync after run()');`} height={200} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+start
+sync after run()
+A
+B
+done
+```
+Each `await` suspends the async function. `'sync after run()'` logs immediately after `run()` is called (before the first delay resolves). Then each `delay` resolves sequentially (because each `await` waits for the previous one).
+</details>
+
+---
+
+## Q6 — Promise.all vs sequential await
+
+<JsPlayground code={`function delay(ms, val) {
+  return new Promise(r => setTimeout(() => r(val), ms));
+}
+
+async function run() {
+  // Sequential (slow)
+  const a = await delay(100, 'A');
+  const b = await delay(100, 'B');
+  console.log('seq:', a, b);
+
+  // Parallel (fast)
+  const [c, d] = await Promise.all([delay(100, 'C'), delay(100, 'D')]);
+  console.log('par:', c, d);
+}
+
+run();`} height={195} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+seq: A B   (after ~200ms)
+par: C D   (after ~300ms total, ~100ms after seq)
+```
+Sequential `await` means the second delay doesn't even *start* until the first resolves. Total: 200ms. `Promise.all` starts both simultaneously — both fire at the same time. Total extra: 100ms. The ordering of these two logs is always `seq` then `par`.
+</details>
+
+---
+
+## Q7 — microtask flood
+
+<JsPlayground code={`setTimeout(() => console.log('timeout'), 0);
+
+Promise.resolve()
+  .then(() => {
+    console.log('p1');
+    return Promise.resolve();
+  })
+  .then(() => {
+    console.log('p2');
+    return Promise.resolve();
+  })
+  .then(() => console.log('p3'));
+
+console.log('sync');`} height={190} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+sync
+p1
+p2
+p3
+timeout
+```
+The microtask queue drains **completely** before any macrotask runs. Even though the chain creates new microtasks on the fly (each `.then` adds the next to the queue), they all resolve before the `setTimeout` callback fires. `timeout` always comes last.
+</details>
+
+---
+
+## Q8 — async error handling order
+
+<JsPlayground code={`async function fail() {
+  throw new Error('oops');
+}
+
+async function run() {
+  console.log('1');
+  try {
+    await fail();
+    console.log('2');    // ?
+  } catch (e) {
+    console.log('3:', e.message);
+  }
+  console.log('4');
+}
+
+run();
+console.log('5');`} height={200} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+1
+5
+3: oops
+4
+```
+`run()` executes `1` synchronously, then hits `await fail()`. `fail()` throws synchronously but since it's an async function, the error becomes a rejected Promise. `await` catches the rejection and resumes at the `catch` block as a microtask. Meanwhile `5` (sync) runs. Then the microtask fires: `3: oops`, then `4`.
+
+`2` never prints — `await` threw.
+</details>
+
+---
+
+## Q9 — nested async functions
+
+<JsPlayground code={`async function inner() {
+  console.log('inner start');
+  await Promise.resolve();
+  console.log('inner end');
+  return 'result';
+}
+
+async function outer() {
+  console.log('outer start');
+  const r = await inner();
+  console.log('outer end:', r);
+}
+
+outer();
+console.log('sync');`} height={185} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+outer start
+inner start
+sync
+inner end
+outer end: result
+```
+`outer` logs `outer start`, calls `inner`. `inner` logs `inner start`, hits `await` — suspends. Control returns to `outer`, which also awaits `inner`. Control returns to the synchronous code → `sync`. 
+
+Microtask 1: `inner` resumes → `inner end` → returns `'result'`.
+Microtask 2: `outer` resumes with `r = 'result'` → `outer end: result`.
+</details>
+
+---
+
+## Q10 — queueMicrotask vs Promise.resolve
+
+<JsPlayground code={`console.log('1');
+
+setTimeout(() => console.log('2'), 0);
+
+queueMicrotask(() => console.log('3'));
+
+Promise.resolve().then(() => console.log('4'));
+
+queueMicrotask(() => console.log('5'));
+
+console.log('6');`} height={175} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+1
+6
+3
+4
+5
+2
+```
+`queueMicrotask` adds directly to the microtask queue — same as `Promise.resolve().then(…)`. All microtasks drain before the macrotask (`setTimeout`). The microtask queue order is FIFO: `3` was queued first, then `4` (from Promise.then), then `5`.
+</details>
+
+---
+
+## Q11 — Promise.resolve with a thenable
+
+<JsPlayground code={`const p = Promise.resolve(
+  Promise.resolve('value')
+);
+
+p.then(v => console.log(v)); // ?
+console.log('sync');`} height={120} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+sync
+value
+```
+`Promise.resolve(promise)` returns the **same** promise when passed a native Promise — it doesn't wrap it. The `.then` callback fires as a microtask after sync code. The value is `'value'`. (Note: if you pass a *thenable* that's not a native Promise, there's an extra microtask tick — but for native Promises, it's resolved immediately.)
+</details>
+
+---
+
+## Q12 — setTimeout(fn, 0) race with multiple promises
+
+<JsPlayground code={`console.log('start');
+
+setTimeout(() => console.log('timeout 1'), 0);
+setTimeout(() => console.log('timeout 2'), 0);
+
+Promise.resolve().then(() => {
+  console.log('p1');
+  return Promise.resolve();
+}).then(() => console.log('p2'));
+
+console.log('end');`} height={175} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+start
+end
+p1
+p2
+timeout 1
+timeout 2
+```
+Both `setTimeout` callbacks are macrotasks queued in order. Both `.then` callbacks are microtasks. After `end` (sync), the microtask queue drains fully (p1 → p2). Then macrotasks run one by one: timeout 1 → timeout 2.
+</details>
+
+<div class="callout key">
+  <div class="ct">The rule that never changes</div>
+  Sync → microtasks (drain completely, including newly added ones) → one macrotask → microtasks again → next macrotask. Promise <code>.then</code> and <code>await</code> continuations are microtasks. <code>setTimeout</code>/<code>setInterval</code> are macrotasks. The microtask queue <strong>always</strong> beats the macrotask queue.
+</div>

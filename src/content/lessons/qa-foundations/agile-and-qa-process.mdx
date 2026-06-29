@@ -1,0 +1,182 @@
+---
+title: "Agile & the QA process"
+track: qa-foundations
+summary: "How QA works inside Scrum and Kanban — sprint ceremonies, the tester's role, DoR/DoD, acceptance criteria and Gherkin, three amigos, shift-left, per-sprint regression and working with CI."
+order: 5
+est: 24
+difficulty: easy
+priority: must
+tags: [agile, scrum, kanban, gherkin, ci, definition-of-done]
+whyAsked: "Almost every team is Agile. Interviewers check you can operate as an embedded tester — contributing in ceremonies, not waiting for a 'testing phase' that no longer exists."
+followUps:
+  - "What does a tester do in each Scrum ceremony?"
+  - "Difference between DoR and DoD?"
+  - "Write acceptance criteria in Gherkin for a login feature."
+  - "How do you handle regression every sprint?"
+resources:
+  - { label: "Scrum Guide (2020)", url: "https://scrumguide.org/" }
+  - { label: "Cucumber / Gherkin reference", url: "https://cucumber.io/docs/gherkin/reference/" }
+  - { label: "Agile Testing (Crispin & Gregory) — quadrants", url: "https://agiletester.ca/" }
+---
+
+In Agile there is no "testing phase" at the end — testing is woven through every sprint and QA is an embedded team member. Interviewers want to hear that you contribute *before* code exists (reviewing stories, shaping acceptance criteria) and that you keep regression under control as the product grows.
+
+## QA in Scrum vs Kanban
+
+Both are Agile; the testing rhythm differs.
+
+| | Scrum | Kanban |
+|---|---|---|
+| Cadence | Fixed-length sprints (1–4 weeks) | Continuous flow, no fixed iterations |
+| Planning | Sprint planning commits a batch | Pull next item when capacity frees up |
+| QA rhythm | Test within the sprint; regression per sprint | Test each item as it reaches the "test" column; WIP limits |
+| Key metric | Velocity, burndown | Cycle time, lead time, throughput |
+| Risk for QA | Testing crammed into sprint end ("mini-waterfall") | Test column becomes a bottleneck if WIP isn't limited |
+
+The shared answer for both: **test continuously, don't batch testing to the end**, and use WIP limits / capacity to stop a pile-up of "dev done, not tested" work.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  The classic Agile-QA failure is the "mini-waterfall sprint": devs code days 1–8, throw it over the wall, and testing is jammed into days 9–10. Counter it with early test design, test-as-you-go, pairing with devs, and pulling stories into test as soon as each is dev-complete.
+</div>
+
+## Sprint ceremonies & the tester's role
+
+Be specific about what you *do* in each — this is a near-guaranteed question.
+
+| Ceremony | What the tester contributes |
+|---|---|
+| **Backlog refinement / grooming** | Review stories for testability and clarity, raise edge cases, help write/refine acceptance criteria, flag missing NFRs, estimate testing effort |
+| **Sprint planning** | Commit to testable work, size testing tasks, identify test data/environment needs and dependencies |
+| **Daily stand-up** | Report testing progress and blockers (env down, build broken, story unclear), coordinate with devs on what's ready to test |
+| **Three amigos** (often during refinement) | Business + dev + QA align on what "done" means and concrete examples *before* coding |
+| **Sprint review / demo** | Validate that delivered increments meet acceptance criteria; demo tested features |
+| **Retrospective** | Surface quality/process issues — flaky tests, escaped defects, late hand-offs — and propose improvements |
+
+## Definition of Ready (DoR) vs Definition of Done (DoD)
+
+A frequent confusion. Both are shared team checklists, but at opposite ends of a story.
+
+- **Definition of Ready** — gate to *start*. A story is ready to be pulled into a sprint only if it's clear, sized, has acceptance criteria, dependencies known, and is testable. Prevents starting half-baked work.
+- **Definition of Done** — gate to *finish*. A story is done only if it meets all DoD items, e.g.: code reviewed and merged, unit tests written and passing, acceptance criteria verified, regression passing in CI, no open critical/high defects, documentation updated, deployed to staging.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  DoR protects the *start* of work (don't begin vague stories); DoD protects the *end* (don't call work done until it's truly verified). QA helps author both — testing belongs in the DoD, not bolted on after.
+</div>
+
+## Acceptance criteria & Gherkin
+
+**Acceptance criteria (AC)** are the conditions a story must satisfy to be accepted — concrete, testable, written *before* coding. They drive both development and your tests.
+
+**Gherkin** is the structured, plain-language syntax (used by Cucumber, SpecFlow, Behave) for **BDD** — Behavior-Driven Development. It expresses ACs as `Given / When / Then` scenarios that are readable by business *and* executable as automated tests.
+
+```gherkin
+Feature: User login
+
+  Scenario: Successful login with valid credentials
+    Given I am a registered user with username "alice" and a valid password
+    And I am on the login page
+    When I enter valid credentials and click "Log in"
+    Then I am redirected to my dashboard
+    And I see a welcome message "Hi, Alice"
+
+  Scenario: Login fails with wrong password
+    Given I am a registered user "alice"
+    When I enter the wrong password and click "Log in"
+    Then I see "Invalid username or password"
+    And I remain on the login page
+
+  Scenario Outline: Account lock after repeated failures
+    Given I am a registered user "alice"
+    When I submit a wrong password <attempts> times
+    Then my account status is "<status>"
+
+    Examples:
+      | attempts | status   |
+      | 4        | active   |
+      | 5        | locked   |
+```
+
+Notes that score points: keep steps declarative (describe *behavior*, not button-by-button clicks), one behavior per scenario, use `Background` for shared `Given`s, and `Scenario Outline` + `Examples` for data-driven cases. The same Gherkin doubles as living documentation and automated acceptance tests.
+
+## Shift-left in Agile & the three amigos
+
+**Shift-left** in practice: QA engages at refinement, not after coding. You review stories for testability, write ACs, and design tests *before or alongside* development. Bugs prevented in a conversation cost nothing compared to bugs found in a build.
+
+**Three amigos** is the concrete mechanism: a short conversation between the three perspectives — **business** (what problem/why), **development** (how/feasibility), **QA** (what could go wrong / edge cases) — held before a story is built, often producing the Gherkin examples. It surfaces ambiguity and missing cases when they're cheapest to fix.
+
+## Regression strategy per sprint
+
+Every sprint adds features that could break prior ones, so regression must scale or it eats the sprint. The strategy:
+
+1. **Automate stable regression.** As features stabilize, push their checks into an automated suite at the lowest viable level (unit/API over UI — the pyramid).
+2. **Risk-based selection.** Don't re-run everything every sprint; run the regression relevant to what changed plus the critical-journey smoke suite.
+3. **Run in CI on every merge** so regressions are caught within minutes, not at sprint end.
+4. **Maintain the suite.** Quarantine and fix flaky tests fast — a flaky suite that cries wolf is worse than none.
+5. **Keep a manual exploratory pass** for new/changed areas where automation can't yet judge.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Manual regression doesn't scale with sprints — each sprint your manual burden grows. The only sustainable answer is automated regression in CI plus risk-based selection, leaving humans for exploratory testing of the new.
+</div>
+
+## Working with CI/CD
+
+You're expected to operate inside a pipeline, not beside it:
+
+- **CI** runs your automated tests on every push/PR: unit → integration/API → a thin layer of E2E on critical journeys. Fast feedback is the goal — keep the pipeline minutes, not hours.
+- **Quality gates:** a red pipeline blocks merge; coverage and lint thresholds can gate too. Failing tests should *stop* the line.
+- **Test data & environments** are provisioned automatically (containers/ephemeral envs) so runs are clean and repeatable.
+- **Shift-right:** after deploy, smoke/synthetic monitoring and observability confirm health in staging/prod, with feature flags and fast rollback.
+- **Flake discipline:** flaky tests erode trust in the gate; quarantine, fix, or delete them — never "just re-run until green" as a habit.
+
+## Agile testing quadrants (bonus, often impresses)
+
+Crispin & Gregory's quadrants classify tests on two axes — business-facing vs technology-facing, and supporting-the-team vs critiquing-the-product:
+
+- **Q1** (tech-facing, support team): unit & component tests — automated.
+- **Q2** (business-facing, support team): functional tests, examples, BDD/Gherkin — automated + manual.
+- **Q3** (business-facing, critique product): exploratory, usability, UAT — manual.
+- **Q4** (tech-facing, critique product): performance, security, reliability — tools.
+
+It's a tidy way to say "I test the whole product, not just the happy path."
+
+## Interview questions & model answers
+
+**Q: What does a tester do in each Scrum ceremony?**
+"In refinement I review stories for testability and help write acceptance criteria; in planning I size testing and flag data/env needs; in stand-up I report progress and blockers; in the review I verify increments against AC and demo; in the retro I raise quality and process issues like escaped defects or flaky tests. I also join three-amigos chats before coding."
+
+**Q: Difference between DoR and DoD?**
+"DoR gates the start — a story is ready only if it's clear, sized, has acceptance criteria, and is testable. DoD gates the finish — code reviewed, unit and acceptance tests passing, regression green in CI, no open critical defects, docs updated. DoR stops vague work starting; DoD stops unverified work being called done."
+
+**Q: Write acceptance criteria in Gherkin for login.**
+"Given a registered user on the login page, When they enter valid credentials and submit, Then they reach their dashboard. Plus a negative scenario — wrong password yields 'invalid credentials' and stays on the page — and a Scenario Outline for account lock after five failed attempts." (Then write it out.)
+
+**Q: How do you handle regression each sprint?**
+"Automate stable regression at the lowest level on the pyramid, run it in CI on every merge, and select risk-based rather than re-running everything. I keep flaky tests under control and reserve manual effort for exploratory testing of the new and changed areas."
+
+**Q: What is shift-left and how do you practice it in Agile?**
+"Engaging in quality before code — reviewing stories, writing acceptance criteria, joining three-amigos sessions, and designing tests during development. It prevents defects when they're cheapest, instead of finding them at sprint end."
+
+**Q: How do you avoid the mini-waterfall within a sprint?**
+"Design tests early from ACs, pair with developers, and pull each story into testing the moment it's dev-complete rather than batching all testing to the last two days. WIP limits and a 'test-as-you-go' habit keep flow steady."
+
+**Q: What are three amigos?**
+"A short pre-build conversation between business, development, and QA to agree what a story means and what 'done' looks like, usually producing concrete examples or Gherkin. It catches ambiguity and edge cases early."
+
+## Common mistakes / what weak candidates say
+
+- Describing QA as a separate phase after development — the opposite of Agile.
+- Saying they "wait for a build to test" with no involvement in refinement or AC.
+- Confusing DoR and DoD, or omitting tests from the DoD.
+- Writing Gherkin as click-by-click UI steps instead of declarative behavior.
+- Claiming they'd run full manual regression every sprint (doesn't scale).
+- Ignoring CI — treating automation as something run manually on a laptop.
+- "Just re-run flaky tests until they pass" — erodes the quality gate.
+- Never mentioning exploratory testing or non-functional quality.
+
+<div class="callout tip">
+  <div class="ct">Interview-ready summary</div>
+  "I'm an embedded tester: I shift left by reviewing stories and writing acceptance criteria — often as Gherkin in three-amigos sessions — help define DoR and DoD, and test continuously to avoid the mini-waterfall. I keep regression sustainable with risk-based, automated suites running in CI on every merge, fix flakiness fast, and reserve human effort for exploratory testing of new work."
+</div>

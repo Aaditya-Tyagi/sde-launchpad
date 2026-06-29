@@ -1,0 +1,174 @@
+---
+title: "Accessibility (a11y) testing"
+track: qa-performance
+summary: "Why accessibility matters (legal + UX + reach), WCAG 2.2 and the POUR principles, conformance levels A/AA/AAA, the common issues (alt text, contrast, keyboard nav, focus order, ARIA, labels, headings), automated tools (axe-core, Lighthouse, pa11y, WAVE) and what they can't catch, manual checks (keyboard-only, NVDA/VoiceOver), and integrating axe into Playwright/Selenium."
+order: 4
+est: 22
+difficulty: easy
+priority: know
+tags: [accessibility, a11y, wcag, axe, screen-reader, keyboard]
+whyAsked: "Accessibility is increasingly a hiring signal and a legal requirement. Interviewers check that you know WCAG/POUR, can name common issues, and understand that automation catches only ~30-40% — the rest needs manual keyboard and screen-reader testing."
+followUps:
+  - "What are the POUR principles?"
+  - "What's the difference between WCAG A, AA and AAA?"
+  - "What can automated a11y tools NOT catch?"
+  - "How do you test keyboard accessibility?"
+  - "How would you add axe checks to your E2E tests?"
+resources:
+  - { label: "WCAG 2.2 (W3C)", url: "https://www.w3.org/TR/WCAG22/" }
+  - { label: "axe-core", url: "https://github.com/dequelabs/axe-core" }
+  - { label: "@axe-core/playwright", url: "https://www.npmjs.com/package/@axe-core/playwright" }
+  - { label: "WebAIM — contrast & resources", url: "https://webaim.org/" }
+  - { label: "MDN — ARIA", url: "https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA" }
+---
+
+Accessibility (a11y) testing verifies that people with disabilities — visual, motor, auditory, cognitive — can actually use the product. It's not a niche nicety: roughly 1 in 6 people worldwide live with a significant disability, and accessible design (keyboard support, clear contrast, captions) helps *everyone*, including users on bad connections, small screens, or in bright sunlight.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Accessibility is a <strong>core quality attribute</strong>, like performance or security — not a final polish step. The cheapest time to fix an a11y bug is when the component is built. And the headline number for any tester: <strong>automated tools catch only about 30–40% of issues</strong>; the rest requires manual keyboard and screen-reader testing.
+</div>
+
+## Why it matters
+
+- **Legal** — accessibility is mandated in many jurisdictions: the ADA (US, with web suits rising every year), Section 508 (US federal), the EU's EN 301 549 / European Accessibility Act, the UK Equality Act. Non-compliance brings real lawsuits and fines.
+- **Reach & UX** — accessible sites have a larger addressable market and better usability for *all* users (good contrast, clear focus, captions help everyone).
+- **SEO & robustness** — semantic HTML and alt text that help screen readers also help search crawlers.
+
+## WCAG and the POUR principles
+
+The **Web Content Accessibility Guidelines (WCAG)** are the international standard (current stable version **WCAG 2.2**). Everything organizes under four principles — **POUR**:
+
+- **P — Perceivable.** Users can perceive the content: text alternatives for images (alt text), captions/transcripts for media, sufficient color **contrast**, content not conveyed by color alone, resizable text.
+- **O — Operable.** Users can operate the UI: full **keyboard** access, no keyboard traps, enough time to complete tasks, no content that flashes in a seizure-inducing way, clear focus indicators.
+- **U — Understandable.** Content and operation are understandable: readable language, predictable navigation, helpful labels and error messages.
+- **R — Robust.** Content works across user agents and assistive tech: valid semantic HTML, correct ARIA so screen readers can interpret it; works as the platform evolves.
+
+### Conformance levels: A, AA, AAA
+
+WCAG success criteria are graded by level:
+
+- **A** — minimum/essential. Baseline; failing these blocks whole groups (e.g. images need alt text, video isn't the only way to get info).
+- **AA** — the practical industry and legal **target**. Adds contrast minimums (4.5:1 for normal text, 3:1 for large), visible focus, meaningful labels, resizable content. *Most laws and contracts require WCAG 2.1/2.2 AA.*
+- **AAA** — the strictest (e.g. 7:1 contrast, sign-language for video). Aspirational; rarely required wholesale because some criteria aren't achievable for all content.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  When someone says "we need to be accessible," they almost always mean <strong>WCAG 2.1/2.2 level AA</strong>. Quote that as the default target in an interview.
+</div>
+
+## Common issues to test for
+
+- **Missing/poor alt text** — images without `alt`, or unhelpful alt ("image1.png"). Decorative images need empty `alt=""`.
+- **Insufficient color contrast** — text below 4.5:1 (normal) / 3:1 (large) against its background.
+- **Color as the only signal** — "fields in red are required" fails colorblind users; pair color with text/icons.
+- **Keyboard inaccessibility** — controls reachable only by mouse; custom widgets (dropdowns, modals) you can't operate with Tab/Enter/Space/Arrows.
+- **Keyboard traps** — focus enters a widget (often a modal) and Tab can't get out.
+- **Illogical focus order** — Tab jumps around the page instead of following the visual/reading order; or focus isn't moved into an opened modal and back on close.
+- **No visible focus indicator** — keyboard users can't tell where they are.
+- **Missing form labels** — inputs without an associated `<label>` (or `aria-label`), so screen readers announce "edit text, blank."
+- **Improper headings** — no `<h1>`, or skipping levels (h1 → h4); screen-reader users navigate by headings.
+- **Misused ARIA** — wrong roles or `aria-*` that contradict the element. **No ARIA is better than bad ARIA** — prefer native semantic HTML (`<button>`, `<nav>`) first.
+
+## Automated tools — and their hard limit
+
+- **axe-core** (Deque) — the de-facto engine; powers browser extensions (axe DevTools) and integrates into test frameworks. High signal, near-zero false positives.
+- **Lighthouse** — Chrome's audit (also CI); gives an accessibility score and uses axe rules under the hood.
+- **pa11y** — CLI tool, great for CI pipelines and scanning many URLs.
+- **WAVE** (WebAIM) — visual browser extension that overlays issues on the page; good for learning.
+
+<div class="callout warn">
+  <div class="ct">Watch out — the 30–40% ceiling</div>
+  Automated tools only reliably catch issues a machine can detect: missing alt attributes, contrast ratios, missing labels, duplicate ids, invalid ARIA. They <strong>cannot</strong> judge whether alt text is <em>meaningful</em>, whether focus order makes <em>sense</em>, whether a keyboard user can actually complete a flow, whether the reading order is logical, or whether a screen reader announces something <em>understandable</em>. Those need a human.
+</div>
+
+## Manual testing (the other 60%+)
+
+- **Keyboard-only** — unplug the mouse. Tab through the whole page: can you reach and operate every control? Is focus order logical? Is there a visible focus ring? Can you escape modals? Do Enter/Space/Arrows work on custom widgets? This single test finds a huge share of real bugs.
+- **Screen readers** — use **NVDA** (free, Windows) or **VoiceOver** (built into macOS/iOS); JAWS is the paid Windows standard. Navigate by headings, landmarks, and forms; confirm everything is announced sensibly and nothing is silent or nonsensical.
+- **Zoom / reflow** — zoom to 200–400% and confirm content reflows without horizontal scrolling or clipping.
+- **Color/contrast spot checks** and viewing in grayscale to catch color-only signals.
+
+### A quick keyboard test script
+
+Run this on any page in a few minutes:
+
+1. Click into the address bar, then press **Tab** repeatedly. Watch the focus ring move.
+2. Confirm focus reaches *every* interactive element (links, buttons, inputs, custom widgets) and in a sensible order.
+3. Activate controls with **Enter** (links/buttons) and **Space** (buttons/checkboxes); operate menus and sliders with **Arrow** keys.
+4. Open a modal — confirm focus moves *into* it, **Tab** stays trapped *within* it, **Escape** closes it, and focus returns to the trigger.
+5. Confirm a **skip-to-content** link appears on first Tab so keyboard users can bypass the nav.
+
+If you can't complete a core flow with the keyboard alone, neither can a screen-reader or switch-device user — that's a release blocker, not a minor bug.
+
+## Accessibility in the team workflow
+
+Accessibility holds up best when it's spread across the lifecycle rather than dumped on a final audit:
+
+- **Design** — annotate focus order, color contrast, and labels in the mockups; pick an accessible color palette up front.
+- **Development** — lint with `eslint-plugin-jsx-a11y` (for React) and prefer semantic HTML; review components for keyboard support.
+- **PR / CI** — run axe in component and E2E tests so new violations fail the build (see below).
+- **QA** — manual keyboard + screen-reader passes on critical flows each release; track a11y bugs with the same severity scale as functional bugs.
+
+## Integrating axe into automated tests
+
+The high-leverage move: run axe inside your existing E2E suite so accessibility regressions fail the build.
+
+**Playwright** (`@axe-core/playwright`):
+
+```js
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test('home page has no critical a11y violations', async ({ page }) => {
+  await page.goto('https://example.com');
+  const results = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa'])   // scope to WCAG A + AA rules
+    .analyze();
+  expect(results.violations).toEqual([]);   // fail the test on any violation
+});
+```
+
+**Selenium** (`axe-core` via `@axe-core/webdriverjs`, JS shown):
+
+```js
+const { AxeBuilder } = require('@axe-core/webdriverjs');
+const results = await new AxeBuilder(driver).analyze();
+if (results.violations.length) throw new Error('a11y violations found');
+```
+
+<div class="callout tip">
+  <div class="ct">Practical tip</div>
+  Don't bolt a11y on at the end. Add an axe check to each page/critical-flow E2E test, scope it to <code>wcag2a</code>/<code>wcag2aa</code> tags, and treat new violations as build failures. Pair that automated 30–40% with a periodic manual keyboard + screen-reader pass on key flows.
+</div>
+
+## Interview questions & model answers
+
+**Q1. What are the POUR principles?**
+WCAG's four foundations: Perceivable (text alternatives, captions, contrast — users can sense the content), Operable (full keyboard access, no traps, visible focus — users can drive the UI), Understandable (readable, predictable, clear errors), and Robust (valid semantic HTML + correct ARIA so it works across assistive tech). Every success criterion maps to one of these.
+
+**Q2. What's the difference between WCAG A, AA and AAA?**
+A is the minimum baseline (e.g. images need alt text). AA is the practical and legal target — it adds contrast minimums (4.5:1 normal text), visible focus, and meaningful labels; most laws and contracts require AA. AAA is the strictest (e.g. 7:1 contrast) and is aspirational, rarely required wholesale because some criteria can't be met for all content.
+
+**Q3. What can automated a11y tools NOT catch?**
+They catch machine-detectable issues — missing alt attributes, low contrast, missing labels, invalid ARIA — only about 30–40% of problems. They can't judge whether alt text is *meaningful*, whether focus order and reading order make *sense*, whether a keyboard user can complete a flow, or whether a screen reader announces something *understandable*. Those need manual keyboard and screen-reader testing.
+
+**Q4. How do you test keyboard accessibility?**
+Put the mouse aside and Tab through the page: every interactive control must be reachable and operable, the focus order must follow the visual order, there must be a visible focus indicator, custom widgets must respond to Enter/Space/Arrows, and there must be no keyboard trap (you can always Tab/Escape out, especially of modals). I also check focus is moved into a modal on open and restored on close.
+
+**Q5. How would you add axe checks to your E2E tests?**
+Use `@axe-core/playwright` (or the Selenium binding): after navigating to a page, run `new AxeBuilder({ page }).withTags(['wcag2a','wcag2aa']).analyze()` and assert `violations` is empty so any violation fails the test. I add it to each critical-flow test as a regression gate, knowing it covers the automatable ~30–40% and pairing it with manual passes.
+
+**Q6. Why prefer semantic HTML over ARIA?**
+Native elements (`<button>`, `<nav>`, `<input>` with a `<label>`) come with built-in keyboard behavior, focus, and screen-reader semantics for free. ARIA only *describes* semantics; it adds no behavior and is easy to get wrong, and bad ARIA actively misleads assistive tech. The first rule of ARIA is "don't use ARIA if a native element does the job" — no ARIA beats wrong ARIA.
+
+## Common mistakes
+
+- **Treating the automated score as "done"** — a 100 Lighthouse score still leaves the 60%+ only humans can catch.
+- **Skipping keyboard testing** — the single highest-value manual test, and the most commonly skipped.
+- **Color-only signals** — conveying state with color alone (red = error) without text/icon backup.
+- **Bad or missing alt text** — decorative images with verbose alt, or informative images with none/`"image.png"`.
+- **Overusing/misusing ARIA** — slapping roles on everything instead of using native elements; bad ARIA is worse than none.
+- **Broken focus management in modals** — not moving focus in on open, not trapping it within, not restoring it on close.
+- **Heading misuse** — skipping levels or using headings purely for visual size, breaking screen-reader navigation.
+- **Bolting a11y on at the end** — far cheaper to build accessible components and gate with axe from the start.

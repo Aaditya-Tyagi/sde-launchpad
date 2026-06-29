@@ -1,0 +1,236 @@
+---
+title: "React Navigation: Stacks, Tabs, Deep Links"
+track: react-native
+summary: "How React Navigation's navigator types work, how to pass params type-safely, nested navigators, and wiring up deep linking."
+order: 9
+est: 24
+difficulty: medium
+priority: must
+tags: [navigation, react-navigation, stack, tabs, deep-linking, params, nested-navigators]
+whyAsked: "Navigation is fundamental to every mobile app. Interviewers ask about params typing, nested navigators, and deep linking because they reveal whether you've built real RN apps."
+followUps:
+  - "How do you pass params between screens and type them in TypeScript?"
+  - "What's the difference between Stack and NativeStack?"
+  - "How do you navigate from outside a component (e.g., from a notification handler)?"
+  - "How does deep linking work in React Navigation?"
+  - "How do you reset the navigation stack programmatically?"
+resources:
+  - { label: "React Navigation docs", url: "https://reactnavigation.org" }
+  - { label: "RN: Deep Linking", url: "https://reactnative.dev/docs/linking" }
+---
+
+## The three navigator types
+
+React Navigation provides three core navigators that you combine to build your app's navigation structure:
+
+| Navigator | Behavior | Use for |
+|---|---|---|
+| `Stack` / `NativeStack` | Push/pop screens (horizontal slide) | Drill-down flows: list → detail |
+| `Tab` | Switch between sibling screens | Main app sections (Home, Search, Profile) |
+| `Drawer` | Slide-in side menu | App-wide navigation, settings |
+
+**`NativeStack` vs `Stack`:** `NativeStack` uses the platform's native navigation primitives (UINavigationController on iOS, Fragment on Android) — smoother animations, better performance, correct native gestures. `Stack` is JS-only and gives more style control. Prefer `NativeStack` unless you need non-standard header styling.
+
+## Basic setup
+
+```tsx
+import { NavigationContainer } from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+
+// Type the entire param list upfront
+type RootStackParams = {
+  Home: undefined;
+  PostDetail: { postId: string; title: string };
+  CreatePost: { prefillTitle?: string };
+};
+
+const Stack = createNativeStackNavigator<RootStackParams>();
+const Tab = createBottomTabNavigator();
+
+function RootStack() {
+  return (
+    <Stack.Navigator initialRouteName="Home">
+      <Stack.Screen name="Home" component={HomeScreen} />
+      <Stack.Screen
+        name="PostDetail"
+        component={PostDetailScreen}
+        options={({ route }) => ({ title: route.params.title })}
+      />
+      <Stack.Screen name="CreatePost" component={CreatePostScreen} />
+    </Stack.Navigator>
+  );
+}
+
+function App() {
+  return (
+    <NavigationContainer>
+      <Tab.Navigator>
+        <Tab.Screen name="Feed" component={RootStack} />
+        <Tab.Screen name="Search" component={SearchScreen} />
+        <Tab.Screen name="Profile" component={ProfileScreen} />
+      </Tab.Navigator>
+    </NavigationContainer>
+  );
+}
+```
+
+## Typed navigation and route props
+
+```tsx
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { RouteProp } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
+
+// Option 1: Hook-based (recommended)
+function PostDetailScreen() {
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParams, 'PostDetail'>>();
+  const route = useRoute<RouteProp<RootStackParams, 'PostDetail'>>();
+
+  const { postId, title } = route.params; // fully typed
+
+  return (
+    <View>
+      <Text>{title}</Text>
+      <Button
+        title="Create Post"
+        onPress={() => navigation.navigate('CreatePost', { prefillTitle: title })}
+      />
+      <Button title="Back" onPress={() => navigation.goBack()} />
+    </View>
+  );
+}
+
+// Option 2: Typed with a global declaration (cleaner in large codebases)
+// types.ts
+declare global {
+  namespace ReactNavigation {
+    interface RootParamList extends RootStackParams {}
+  }
+}
+// Now useNavigation() is already typed without the generic
+```
+
+## Common navigation methods
+
+```tsx
+navigation.navigate('PostDetail', { postId: '123', title: 'Hello' });
+navigation.push('PostDetail', { postId: '456', title: 'World' }); // always adds new screen
+navigation.goBack();
+navigation.popToTop(); // go back to first screen in stack
+
+// Reset the entire navigation state (use after login/logout)
+navigation.reset({
+  index: 0,
+  routes: [{ name: 'Home' }],
+});
+
+// Replace current screen (no back button)
+navigation.replace('Home');
+```
+
+## Nested navigators
+
+A Tab navigator where each tab has its own Stack:
+
+```tsx
+type FeedStackParams = {
+  FeedList: undefined;
+  PostDetail: { postId: string };
+};
+
+function FeedStack() {
+  const FeedNav = createNativeStackNavigator<FeedStackParams>();
+  return (
+    <FeedNav.Navigator>
+      <FeedNav.Screen name="FeedList" component={FeedScreen} />
+      <FeedNav.Screen name="PostDetail" component={PostDetailScreen} />
+    </FeedNav.Navigator>
+  );
+}
+
+// Navigating to a nested screen from outside:
+navigation.navigate('Feed', {
+  screen: 'PostDetail',
+  params: { postId: '123' },
+});
+```
+
+## Navigating outside components
+
+For navigation from push notification handlers, Redux actions, or services — you need a ref to the NavigationContainer:
+
+```tsx
+// navigation.ts
+import { createNavigationContainerRef } from '@react-navigation/native';
+
+export const navigationRef = createNavigationContainerRef<RootStackParams>();
+
+export function navigate(name: keyof RootStackParams, params?: any) {
+  if (navigationRef.isReady()) {
+    navigationRef.navigate(name, params);
+  }
+}
+
+// App.tsx
+<NavigationContainer ref={navigationRef}>
+  {/* ... */}
+</NavigationContainer>
+
+// Anywhere in your app (notification handler, push service):
+import { navigate } from './navigation';
+navigate('PostDetail', { postId: notification.postId });
+```
+
+## Deep linking
+
+Deep linking lets external URLs open specific screens. Configure it in `NavigationContainer`:
+
+```tsx
+const linking = {
+  prefixes: ['myapp://', 'https://myapp.com'],
+  config: {
+    screens: {
+      Feed: {
+        screens: {
+          FeedList: 'feed',
+          PostDetail: 'post/:postId',  // myapp://post/123 → PostDetail with postId='123'
+        },
+      },
+      Profile: 'profile/:userId',
+    },
+  },
+};
+
+<NavigationContainer linking={linking} fallback={<LoadingScreen />}>
+  {/* ... */}
+</NavigationContainer>
+```
+
+For iOS: configure the URL scheme in `Info.plist` and Associated Domains for universal links. For Android: configure intent filters in `AndroidManifest.xml`.
+
+**Universal links** (iOS) / **App Links** (Android) use HTTPS URLs — the OS tries the app first, falls back to the web. Requires an `apple-app-site-association` / `assetlinks.json` file hosted on your domain.
+
+## Passing data back to the previous screen
+
+React Navigation doesn't have a "return value" mechanism. Use a callback param, navigation.setParams, or shared state:
+
+```tsx
+// Callback approach
+function ScreenA() {
+  const navigation = useNavigation();
+  return (
+    <Button
+      title="Pick Color"
+      onPress={() => navigation.navigate('ColorPicker', {
+        onSelect: (color) => navigation.setParams({ selectedColor: color }),
+      })}
+    />
+  );
+}
+```
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "React Navigation has three navigators: Stack (push/pop), Tab (switch siblings), and Drawer (side menu). I type the param list as a union of screen names to their params — this makes `navigation.navigate` and `route.params` fully type-safe. For nested navigators, I navigate with `{ screen, params }`. For navigation outside components (notifications, auth redirects), I use a `createNavigationContainerRef` with an imperative `navigate` helper. Deep linking maps URL patterns to screen names via the `linking` config — universal links require an `apple-app-site-association` file on the domain."
+</div>

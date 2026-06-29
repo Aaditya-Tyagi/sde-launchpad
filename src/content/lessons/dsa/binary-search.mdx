@@ -1,0 +1,198 @@
+---
+title: "Binary Search"
+track: dsa
+summary: "The template that kills off-by-one bugs, plus 'search on the answer' — the variant that trips people up."
+order: 4
+est: 28
+difficulty: medium
+priority: must
+tags: [binary-search, sorted]
+whyAsked: "Binary search is simple to state and easy to get wrong. A clean, bug-free template signals care; the 'search on the answer space' variant signals depth."
+followUps:
+  - "Why `lo + (hi - lo) / 2` instead of `(lo + hi) / 2`?"
+  - "How do you binary search on the answer (e.g. Koko Eating Bananas)?"
+  - "How do you find the leftmost / rightmost occurrence?"
+  - "How does search work on a rotated sorted array?"
+resources:
+  - { label: "NeetCode: Binary Search", url: "https://neetcode.io/practice" }
+---
+import ArrayViz from '../../../components/ArrayViz.astro';
+
+Binary search halves the search space each step → O(log n). It applies whenever the space is **monotonic**: sorted data, or any predicate that flips from false to true exactly once.
+
+## When to reach for it — recognition triggers
+
+- Input is **sorted** (or rotated-sorted) and you're searching.
+- "**Minimize / maximize** a value subject to a feasibility check that is **monotonic**" → search on the answer.
+- A required complexity of **O(log n)** is stated or implied.
+- You can phrase the question as a yes/no predicate that is false…false…true…true over a range.
+- "Find first/last element satisfying condition", "find peak", "find insert position".
+
+<div class="callout key">
+  <div class="ct">Pattern trigger</div>
+  Sorted input, or "minimize/maximize a value subject to a monotonic feasibility check" → binary search. Lock in one boundary convention to stay bug-free.
+</div>
+
+## The classic template
+
+<ArrayViz algo="binary-search" />
+
+```js
+// Find target in a sorted array.  O(log n) time, O(1) space
+function binarySearch(nums, target) {
+  let lo = 0, hi = nums.length - 1;   // inclusive bounds
+  while (lo <= hi) {                   // <= because bounds are inclusive
+    const mid = lo + ((hi - lo) >> 1); // avoids integer overflow
+    if (nums[mid] === target) return mid;
+    if (nums[mid] < target) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
+}
+```
+
+Two details prevent the classic bugs: use `lo <= hi` (not `<`) with inclusive bounds, and compute mid as `lo + (hi - lo)/2` so a huge `lo + hi` can't overflow (a real bug in fixed-width languages). Pick **one** convention and always use it.
+
+## The boundary template — leftmost / lower bound
+
+For "find the first index where `nums[i] >= target`" (insert position, first/last occurrence), use a half-open `[lo, hi)` search that converges to a single index:
+
+```js
+// Leftmost index i with nums[i] >= target.  Returns nums.length if none.
+function lowerBound(nums, target) {
+  let lo = 0, hi = nums.length;        // hi is EXCLUSIVE here
+  while (lo < hi) {                     // < because hi is exclusive
+    const mid = lo + ((hi - lo) >> 1);
+    if (nums[mid] < target) lo = mid + 1;  // mid too small → discard it
+    else hi = mid;                          // keep mid as a candidate
+  }
+  return lo;
+}
+```
+
+This single function gives first occurrence (`lowerBound(nums, t)`) and last occurrence (`lowerBound(nums, t + 1) - 1`).
+
+## The hard variant: search on the answer
+
+The trick interviewers reward: when the answer is a number in a range and "is X feasible?" is monotonic (if X works, anything bigger/smaller works), binary search the *answer*, not the array.
+
+```js
+// Koko Eating Bananas: smallest speed k so she finishes in h hours.  O(n log maxPile)
+function minSpeed(piles, h) {
+  const hoursNeeded = k => piles.reduce((sum, p) => sum + Math.ceil(p / k), 0);
+  let lo = 1, hi = Math.max(...piles);
+  while (lo < hi) {
+    const mid = lo + ((hi - lo) >> 1);
+    if (hoursNeeded(mid) <= h) hi = mid;   // feasible → try slower (smaller k)
+    else lo = mid + 1;                      // too slow → must go faster
+  }
+  return lo;
+}
+```
+
+Idea: feasibility is monotonic — any speed faster than a working speed also works. So the feasible speeds form a `false…false…true…true` boundary, and we binary search it. **Time** O(n log maxPile).
+
+## Worked examples
+
+### Search in Rotated Sorted Array
+
+One half of a rotated array is always sorted. Determine which half is sorted, then decide whether the target lies in it.
+
+```js
+// O(log n) time, O(1) space
+function search(nums, target) {
+  let lo = 0, hi = nums.length - 1;
+  while (lo <= hi) {
+    const mid = lo + ((hi - lo) >> 1);
+    if (nums[mid] === target) return mid;
+    if (nums[lo] <= nums[mid]) {          // left half [lo..mid] is sorted
+      if (nums[lo] <= target && target < nums[mid]) hi = mid - 1;
+      else lo = mid + 1;
+    } else {                              // right half [mid..hi] is sorted
+      if (nums[mid] < target && target <= nums[hi]) lo = mid + 1;
+      else hi = mid - 1;
+    }
+  }
+  return -1;
+}
+```
+
+Idea: each step still halves the space; the only extra work is identifying the sorted half (the `<=` on the left guard handles the mid==lo case).
+**Time** O(log n) · **Space** O(1).
+
+### Find Minimum in Rotated Sorted Array
+
+The minimum is the single "drop" point. Compare `mid` to `hi` to decide which side holds it.
+
+```js
+// O(log n) time, O(1) space
+function findMin(nums) {
+  let lo = 0, hi = nums.length - 1;
+  while (lo < hi) {
+    const mid = lo + ((hi - lo) >> 1);
+    if (nums[mid] > nums[hi]) lo = mid + 1;  // min is to the right of mid
+    else hi = mid;                            // min is mid or to its left
+  }
+  return nums[lo];
+}
+```
+
+Idea: comparing to `hi` (not `lo`) avoids ambiguity when the array isn't rotated. The loop ends with `lo === hi` pointing at the min.
+**Time** O(log n) · **Space** O(1).
+
+### Search a 2D Matrix — flatten the index
+
+A row-major sorted matrix is one sorted array of length `rows*cols`; map a flat index to `(r, c)`.
+
+```js
+// O(log(rows*cols)) time, O(1) space
+function searchMatrix(matrix, target) {
+  const rows = matrix.length, cols = matrix[0].length;
+  let lo = 0, hi = rows * cols - 1;
+  while (lo <= hi) {
+    const mid = lo + ((hi - lo) >> 1);
+    const val = matrix[Math.floor(mid / cols)][mid % cols];
+    if (val === target) return true;
+    if (val < target) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return false;
+}
+```
+
+Idea: `row = mid / cols`, `col = mid % cols` treats the matrix as a flat sorted array.
+**Time** O(log(m·n)) · **Space** O(1).
+
+## Complexity & why it beats brute force
+
+Linear search is O(n); binary search is O(log n) because each comparison discards half the remaining space. Search-on-the-answer turns an O(range) brute scan into O(log range) checks, each costing the feasibility test (often O(n)) — typically O(n log range) overall, far better than testing every candidate.
+
+## Edge cases & common bugs
+
+- **Boundary convention drift** — mixing `<=`/`<` with inclusive/exclusive `hi` is the #1 bug. Pick one of the two templates above and never mutate it mid-solution.
+- **Infinite loop** — with `lo < hi` and `lo = mid + 1` / `hi = mid`, mid must round down (it does with floor) so `lo` always advances.
+- **Overflow** — `(lo + hi) / 2` overflows in Java/C++; use `lo + (hi - lo) / 2`. State this even in JS.
+- **Empty array** — `hi = -1` makes `lo <= hi` false immediately; correct.
+- **Duplicates in rotated array** — break the `O(log n)` guarantee (worst case O(n)); mention it.
+- **Wrong comparison anchor** in findMin — comparing `mid` to `lo` instead of `hi` mishandles the non-rotated case.
+
+## Interview tips & questions
+
+- Interviewers probe: "Walk me through your invariant — what does each pointer mean and why does the loop terminate?"
+- The strongest signal is reframing an optimization as "search on the answer" — practice spotting the monotonic feasibility predicate.
+- Be ready to convert "find target" into "find first/last occurrence" with the lower-bound template.
+
+| Problem | Difficulty | Variant |
+|---|---|---|
+| [Binary Search](https://leetcode.com/problems/binary-search/) | Easy | classic |
+| [Search Insert Position](https://leetcode.com/problems/search-insert-position/) | Easy | lower bound |
+| [Search a 2D Matrix](https://leetcode.com/problems/search-a-2d-matrix/) | Medium | flatten indices |
+| [Find Min in Rotated Sorted Array](https://leetcode.com/problems/find-minimum-in-rotated-sorted-array/) | Medium | rotated |
+| [Search in Rotated Sorted Array](https://leetcode.com/problems/search-in-rotated-sorted-array/) | Medium | rotated |
+| [Koko Eating Bananas](https://leetcode.com/problems/koko-eating-bananas/) | Medium | search on answer |
+| [Median of Two Sorted Arrays](https://leetcode.com/problems/median-of-two-sorted-arrays/) | Hard | partition search |
+
+<div class="callout tip">
+  <div class="ct">Template</div>
+  Classic: <code>lo=0, hi=n-1</code>; loop while <code>lo &lt;= hi</code>. Boundary/answer: <code>lo=0, hi=n</code>; loop while <code>lo &lt; hi</code>; if too small <code>lo=mid+1</code> else <code>hi=mid</code>; return <code>lo</code>.
+</div>

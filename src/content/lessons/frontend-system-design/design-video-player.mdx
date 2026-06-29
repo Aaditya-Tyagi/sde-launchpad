@@ -1,0 +1,302 @@
+---
+title: "FSD: Design a Video Player"
+track: frontend-system-design
+summary: "Design a custom video player — controls, buffering, adaptive streaming (HLS), keyboard shortcuts, accessibility, and performance."
+order: 5
+est: 28
+difficulty: hard
+priority: deep
+tags: [frontend-system-design, video-player, hls, adaptive-streaming, media-api, accessibility]
+whyAsked: "Video player design tests HTML5 Media API knowledge, adaptive streaming, custom UI over native controls, buffering states, and performance — a multi-dimensional challenge."
+followUps:
+  - "What is adaptive bitrate streaming and how does HLS work?"
+  - "How do you implement custom keyboard shortcuts for a video player?"
+  - "How do you track watch time / analytics events?"
+  - "How do you implement picture-in-picture?"
+  - "How do you handle DRM-protected content?"
+resources:
+  - { label: "HTMLMediaElement API — MDN", url: "https://developer.mozilla.org/en-US/docs/Web/API/HTMLMediaElement" }
+  - { label: "hls.js docs", url: "https://github.com/video-dev/hls.js" }
+  - { label: "Web Accessibility — video players", url: "https://www.w3.org/WAI/media/av/" }
+---
+
+## Step 1: Requirements clarification
+
+**Ask:**
+- What source format? (MP4, HLS, DASH?)
+- Do we need adaptive bitrate streaming?
+- Subtitles / closed captions?
+- Thumbnail scrubbing on hover?
+- Picture-in-picture?
+- Custom branding / theming?
+- Analytics / watch events?
+
+**For this design:**
+- HLS adaptive streaming (hls.js)
+- Custom controls (play/pause, volume, progress, fullscreen, quality selector, speed selector)
+- Keyboard shortcuts
+- Subtitles
+- Basic analytics (play, pause, seek, % watched)
+- Accessible via screen reader + keyboard
+
+---
+
+## Step 2: Architecture
+
+```
+Browser                              CDN / Streaming Server
+┌────────────────────────────────┐   ┌─────────────────────────────┐
+│  <VideoPlayer>                 │   │  .m3u8 manifest             │
+│    <video> (native element)    │──▶│  .ts segment chunks         │
+│    <Controls>                  │   │  (multiple quality levels)  │
+│      <ProgressBar>             │   └─────────────────────────────┘
+│      <VolumeSlider>            │
+│      <QualitySelector>         │   Analytics Server
+│      <SpeedSelector>           │──▶ POST /events (play/pause/seek)
+│      <SubtitleToggle>          │
+│    <BufferingOverlay>          │
+│    <SubtitleDisplay>           │
+└────────────────────────────────┘
+```
+
+**Why custom controls?** Native browser controls are not stylable/brandable. We hide them with `controls={false}` and build our own using the HTMLMediaElement API.
+
+---
+
+## Step 3: Data model & state
+
+```ts
+interface PlayerState {
+  isPlaying: boolean;
+  isBuffering: boolean;
+  currentTime: number;    // seconds
+  duration: number;
+  bufferedEnd: number;    // seconds buffered ahead
+  volume: number;         // 0–1
+  isMuted: boolean;
+  playbackRate: number;   // 0.5, 1, 1.25, 1.5, 2
+  quality: 'auto' | '1080p' | '720p' | '480p' | '360p';
+  availableQualities: string[];
+  isFullscreen: boolean;
+  showControls: boolean;  // auto-hide after 3s of inactivity
+  subtitlesEnabled: boolean;
+  activeSubtitle: string | null;
+}
+```
+
+---
+
+## Step 4: Core hook — useVideoPlayer
+
+```ts
+function useVideoPlayer(src: string) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const hlsRef = useRef<Hls | null>(null);
+  const [state, setState] = useImmerReducer(reducer, initialState);
+  const hideControlsTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  // --- HLS setup ---
+  useEffect(() => {
+    const video = videoRef.current!;
+    if (Hls.isSupported()) {
+      const hls = new Hls({ startLevel: -1 }); // -1 = auto quality
+      hls.loadSource(src);
+      hls.attachMedia(video);
+      hlsRef.current = hls;
+
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_, data) => {
+        const levels = hls.levels.map(l => `${l.height}p`);
+        setState(draft => {
+          draft.availableQualities = ['auto', ...levels];
+          if (draft.quality !== 'auto') draft.quality = levels[data.level] ?? 'auto';
+        });
+      });
+
+      return () => { hls.destroy(); };
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      // Safari native HLS
+      video.src = src;
+    }
+  }, [src]);
+
+  // --- Sync video events to state ---
+  useEffect(() => {
+    const video = videoRef.current!;
+    const on = (event: string, fn: () => void) => {
+      video.addEventListener(event, fn);
+      return () => video.removeEventListener(event, fn);
+    };
+    const unsubs = [
+      on('play',       () => setState(d => { d.isPlaying = true; d.isBuffering = false; })),
+      on('pause',      () => setState(d => { d.isPlaying = false; })),
+      on('waiting',    () => setState(d => { d.isBuffering = true; })),
+      on('canplay',    () => setState(d => { d.isBuffering = false; })),
+      on('timeupdate', () => setState(d => {
+        d.currentTime = video.currentTime;
+        d.bufferedEnd = video.buffered.length ? video.buffered.end(video.buffered.length - 1) : 0;
+      })),
+      on('durationchange', () => setState(d => { d.duration = video.duration; })),
+      on('volumechange', () => setState(d => {
+        d.volume = video.volume;
+        d.isMuted = video.muted;
+      })),
+    ];
+    return () => unsubs.forEach(u => u());
+  }, []);
+
+  // --- Controls ---
+  const play = () => videoRef.current?.play();
+  const pause = () => videoRef.current?.pause();
+  const togglePlay = () => state.isPlaying ? pause() : play();
+  const seek = (time: number) => { videoRef.current!.currentTime = time; };
+  const setVolume = (v: number) => { videoRef.current!.volume = v; };
+  const toggleMute = () => { videoRef.current!.muted = !state.isMuted; };
+  const setSpeed = (rate: number) => { videoRef.current!.playbackRate = rate; };
+  const setQuality = (quality: string) => {
+    if (!hlsRef.current) return;
+    const levelIndex = quality === 'auto' ? -1 : hlsRef.current.levels.findIndex(l => `${l.height}p` === quality);
+    hlsRef.current.nextLevel = levelIndex;
+    setState(d => { d.quality = quality; });
+  };
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      videoRef.current?.parentElement?.requestFullscreen();
+    } else {
+      document.exitFullscreen();
+    }
+  };
+
+  // --- Auto-hide controls ---
+  const showControls = () => {
+    setState(d => { d.showControls = true; });
+    clearTimeout(hideControlsTimer.current);
+    hideControlsTimer.current = setTimeout(() => {
+      if (state.isPlaying) setState(d => { d.showControls = false; });
+    }, 3000);
+  };
+
+  return { videoRef, state, togglePlay, seek, setVolume, toggleMute, setSpeed, setQuality, toggleFullscreen, showControls };
+}
+```
+
+---
+
+## Step 5: Progress bar with buffered range
+
+```tsx
+function ProgressBar({ currentTime, duration, bufferedEnd, onSeek }: Props) {
+  const barRef = useRef<HTMLDivElement>(null);
+  const [hoverTime, setHoverTime] = useState<number | null>(null);
+
+  const getTimeFromEvent = (e: React.MouseEvent) => {
+    const rect = barRef.current!.getBoundingClientRect();
+    return Math.max(0, Math.min(((e.clientX - rect.left) / rect.width) * duration, duration));
+  };
+
+  return (
+    <div
+      ref={barRef}
+      role="slider"
+      aria-label="Video progress"
+      aria-valuemin={0}
+      aria-valuemax={Math.round(duration)}
+      aria-valuenow={Math.round(currentTime)}
+      aria-valuetext={`${formatTime(currentTime)} of ${formatTime(duration)}`}
+      tabIndex={0}
+      style={{ position: 'relative', height: 4, background: 'rgba(255,255,255,0.2)', cursor: 'pointer', borderRadius: 2 }}
+      onMouseMove={(e) => setHoverTime(getTimeFromEvent(e))}
+      onMouseLeave={() => setHoverTime(null)}
+      onClick={(e) => onSeek(getTimeFromEvent(e))}
+      onKeyDown={(e) => {
+        if (e.key === 'ArrowRight') onSeek(Math.min(currentTime + 5, duration));
+        if (e.key === 'ArrowLeft')  onSeek(Math.max(currentTime - 5, 0));
+      }}
+    >
+      {/* Buffered range */}
+      <div style={{ position: 'absolute', height: '100%', width: `${(bufferedEnd / duration) * 100}%`, background: 'rgba(255,255,255,0.3)', borderRadius: 2 }} />
+      {/* Played range */}
+      <div style={{ position: 'absolute', height: '100%', width: `${(currentTime / duration) * 100}%`, background: '#6366f1', borderRadius: 2 }} />
+      {/* Thumb */}
+      <div style={{ position: 'absolute', top: '50%', left: `${(currentTime / duration) * 100}%`, transform: 'translate(-50%, -50%)', width: 12, height: 12, borderRadius: '50%', background: '#fff' }} />
+      {/* Hover time tooltip */}
+      {hoverTime !== null && (
+        <div style={{ position: 'absolute', bottom: 16, left: `${(hoverTime / duration) * 100}%`, transform: 'translateX(-50%)', background: 'rgba(0,0,0,0.8)', color: '#fff', padding: '2px 6px', borderRadius: 4, fontSize: 12 }}>
+          {formatTime(hoverTime)}
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+---
+
+## Step 6: Keyboard shortcuts
+
+```ts
+useEffect(() => {
+  const handler = (e: KeyboardEvent) => {
+    // Don't hijack when user is typing in an input
+    if (e.target instanceof HTMLInputElement) return;
+    switch (e.key) {
+      case ' ':
+      case 'k': e.preventDefault(); togglePlay(); break;
+      case 'ArrowRight': seek(currentTime + 5); break;
+      case 'ArrowLeft':  seek(currentTime - 5); break;
+      case 'ArrowUp':    setVolume(Math.min(volume + 0.1, 1)); break;
+      case 'ArrowDown':  setVolume(Math.max(volume - 0.1, 0)); break;
+      case 'm': toggleMute(); break;
+      case 'f': toggleFullscreen(); break;
+      case 'c': toggleSubtitles(); break;
+      case '>': setSpeed(Math.min(playbackRate + 0.25, 2)); break;
+      case '<': setSpeed(Math.max(playbackRate - 0.25, 0.25)); break;
+    }
+  };
+  document.addEventListener('keydown', handler);
+  return () => document.removeEventListener('keydown', handler);
+}, [currentTime, volume, playbackRate]);
+```
+
+---
+
+## Step 7: Analytics events
+
+```ts
+const events = useRef<{ type: string; time: number }[]>([]);
+
+function trackEvent(type: string) {
+  events.current.push({ type, time: videoRef.current!.currentTime });
+}
+
+// Flush on pause, unload, and every 30s
+useEffect(() => {
+  const flush = () => {
+    if (!events.current.length) return;
+    navigator.sendBeacon('/api/events', JSON.stringify({
+      videoId, sessionId, events: events.current,
+    }));
+    events.current = [];
+  };
+  const interval = setInterval(flush, 30_000);
+  window.addEventListener('visibilitychange', flush);
+  return () => { clearInterval(interval); window.removeEventListener('visibilitychange', flush); flush(); };
+}, []);
+```
+
+`navigator.sendBeacon` — sends data even when the page is unloading (unlike `fetch`).
+
+---
+
+## Step 8: Accessibility
+
+- `<video>` has `aria-label` and `<track>` element for captions
+- Custom controls are actual `<button>` elements with `aria-label`
+- Progress bar: `role="slider"` with `aria-valuenow`, `aria-valuemin`, `aria-valuemax`
+- Keyboard focus ring visible on controls
+- Buffering spinner has `role="status"` and `aria-label="Video is buffering"`
+- Autoplay is disabled by default (WCAG 1.4.2)
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "The `<video>` element is native but `controls={false}` — we own the UI. We use `hls.js` to parse the `.m3u8` manifest and feed segments to MediaSource, and listen to `LEVEL_SWITCHED` for quality info. All HTMLMediaElement events (`play`, `pause`, `waiting`, `timeupdate`) sync to React state. The progress bar is `role='slider'` with `aria-valuenow` for screen readers, and handles keyboard arrows directly. Analytics use `navigator.sendBeacon` on visibility change and page unload so events aren't lost when the user navigates away."
+</div>

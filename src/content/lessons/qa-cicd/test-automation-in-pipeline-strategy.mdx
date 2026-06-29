@@ -1,0 +1,187 @@
+---
+title: "Test automation in the pipeline: strategy"
+track: qa-cicd
+summary: "The strategy layer above the tooling — which tests run when (PR vs merge vs nightly vs release), the pyramid mapped to pipeline stages, sharding for speed, test selection, quality gates, flaky-test management, ephemeral environments, and shift-left/shift-right."
+order: 4
+est: 22
+difficulty: medium
+priority: know
+tags: [cicd, strategy, testing-pyramid, quality-gates, flaky-tests, shift-left]
+whyAsked: "Senior/SDET interviews probe whether you can DESIGN a test strategy, not just write tests — what to run when, how to keep the pipeline fast and trustworthy, and how to gate releases. This is the systems-thinking layer."
+followUps:
+  - "Which tests run on a PR vs nightly vs release?"
+  - "Your pipeline takes 45 minutes — how do you speed it up?"
+  - "How do you keep flaky tests from blocking the team?"
+  - "What's shift-left and shift-right?"
+resources:
+  - { label: "Test pyramid (Martin Fowler)", url: "https://martinfowler.com/articles/practical-test-pyramid.html" }
+  - { label: "Google: Flaky tests", url: "https://testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html" }
+  - { label: "Ephemeral environments", url: "https://www.thoughtworks.com/radar/techniques/ephemeral-environments" }
+  - { label: "Continuous Delivery (Fowler)", url: "https://martinfowler.com/bliki/ContinuousDelivery.html" }
+---
+
+Knowing the tools (Actions, Jenkins, Docker) is necessary but not sufficient. The senior/SDET question is **strategy**: given a finite CI budget and a team that needs fast feedback, *what tests run when, and how do you keep the pipeline fast and trustworthy?* A suite that's slow or flaky gets ignored — and an ignored suite protects nothing.
+
+## The core tension: speed vs coverage
+
+Every pipeline decision trades **fast feedback** (developers want results in minutes) against **thorough coverage** (you want to catch everything). You resolve it not by picking one, but by running *different test layers at different points* in the lifecycle.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Run the cheapest, fastest, most-likely-to-catch tests earliest and most often; run the slow, expensive, broad tests later and less often. Feedback speed should be inversely proportional to test cost.
+</div>
+
+## The testing pyramid mapped to pipeline stages
+
+The classic pyramid (many unit, fewer integration, fewest E2E) maps directly onto *when* and *where* each layer runs:
+
+```text
+        /\        E2E / UI      -> few; on merge + nightly; against staging
+       /  \                        (slow, brittle, high value per test)
+      /----\      Integration   -> some; on PR; services+DB via compose
+     /      \                       (minutes)
+    /--------\    Unit          -> many; on EVERY push/PR; seconds
+   /__________\   + static/lint -> first gate, instant
+```
+
+- **Unit/component/lint** — run on every push and PR; must finish in a minute or two. The bulk of your coverage.
+- **Integration/API/contract** — on PR; validate service + DB interactions. API tests are the QA sweet spot: far faster and more stable than UI, good coverage.
+- **E2E/UI** — the smallest layer; expensive and flakier, so run a curated set on merge and the full set nightly.
+
+A common **anti-pattern is the "ice-cream cone"**: lots of slow UI tests, few unit tests. It produces a slow, flaky pipeline with poor feedback. Push coverage down the pyramid.
+
+## Which tests run when
+
+This scheduling decision is the heart of strategy:
+
+```text
+Trigger            Suite                       Goal
+-----------------  --------------------------  --------------------------------
+PR / push          lint + unit + key API +     fast feedback, gate the merge
+                   smoke (a few critical E2E)   (target: under ~10 min)
+Merge to main      smoke + broader E2E          confidence before deploy
+Pre-deploy/stage   full regression (curated)    nothing broken ships
+Nightly (cron)     full regression, all         deep coverage off the critical
+                   browsers, long-running        path; catch slow-burn issues
+Pre-release/tag    full regression + perf +     release readiness
+                   security + accessibility
+Post-deploy (prod) smoke / synthetic monitors   verify prod, enable rollback
+```
+
+- **Smoke vs full regression** — smoke is a tiny critical-path suite (can users log in, search, check out?) that runs fast and often; full regression is exhaustive and runs on a schedule or before release. Don't run a 40-minute regression on every commit.
+- **Nightly** absorbs the slow stuff so PRs stay fast.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  PR feedback should land in under ~10 minutes — that's the threshold below which developers stay in flow and trust the gate. Anything slower gets bypassed or ignored. Budget your per-PR suite to that number; push the rest to nightly.
+</div>
+
+## Parallelization & sharding for speed
+
+When the suite outgrows the time budget, make it faster before cutting coverage:
+
+- **Parallel execution** within a runner (Playwright workers, TestNG/JUnit threads) and **sharding** across runners (split into N pieces, one per machine, merge reports). 4 shards ≈ quarter the wall-clock time.
+- **Right-size the layer** — a flaky E2E test that duplicates an API test is pure cost; delete or demote it.
+- **Test independence is the prerequisite** — shared state or ordering dependencies break under parallelism.
+- Cache dependencies and browser binaries; reuse a warm app/DB via compose instead of rebuilding per test.
+
+## Test selection / impact analysis
+
+Running *every* test on every change is wasteful as suites grow. Smarter selection:
+
+- **Test impact analysis (TIA)** — run only the tests affected by the changed code (map tests to the code they exercise). Tools/build systems (e.g. Bazel, Azure DevOps TIA, Playwright's `--only-changed`) can do this. Big speedups on large monorepos.
+- **Tag/grep-based selection** — run `@smoke` on PRs, `@regression` nightly, `@critical` before deploy. Simple and very common.
+- **Changed-path filters** — only run the mobile suite when mobile code changed (`paths:` filters in CI).
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Test selection trades safety for speed — if the impact map is wrong, you skip a test that would have caught the bug. Keep a full run on a schedule (nightly/pre-release) as a safety net so nothing is permanently skipped.
+</div>
+
+## Quality gates & deployment gating
+
+A **quality gate** is a pass/fail bar the pipeline enforces before code advances:
+
+- Required CI status check on PRs (branch protection) — can't merge while red.
+- Coverage threshold not regressing; no new critical SAST/dependency vulnerabilities; performance/bundle-size budget.
+- Deploy jobs depend on test jobs (`needs:`/`dependsOn`) — staging deploy gated on integration tests, prod deploy gated on E2E against staging.
+- **Post-deploy smoke** gates "keep it live" — a failing prod smoke test triggers automatic **rollback**.
+
+Gates turn quality from a hope into a rule. The art is setting them strict enough to catch real problems but not so brittle that flakiness blocks everyone.
+
+## Managing flaky tests
+
+Flakiness is the silent killer of test strategy: once people see random reds, they stop trusting *all* reds and start merging over failures. A disciplined approach:
+
+1. **Detect** — re-run on failure and compare; a test that passes on retry without code change is flaky. Track flaky rate per test over time on a dashboard.
+2. **Quarantine** — move known-flaky tests to a non-blocking lane (tagged `@quarantine`) so they stop gating merges, but keep running so they're not forgotten. Don't delete — that loses coverage silently.
+3. **Retry as a stopgap** — bounded auto-retries in CI only (e.g. 2), with retries *logged*, to keep the pipeline moving. Never retry locally — it hides bugs.
+4. **Fix the root cause** — usually hard waits instead of explicit/auto waits, unstable locators, shared/leaky test data, environment timing, or a genuine intermittent product bug. Assign owners; treat chronic flakes as P2 bugs.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  A flaky test is worse than no test — it costs CI time and erodes trust without giving reliable signal. The goal is a suite where <strong>red always means broken</strong>. Protect that signal ruthlessly.
+</div>
+
+## Test environments & ephemeral environments
+
+Tests are only as reliable as the environment they run against:
+
+- **Shared static staging** — cheap but contended: parallel runs and other teams cause interference and data collisions. Flakiness often traces back to a polluted shared env.
+- **Ephemeral environments** — spin up a fresh, isolated environment **per PR** (containers/compose or a Kubernetes namespace, often via the IaC), run tests against it, then tear it down. Eliminates cross-test interference, lets reviewers preview the change, and makes runs reproducible. The modern best practice for E2E.
+- **Test data strategy** — seed known data per run, use unique identifiers per test, and clean up after; avoid relying on pre-existing shared records. Data isolation is what makes parallelism safe.
+
+## Observability of test results
+
+You can't manage what you can't see. Beyond pass/fail:
+
+- **Trends & dashboards** — pass rate, duration, and flaky rate over time (Allure history, ReportPortal, or a custom dashboard). Spot slow creep and chronic flakes.
+- **Rich failure artifacts** — traces, videos, screenshots, and network logs attached to every failure (Playwright trace viewer is excellent) so triage is fast.
+- **Surface results where people are** — PR status checks and Slack/Teams summaries, not buried in CI logs.
+- **Test analytics** — flag the slowest tests (optimize them), the most-failing tests (fix or quarantine), and coverage gaps.
+
+## Shift-left & shift-right
+
+- **Shift-left** — move testing *earlier*: developers write/run unit and integration tests, static analysis and security scanning run in the IDE and on PRs, QA is involved at design time. Catches defects when they're cheapest. CI is the enforcement mechanism for shift-left.
+- **Shift-right** — testing *in production*, safely: **canary/blue-green deploys** expose a new version to a small slice of traffic first; **feature flags** decouple deploy from release; **synthetic monitoring** runs smoke-style probes against prod continuously; observability/alerting and chaos testing catch what pre-prod can't. Real users and real scale surface issues no staging environment reproduces.
+
+Together they cover the whole lifecycle: shift-left prevents defects before merge; shift-right catches what slips through, in the only environment that's fully real.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Decouple deploy from release with feature flags. Deploying code and exposing it to users become separate decisions — you can ship dark, test in prod with a canary, and roll back a flag instantly without a redeploy. This is what makes shift-right safe.
+</div>
+
+## Interview questions & model answers
+
+**Q1. Which tests run on a PR vs merge vs nightly vs release?**
+On a PR: lint, unit, key API/integration tests, and a few critical smoke E2E — fast, to gate the merge in under ~10 minutes. On merge to main: broader E2E for deploy confidence. Nightly (cron): full regression across all browsers and the slow/long-running suites, off the critical path. Pre-release: full regression plus performance, security, and accessibility. Post-deploy: prod smoke/synthetic monitors that can trigger rollback. The principle is fast-and-frequent early, slow-and-broad later.
+
+**Q2. Your pipeline takes 45 minutes — how do you speed it up?**
+First, make it faster without cutting coverage: shard E2E across runners and parallelize within them, cache deps/browsers, and reuse a warm app/DB. Then right-size the pyramid — demote flaky/duplicative UI tests to API/unit. Then schedule smartly: keep only fast, critical tests on the PR and push full regression to nightly. Finally, test impact analysis to run only affected tests, with a full nightly run as the safety net.
+
+**Q3. How do you keep flaky tests from blocking the team?**
+Detect via retry-comparison and a per-test flaky-rate dashboard. Quarantine known flakes into a non-blocking lane (still running, not deleted) so they stop gating merges. Use bounded, logged auto-retries in CI as a stopgap. Then fix root causes — usually hard waits, unstable locators, or leaky test data — with assigned owners. The goal is to protect the signal that red always means broken.
+
+**Q4. What's the testing pyramid and how does it map to the pipeline?**
+Many fast unit tests at the base, fewer integration in the middle, fewest E2E at the top. In the pipeline, units and lint run first on every push (seconds), integration on PRs (minutes), and a small curated E2E set on merge with the full set nightly. The anti-pattern is the ice-cream cone — too many slow UI tests — which makes feedback slow and flaky. Push coverage down the pyramid.
+
+**Q5. What are quality gates and how do you gate a deploy?**
+Pass/fail conditions that block progression: a required CI check on PRs, coverage not regressing, no new critical vulnerabilities, performance budgets. Deploy jobs depend on test jobs — staging gated on integration, prod gated on E2E against staging — and a post-deploy prod smoke test gates staying live, triggering rollback on failure. Strict enough to catch real issues, not so brittle that flakiness blocks everyone.
+
+**Q6. Why use ephemeral environments for testing?**
+A fresh isolated environment per PR eliminates the interference and data collisions of shared staging — the source of much flakiness — gives reviewers a live preview, and makes runs reproducible. You spin it up (compose / a K8s namespace via IaC), run tests, tear it down. Combined with per-test data isolation, it's what makes parallel E2E reliable.
+
+**Q7. Explain shift-left and shift-right.**
+Shift-left moves testing earlier — devs writing unit/integration tests, static and security analysis on PRs, QA in design — catching defects when they're cheapest, with CI enforcing it. Shift-right tests in production safely — canary/blue-green deploys, feature flags decoupling deploy from release, synthetic monitoring, and observability — catching what only real users and scale reveal. Left prevents, right catches the rest; together they cover the whole lifecycle.
+
+## Common mistakes
+
+- **Running full regression on every commit** — slow PRs that developers bypass. Smoke on PRs, regression nightly.
+- **Ice-cream-cone suite** — too many slow UI tests, too few unit/API. Invert it toward the pyramid base.
+- **Tolerating flaky tests** — destroys trust until red is ignored. Quarantine, track, and fix root causes.
+- **Testing only against shared staging** — interference and data collisions cause "flakiness" that's really environment pollution. Use ephemeral, isolated envs and per-test data.
+- **Speeding up by deleting tests instead of parallelizing** — silently loses coverage. Shard/parallelize and right-size first.
+- **No deployment gates** — broken code ships. Gate merges and deploys on tests, with prod smoke + rollback.
+- **No observability** — failures buried in logs, no trends, slow triage. Dashboards, trace artifacts, and PR/Slack summaries.
+- **Deploy == release** — shipping code instantly exposes it to all users. Decouple with feature flags so you can canary and roll back instantly.

@@ -1,0 +1,335 @@
+---
+title: "Selenium WebDriver core"
+track: qa-web
+summary: "The W3C WebDriver architecture, Selenium Manager, full element interactions, Select dropdowns, nested iframes, alerts, windows/tabs, the Actions API, JavascriptExecutor, file upload/download, tables, headless options, Grid, and the exceptions you'll actually hit."
+order: 2
+est: 30
+difficulty: medium
+priority: must
+tags: [selenium, webdriver, actions, grid]
+whyAsked: "Selenium still appears in the majority of automation job listings and most legacy suites. Deep Selenium knowledge — architecture, frames, Actions, exceptions — is expected even where teams are adopting Playwright."
+followUps:
+  - "How does WebDriver communicate with the browser?"
+  - "How do you handle a dropdown / an iframe / a new tab?"
+  - "When would you use the JavascriptExecutor?"
+  - "What is StaleElementReferenceException and how do you fix it?"
+resources:
+  - { label: "Selenium docs", url: "https://www.selenium.dev/documentation/" }
+  - { label: "W3C WebDriver spec", url: "https://www.w3.org/TR/webdriver2/" }
+  - { label: "Practice: SauceDemo", url: "https://www.saucedemo.com/" }
+  - { label: "Practice: the-internet", url: "https://the-internet.herokuapp.com/" }
+---
+
+Selenium drives **real browsers** via the W3C WebDriver protocol. It's the long-standing industry standard and still the most-requested skill in automation listings.
+
+## W3C WebDriver architecture — how it talks to the browser
+
+```
+Your test code (Java/Python/…)
+      │  Selenium client library
+      ▼
+WebDriver client  ──HTTP (JSON over W3C protocol)──▶  Browser driver
+                                                       (chromedriver,
+                                                        geckodriver…)
+                                                            │ native automation
+                                                            ▼
+                                                         Browser
+```
+
+1. Your code calls e.g. `driver.findElement(...)`.
+2. The client library serialises that into an **HTTP request** with a JSON body (the W3C WebDriver wire protocol — REST-like endpoints such as `POST /session/{id}/element`).
+3. The **browser driver** (a separate executable, e.g. chromedriver) receives it, translates it into the browser's native automation commands, and executes.
+4. The result travels back as a JSON HTTP response.
+
+Key point for interviews: Selenium is **out-of-process** — it talks to the browser over HTTP through a driver. That extra hop is why it's generally slower and more timing-sensitive than Playwright/Cypress, which sit closer to the browser. Selenium 4 standardised fully on **W3C** (dropping the old JSON Wire Protocol), improving cross-browser consistency.
+
+## Selenium Manager — no more driver juggling
+
+Since Selenium 4.6, **Selenium Manager** auto-detects your browser version and downloads the matching driver. You no longer ship chromedriver or use WebDriverManager for the common case:
+
+```java
+WebDriver driver = new ChromeDriver();   // Selenium Manager fetches the driver
+```
+
+## Setup & first script
+
+```java
+WebDriver driver = new ChromeDriver();
+driver.manage().window().maximize();
+driver.get("https://www.saucedemo.com/");
+
+driver.findElement(By.id("user-name")).sendKeys("standard_user");
+driver.findElement(By.id("password")).sendKeys("secret_sauce");
+driver.findElement(By.id("login-button")).click();
+
+String title = driver.findElement(By.className("title")).getText();
+Assert.assertEquals(title, "Products");
+driver.quit();   // closes ALL windows + ends the session
+```
+
+`driver.close()` shuts the **current** window; `driver.quit()` ends the whole session — always `quit()` in teardown to avoid orphaned driver processes.
+
+## Locator strategies
+
+`By.id`, `By.name`, `By.className`, `By.cssSelector`, `By.xpath`, `By.linkText`, `By.partialLinkText`, `By.tagName`. Plus Selenium 4 **relative locators**:
+
+```java
+import static org.openqa.selenium.support.locators.RelativeLocator.with;
+driver.findElement(with(By.tagName("input")).above(passwordField));
+```
+
+## Element interactions
+
+```java
+WebElement el = driver.findElement(By.id("q"));
+el.click();
+el.sendKeys("hello");
+el.clear();                       // empty an input
+el.submit();                      // submit the owning form
+el.getText();                     // visible text
+el.getAttribute("value");         // attribute / DOM property
+el.getCssValue("color");
+el.isDisplayed(); el.isEnabled(); el.isSelected();   // checkboxes/radios
+```
+
+## Select dropdowns (native `<select>`)
+
+```java
+Select country = new Select(driver.findElement(By.id("country")));
+country.selectByVisibleText("India");
+country.selectByValue("IN");
+country.selectByIndex(2);
+
+// Multi-select
+Select toppings = new Select(driver.findElement(By.id("toppings")));
+if (toppings.isMultiple()) {
+    toppings.selectByVisibleText("Cheese");
+    toppings.selectByVisibleText("Olives");
+    toppings.deselectByVisibleText("Olives");
+    toppings.deselectAll();
+}
+List<WebElement> chosen = toppings.getAllSelectedOptions();
+```
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  The <code>Select</code> class only works on real <code>&lt;select&gt;</code> elements. Custom dropdowns built from <code>&lt;div&gt;</code>/<code>&lt;ul&gt;</code> are not selectable this way — click to open, then click the option like any other element.
+</div>
+
+## Iframes (including nested)
+
+You must switch context into a frame before its elements are reachable.
+
+```java
+driver.switchTo().frame("payment-frame");        // by name/id
+driver.switchTo().frame(0);                        // by index
+driver.switchTo().frame(driver.findElement(By.css("iframe.pay")));  // by element
+
+// Nested: switch one level at a time
+driver.switchTo().frame("outer");
+driver.switchTo().frame("inner");
+driver.switchTo().parentFrame();   // up one level
+driver.switchTo().defaultContent(); // back to the top-level document
+```
+
+Always `switchTo().defaultContent()` when done, or later lookups fail.
+
+## Alerts & prompts (JS dialogs)
+
+```java
+Alert alert = driver.switchTo().alert();
+alert.accept();                 // OK
+alert.dismiss();                // Cancel
+String msg = alert.getText();
+alert.sendKeys("input text");   // for prompt() dialogs
+```
+
+These are native browser dialogs, not DOM elements — you can only handle them through `switchTo().alert()`.
+
+## Windows & tabs
+
+```java
+String original = driver.getWindowHandle();      // current
+driver.findElement(By.id("open-tab")).click();   // opens a new tab
+
+for (String h : driver.getWindowHandles()) {
+    if (!h.equals(original)) { driver.switchTo().window(h); break; }
+}
+// ... work in new tab ...
+driver.close();
+driver.switchTo().window(original);
+
+// Selenium 4 explicit new window/tab:
+driver.switchTo().newWindow(WindowType.TAB);
+```
+
+## Actions API — advanced input
+
+For hover, drag-and-drop, right/double-click, key combos:
+
+```java
+Actions actions = new Actions(driver);
+
+actions.moveToElement(menu).perform();                     // hover
+actions.moveToElement(menu).click(submenu).perform();      // hover then click submenu
+actions.contextClick(el).perform();                        // right-click
+actions.doubleClick(el).perform();
+actions.dragAndDrop(source, target).perform();
+actions.clickAndHold(source).moveToElement(target).release().perform(); // manual DnD
+actions.keyDown(Keys.CONTROL).sendKeys("a").keyUp(Keys.CONTROL).perform(); // Ctrl+A
+actions.sendKeys(Keys.ENTER).perform();
+```
+
+`clickAndHold(...).moveByOffset(...).release()` is the fallback when HTML5 native drag-and-drop ignores `dragAndDrop`.
+
+## JavascriptExecutor — when and why
+
+Use it for things the WebDriver API can't do cleanly, sparingly:
+
+```java
+JavascriptExecutor js = (JavascriptExecutor) driver;
+js.executeScript("arguments[0].scrollIntoView({block:'center'});", el);  // scroll into view
+js.executeScript("window.scrollBy(0, 500);");
+js.executeScript("arguments[0].click();", el);    // click an overlay-blocked element
+js.executeScript("arguments[0].value='123';", input);
+String state = (String) js.executeScript("return document.readyState;");
+```
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  A JS click bypasses real-user checks (visibility, overlays). It can make a test "pass" while a human couldn't actually click — masking a real bug. Prefer real interactions; use JS click only when an element is genuinely unreachable (e.g. fixed headers covering it) and you've documented why.
+</div>
+
+## Screenshots
+
+```java
+File src = ((TakesScreenshot) driver).getScreenshotAs(OutputType.FILE);
+FileUtils.copyFile(src, new File("target/failure.png"));
+
+// Selenium 4: screenshot a single element
+File el = loginButton.getScreenshotAs(OutputType.FILE);
+```
+
+Capture automatically on failure (a TestNG/JUnit listener) — your future self debugging CI will thank you.
+
+## File upload & download
+
+Upload to a real `<input type="file">` by sending the absolute path — no OS dialog needed:
+
+```java
+driver.findElement(By.id("upload")).sendKeys("/abs/path/to/file.pdf");
+```
+
+Downloads: configure the browser to save to a known folder, then assert the file exists.
+
+```java
+ChromeOptions options = new ChromeOptions();
+Map<String,Object> prefs = new HashMap<>();
+prefs.put("download.default_directory", "/abs/downloads");
+prefs.put("download.prompt_for_download", false);
+options.setExperimentalOption("prefs", prefs);
+WebDriver driver = new ChromeDriver(options);
+// after clicking download, poll the folder until the file appears and is non-zero
+```
+
+## Handling tables
+
+Read rows/cells with nested locators, or scope by header text:
+
+```java
+List<WebElement> rows = driver.findElements(By.cssSelector("table#data tbody tr"));
+for (WebElement row : rows) {
+    List<WebElement> cells = row.findElements(By.tagName("td"));
+    System.out.println(cells.get(0).getText() + " | " + cells.get(1).getText());
+}
+// Action in a specific row:
+driver.findElement(By.xpath(
+  "//tr[td[normalize-space()='Widget']]//button[normalize-space()='Edit']")).click();
+```
+
+## Browser options & headless
+
+```java
+ChromeOptions options = new ChromeOptions();
+options.addArguments("--headless=new");        // modern headless
+options.addArguments("--window-size=1920,1080");
+options.addArguments("--incognito");
+options.addArguments("--disable-gpu");
+options.setAcceptInsecureCerts(true);
+WebDriver driver = new ChromeDriver(options);
+```
+
+**Desired Capabilities vs Options:** the old `DesiredCapabilities` map is deprecated. Selenium 4 uses browser-specific **Options** classes (`ChromeOptions`, `FirefoxOptions`) which both configure the browser and carry capabilities. Pass Options to the driver constructor or to a `RemoteWebDriver` for Grid.
+
+## Selenium Grid (intro)
+
+Grid lets you run tests on remote machines / many browsers in parallel. A **Hub** (router/distributor) receives requests and routes them to **Nodes** that host the browsers.
+
+```java
+WebDriver driver = new RemoteWebDriver(
+    new URL("http://grid-host:4444/wd/hub"), new ChromeOptions());
+```
+
+Selenium 4 Grid can run standalone, hub-and-node, or fully distributed, and supports Docker/Kubernetes for scale. In CI you point the same tests at the Grid URL instead of a local driver.
+
+## Exceptions you'll actually hit (and fixes)
+
+| Exception | Cause | Fix |
+|---|---|---|
+| `NoSuchElementException` | Locator wrong, or element not yet in DOM | Fix locator; add an explicit wait for presence |
+| `StaleElementReferenceException` | Cached `WebElement` reference after the DOM re-rendered | Re-find the element right before use; don't store it across actions |
+| `ElementClickInterceptedException` | Another element (overlay, sticky header, cookie banner) covers the target | Scroll into view, dismiss the overlay, wait for it to disappear, or JS-click as last resort |
+| `ElementNotInteractableException` | Element present but hidden/disabled/zero-size | Wait for `elementToBeClickable`; ensure it's visible |
+| `TimeoutException` | Explicit wait condition never became true | Verify condition/locator; increase timeout if genuinely slow |
+| `NoSuchFrameException` / `NoAlertPresentException` | Switched to a frame/alert that isn't there | Wait for frame/alert; check you switched back to default content |
+| `InvalidSelectorException` | Malformed CSS/XPath | Validate the selector in DevTools |
+
+```java
+// Fix for stale element: re-find, optionally retry
+WebElement btn = driver.findElement(By.id("save"));
+try { btn.click(); }
+catch (StaleElementReferenceException e) {
+    driver.findElement(By.id("save")).click();   // re-locate
+}
+```
+
+## Interview questions & model answers
+
+**Q: How does Selenium WebDriver communicate with the browser?**
+Through the W3C WebDriver protocol over HTTP. The client library serialises commands into JSON HTTP requests sent to a browser-specific driver (chromedriver, geckodriver); the driver translates them into the browser's native automation API and returns JSON responses. It's out-of-process, which is why it's slower and more timing-sensitive than in-browser tools.
+
+**Q: close() vs quit()?**
+`close()` closes the current window/tab; `quit()` ends the entire WebDriver session and closes all windows plus the driver process. Use `quit()` in teardown to avoid leaked processes.
+
+**Q: How do you handle a dropdown that isn't a native select?**
+The `Select` class only works on `<select>`. For a custom widget I click to open it and then click the option element directly, waiting for the options list to be visible first.
+
+**Q: How do you switch into a nested iframe and back?**
+Switch into each frame in order with `switchTo().frame(...)`, do the work, then use `parentFrame()` to go up one level or `defaultContent()` to return to the top document. Forgetting to switch back is a common cause of NoSuchElement.
+
+**Q: When is JavascriptExecutor appropriate?**
+For scrolling, reading `document.readyState`, or interacting with an element a real user genuinely can't reach. I avoid JS clicks for normal flows because they bypass visibility/overlay checks and can hide real bugs.
+
+**Q: What causes StaleElementReferenceException?**
+I held a `WebElement` reference but the DOM re-rendered (AJAX update, navigation), so the reference points to a detached node. Fix: re-find the element immediately before interacting, and never cache elements across actions that mutate the page.
+
+**Q: ElementClickInterceptedException — what do you do?**
+Something is on top of the target — a cookie banner, modal, or sticky header. I wait for/ dismiss the overlay, scroll the element to centre, and only JS-click as a documented last resort.
+
+**Q: Desired Capabilities vs Options in Selenium 4?**
+`DesiredCapabilities` is deprecated. Selenium 4 uses typed Options classes (ChromeOptions, etc.) that both set browser flags and carry W3C capabilities, passed to the driver or RemoteWebDriver.
+
+## Common mistakes
+
+- Forgetting `driver.quit()` → leaked driver processes pile up in CI.
+- Mixing implicit and explicit waits (covered in the Waits lesson) → unpredictable timeouts.
+- Caching `WebElement`s and reusing them after re-render → stale element errors.
+- Using `Select` on a non-native dropdown.
+- Not switching back out of an iframe before looking for a top-level element.
+- Defaulting to JS clicks to "fix" flakiness instead of finding the real cause.
+- Hard-coding driver paths instead of letting Selenium Manager resolve them.
+
+<div class="callout key">
+  <div class="ct">Project</div>
+  Automate the full SauceDemo flow: login → add 2 items to cart → checkout → assert the confirmation. Add an Actions hover, an iframe (the-internet), a table read, and a screenshot-on-failure listener. Then move it behind Page Objects (see the Framework track).
+</div>

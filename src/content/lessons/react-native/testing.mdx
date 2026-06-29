@@ -1,0 +1,263 @@
+---
+title: "Testing React Native: RNTL, Jest & Detox"
+track: react-native
+summary: "The testing pyramid for RN apps — unit tests with Jest, component tests with React Native Testing Library, and E2E with Detox."
+order: 14
+est: 22
+difficulty: medium
+priority: deep
+tags: [testing, jest, rntl, react-native-testing-library, detox, mocking, snapshot-tests]
+whyAsked: "SDE-2 roles increasingly require test fluency. Interviewers test whether you know what to test, not just how to use the testing library syntax."
+followUps:
+  - "What does React Native Testing Library encourage you to test?"
+  - "What is the difference between getBy and queryBy in RNTL?"
+  - "How do you mock navigation in tests?"
+  - "When would you write an E2E test vs a component test?"
+  - "What is act() and why do you need it?"
+resources:
+  - { label: "React Native Testing Library", url: "https://callstack.github.io/react-native-testing-library/" }
+  - { label: "Detox docs", url: "https://wix.github.io/Detox/" }
+---
+
+## The testing pyramid for RN
+
+```
+          /----------\
+         /  E2E (Detox)\     ← slow, expensive, tests real device
+        /----------------\
+       / Integration (RNTL)\  ← component + real hooks, mocked network
+      /--------------------\
+     /   Unit (Jest)        \  ← fast, isolated, pure logic
+    /------------------------\
+```
+
+**Unit tests**: pure logic — reducers, selectors, utility functions, custom hooks in isolation.  
+**Component tests (RNTL)**: render a component with its real hooks, fire events, assert on output.  
+**E2E tests (Detox)**: run on a real device/emulator, test complete user flows.
+
+## Jest — unit testing
+
+```bash
+npx jest                    # run all tests
+npx jest --watch            # watch mode
+npx jest --coverage         # with coverage report
+npx jest src/utils/          # run a specific folder
+```
+
+### Testing pure functions
+
+```ts
+// utils/format.ts
+export function formatCurrency(amount: number, currency = 'USD'): string {
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
+}
+
+// utils/format.test.ts
+describe('formatCurrency', () => {
+  it('formats USD by default', () => {
+    expect(formatCurrency(1234.5)).toBe('$1,234.50');
+  });
+  it('formats EUR when specified', () => {
+    expect(formatCurrency(1000, 'EUR')).toBe('€1,000.00');
+  });
+  it('handles zero', () => {
+    expect(formatCurrency(0)).toBe('$0.00');
+  });
+});
+```
+
+### Testing Redux reducers
+
+```ts
+// store/postsSlice.test.ts
+import postsReducer, { addPost, removePost } from './postsSlice';
+
+describe('postsSlice', () => {
+  const initialState = { items: [], status: 'idle' };
+
+  it('adds a post', () => {
+    const post = { id: '1', title: 'Hello' };
+    const state = postsReducer(initialState, addPost(post));
+    expect(state.items).toHaveLength(1);
+    expect(state.items[0]).toEqual(post);
+  });
+
+  it('removes a post by id', () => {
+    const state = { items: [{ id: '1' }, { id: '2' }], status: 'idle' };
+    const next = postsReducer(state, removePost('1'));
+    expect(next.items).toEqual([{ id: '2' }]);
+  });
+});
+```
+
+### Mocking modules
+
+```ts
+// Mock an entire module
+jest.mock('react-native-mmkv', () => ({
+  MMKV: jest.fn(() => ({
+    getString: jest.fn(),
+    set: jest.fn(),
+    getBoolean: jest.fn(),
+  })),
+}));
+
+// Mock a specific function
+jest.mock('../api', () => ({
+  getPosts: jest.fn(),
+}));
+
+// In test
+import { getPosts } from '../api';
+(getPosts as jest.Mock).mockResolvedValue([{ id: '1', title: 'Test' }]);
+```
+
+## React Native Testing Library (RNTL)
+
+RNTL wraps `@testing-library/react-native` and encourages testing **what the user sees and does**, not implementation details.
+
+### Core queries
+
+| Query | Use when | Throws if missing? |
+|---|---|---|
+| `getByText` | Visible text | Yes |
+| `queryByText` | Might not exist | No (returns null) |
+| `findByText` | Async — waits | Yes (after timeout) |
+| `getByRole` | Accessible role | Yes |
+| `getByTestId` | Last resort (implementation detail) | Yes |
+
+**Prefer** `getByText`, `getByRole`, `getByLabelText` — these match what users see. Use `getByTestId` only when semantics aren't available.
+
+### Basic component test
+
+```tsx
+// PostItem.tsx
+function PostItem({ post, onPress }) {
+  return (
+    <Pressable onPress={() => onPress(post.id)} accessibilityRole="button">
+      <Text>{post.title}</Text>
+      <Text>{post.author}</Text>
+    </Pressable>
+  );
+}
+
+// PostItem.test.tsx
+import { render, fireEvent } from '@testing-library/react-native';
+
+describe('PostItem', () => {
+  const post = { id: '1', title: 'Hello World', author: 'Alex' };
+
+  it('renders the title and author', () => {
+    const { getByText } = render(<PostItem post={post} onPress={jest.fn()} />);
+    expect(getByText('Hello World')).toBeTruthy();
+    expect(getByText('Alex')).toBeTruthy();
+  });
+
+  it('calls onPress with the post id when tapped', () => {
+    const onPress = jest.fn();
+    const { getByRole } = render(<PostItem post={post} onPress={onPress} />);
+    fireEvent.press(getByRole('button'));
+    expect(onPress).toHaveBeenCalledWith('1');
+  });
+});
+```
+
+### Testing async behavior with act and waitFor
+
+```tsx
+// AsyncComponent that fetches data
+function UserProfile({ userId }) {
+  const { data, isPending } = useQuery(['user', userId], () => api.getUser(userId));
+  if (isPending) return <ActivityIndicator testID="spinner" />;
+  return <Text>{data.name}</Text>;
+}
+
+// Test
+import { render, waitFor } from '@testing-library/react-native';
+import { QueryClientProvider, QueryClient } from '@tanstack/react-query';
+
+jest.mock('../api', () => ({ getUser: jest.fn() }));
+import { getUser } from '../api';
+
+function renderWithQueryClient(ui) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+}
+
+it('shows user name after loading', async () => {
+  (getUser as jest.Mock).mockResolvedValue({ name: 'Alex Chen' });
+  const { getByTestId, findByText } = renderWithQueryClient(
+    <UserProfile userId="1" />
+  );
+
+  // Initially shows spinner
+  expect(getByTestId('spinner')).toBeTruthy();
+
+  // Wait for name to appear
+  expect(await findByText('Alex Chen')).toBeTruthy();
+});
+
+it('handles error state', async () => {
+  (getUser as jest.Mock).mockRejectedValue(new Error('Network error'));
+  const { findByText } = renderWithQueryClient(<UserProfile userId="1" />);
+  expect(await findByText(/failed/i)).toBeTruthy(); // case-insensitive match
+});
+```
+
+### Mocking React Navigation in component tests
+
+```tsx
+const mockNavigate = jest.fn();
+jest.mock('@react-navigation/native', () => ({
+  useNavigation: () => ({ navigate: mockNavigate, goBack: jest.fn() }),
+  useRoute: () => ({ params: { postId: '1' } }),
+}));
+
+it('navigates to detail on press', () => {
+  const { getByText } = render(<PostRow post={post} />);
+  fireEvent.press(getByText('View Post'));
+  expect(mockNavigate).toHaveBeenCalledWith('PostDetail', { postId: '1' });
+});
+```
+
+## Detox — E2E testing
+
+Detox runs your app on a real device/simulator and drives it with a JS test:
+
+```ts
+// e2e/login.test.ts
+describe('Login flow', () => {
+  beforeAll(async () => {
+    await device.launchApp({ newInstance: true });
+  });
+
+  it('should log in successfully', async () => {
+    await expect(element(by.id('email-input'))).toBeVisible();
+    await element(by.id('email-input')).typeText('test@example.com');
+    await element(by.id('password-input')).typeText('password123');
+    await element(by.id('login-button')).tap();
+    await expect(element(by.text('Welcome, Alex'))).toBeVisible();
+  });
+
+  it('should show error on wrong credentials', async () => {
+    await element(by.id('email-input')).clearText();
+    await element(by.id('email-input')).typeText('wrong@example.com');
+    await element(by.id('login-button')).tap();
+    await expect(element(by.text('Invalid credentials'))).toBeVisible();
+  });
+});
+```
+
+**Use Detox for**: critical user journeys (login, checkout, onboarding), flows that span multiple screens, interactions that depend on native behavior (keyboard, gestures, push notifications).
+
+## What NOT to test
+
+- Implementation details (internal state, private methods)
+- Third-party library internals
+- Simple static markup with no logic
+- Things that are better covered by TypeScript (type correctness)
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "The RN testing pyramid: Jest for pure logic (reducers, utils, custom hooks), RNTL for component behavior (render, fire events, assert on visible output), Detox for critical user flows on real devices. RNTL encourages querying by text and role — not test IDs — because that tests what users actually interact with. `findBy*` queries are async and wait for elements to appear, unlike `getBy*` which is synchronous. For async component tests, I mock network calls, wrap with React Query's provider, and use `findByText` to wait for the result."
+</div>

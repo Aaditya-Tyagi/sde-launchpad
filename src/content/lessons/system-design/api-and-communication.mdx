@@ -1,0 +1,156 @@
+---
+title: "APIs & communication: REST, gRPC, GraphQL, WebSockets"
+track: system-design
+summary: "API styles and when to choose each, REST done right (status codes, idempotency, pagination, versioning), real-time options, sync vs async, and resilience: retries, timeouts, circuit breakers, rate limiting."
+order: 9
+est: 30
+difficulty: medium
+priority: must
+tags: [api, rest, grpc, graphql, websockets, idempotency, resilience]
+whyAsked: "Every backend design includes choosing how services and clients talk. Knowing the styles, their tradeoffs, and resilience patterns (retries, timeouts, circuit breakers) signals real engineering judgment."
+followUps:
+  - "REST vs gRPC vs GraphQL — when each?"
+  - "WebSockets vs SSE vs long-polling for real-time?"
+  - "How do you make a POST safe to retry?"
+  - "What does an API gateway do?"
+  - "Retries, timeouts, circuit breakers — how do they fit together?"
+resources:
+  - { label: "gRPC docs", url: "https://grpc.io/docs/" }
+  - { label: "GraphQL", url: "https://graphql.org/learn/" }
+  - { label: "REST API design (Microsoft)", url: "https://learn.microsoft.com/en-us/azure/architecture/best-practices/api-design" }
+---
+
+How clients and services talk is a design decision with real tradeoffs. Pick the **style** by the communication pattern, design the API well, and make the calls **resilient** — those are the three things interviewers probe.
+
+## API styles — and when to choose each
+
+| Style | Transport / format | Strengths | Weaknesses | Reach for it when |
+|---|---|---|---|---|
+| **REST** | HTTP + JSON | Ubiquitous, cacheable, simple, tooling everywhere | Over/under-fetching; many round trips for nested data | Public APIs, CRUD, broad client compatibility |
+| **gRPC** | HTTP/2 + Protobuf (binary) | Fast, compact, strong typing/codegen, streaming, bidirectional | Not browser-native (needs proxy), binary = harder to debug | Internal service-to-service, low-latency, polyglot microservices |
+| **GraphQL** | HTTP + query language | Client picks exactly the fields → no over/under-fetch; one round trip for nested data; strong schema | Caching is harder (POST queries); server complexity; risk of expensive queries | Many varied clients, deeply nested data, mobile (bandwidth) |
+
+**Over-fetching** = the endpoint returns more than the view needs (wasted bytes). **Under-fetching** = the view needs several endpoints / nested calls (waterfall round trips). REST is prone to both; GraphQL solves them by letting the client specify the shape — at the cost of caching and query-cost control (mitigated with persisted queries, depth/complexity limits, and DataLoader to batch and avoid N+1).
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  <b>REST</b> for public/CRUD APIs, <b>gRPC</b> for internal high-throughput service-to-service, <b>GraphQL</b> when diverse clients need flexible, nested data and you'd otherwise build a dozen bespoke endpoints. They're not mutually exclusive — gRPC internally, REST/GraphQL at the edge is common.
+</div>
+
+## REST done right
+
+REST is "use HTTP as intended." Senior signals:
+
+**Resource design.** Nouns, not verbs: `GET /users/123/orders`, not `/getUserOrders`. Use HTTP methods for semantics: `GET` (read, safe), `POST` (create), `PUT` (replace, idempotent), `PATCH` (partial update), `DELETE` (idempotent).
+
+**Status codes** (use the real ones, not `200` for everything):
+- `2xx` — `200 OK`, `201 Created` (+ `Location`), `202 Accepted` (async), `204 No Content`.
+- `4xx` — `400` bad request, `401` unauthenticated, `403` forbidden, `404` not found, `409` conflict, `422` validation, `429` rate-limited.
+- `5xx` — `500` server error, `503` unavailable (with `Retry-After`).
+
+**Idempotency.** `GET`/`PUT`/`DELETE` are idempotent by definition; `POST` is not. For unsafe-to-retry operations (payments, orders) accept an **`Idempotency-Key`** header: the server records the key + result, so a retried request returns the original outcome instead of acting twice. (See [classics](/lessons/system-design/classics).)
+
+**Pagination.** **Cursor-based** for large/changing lists (`?cursor=&limit=`) — stable as the head changes, O(1) resume. Offset/page only for small, stable datasets.
+
+**Versioning.** URL (`/v1/`), header (`Accept: application/vnd.api+json;version=1`), or query param. URL versioning is the most visible/cacheable. Version when you make breaking changes; prefer additive, backward-compatible changes to avoid versioning at all.
+
+**Other niceties:** `ETag`/`If-None-Match` for caching/conditional requests, consistent error envelopes, filtering/sorting via query params, `HATEOAS` (rarely required but worth naming).
+
+## Real-time: WebSockets vs SSE vs long-polling
+
+When the server must push to the client (chat, live scores, notifications):
+
+| Technique | Direction | How | Best for | Cost |
+|---|---|---|---|---|
+| **Short polling** | client→server | Client requests on a timer | Simple, infrequent updates | Wasteful, laggy |
+| **Long polling** | client→server | Request held open until data or timeout, then re-issued | Fallback when WS unavailable | Many held connections, hacky |
+| **SSE** (Server-Sent Events) | **server→client only** | One long-lived HTTP stream, auto-reconnect | Server push: feeds, notifications, dashboards | Unidirectional; HTTP/1.1 connection limits |
+| **WebSocket** | **bidirectional** | Persistent full-duplex TCP after HTTP upgrade | Chat, collaboration, games, anything two-way | Stateful connections complicate scaling/LB |
+
+**Choose by direction + frequency.** Server-only push at moderate rate → **SSE** (simpler, plain HTTP, auto-reconnect). Two-way / high-frequency → **WebSocket**. No real-time need → don't; just poll or refetch. Scaling WebSockets means handling sticky/stateful connections, a pub/sub backplane (Redis) to broadcast across server instances, and connection limits — call that out.
+
+## Synchronous vs asynchronous (request/response vs event-driven)
+
+- **Synchronous (request/response):** caller waits for the result. Simple, immediate, but **couples** caller to callee's availability and latency, and chains of sync calls compound latency and failure (one slow service stalls the whole request).
+- **Asynchronous (event-driven):** caller emits an event / enqueues a job and moves on; the work happens later. **Decouples** services, smooths spikes, and improves resilience — at the cost of eventual consistency and harder debugging/tracing.
+
+```
+SYNC:   client → A → B → C   (waits; A's latency = A+B+C; C down → whole call fails)
+ASYNC:  client → A → [queue] → workers → B, C   (A returns now; B/C catch up; retries safe)
+```
+
+Use sync when the caller genuinely needs the answer now (read a balance). Use async for slow/spiky/fan-out work (send email, process upload, update search index) — and pair it with the **outbox pattern** so the event and the state change are atomic. "I'd return 202 and process asynchronously" is the right answer for anything the user doesn't need to block on.
+
+## API gateway responsibilities
+
+The single entry point in front of a microservices fleet, centralizing cross-cutting concerns so services stay focused:
+
+- **AuthN/AuthZ** — validate tokens once at the edge.
+- **Rate limiting & quotas** — shed abuse before it reaches services.
+- **Routing & aggregation** — path-based routing; combine several backend calls into one client response (BFF-style).
+- **Protocol translation** — REST at the edge ↔ gRPC internally.
+- **TLS termination, logging, metrics, caching.**
+
+Keep it **thin** (no business logic — that recreates a monolith) and **replicated** (it's a choke point and potential SPOF).
+
+## Resilience: timeouts, retries, circuit breakers
+
+Networks fail; calls hang. These three patterns turn brittle calls into resilient ones — and they interact, so know the order.
+
+**Timeouts.** Never make an unbounded network call. A missing timeout means one slow dependency exhausts your thread/connection pool and cascades. Set aggressive, per-call timeouts (and budget them across a request chain).
+
+**Retries.** Retry **transient** failures (timeouts, `503`, connection resets) — but only **idempotent** operations, with **exponential backoff + jitter** (so retries don't synchronize into a thundering herd), and a **cap** (a few attempts, not infinite). Retrying a non-idempotent `POST` without an idempotency key double-acts.
+
+**Circuit breaker.** If a dependency keeps failing, stop calling it. The breaker tracks the failure rate; past a threshold it **trips (open)** and fails fast for a cooldown (no waiting on a dead service), then **half-opens** to test recovery with a trial request, and **closes** when healthy. This prevents retries from hammering a struggling service and gives it room to recover — and lets you **degrade gracefully** (serve a cached/default response while open).
+
+```
+CLOSED ──(failures > threshold)──► OPEN ──(cooldown)──► HALF-OPEN
+   ▲                                                        │
+   └──────────────(trial succeeds)──────────────────────────┘
+              (trial fails → back to OPEN)
+```
+
+Together: **timeout** bounds each call, **retry w/ backoff** handles transient blips, **circuit breaker** stops retries from worsening a sustained outage, and **bulkheads** (isolated pools per dependency) keep one failing dependency from sinking the rest. Add **rate limiting** (token bucket) at the edge to protect against overload. (See [building blocks](/lessons/system-design/building-blocks) and [classics](/lessons/system-design/classics).)
+
+## Interview questions & model answers
+
+**Q: REST vs gRPC vs GraphQL?**
+"REST for public/CRUD APIs — ubiquitous, cacheable, simple. gRPC for internal service-to-service — binary Protobuf over HTTP/2 is fast and strongly typed with codegen and streaming, but not browser-native. GraphQL when many varied clients need flexible nested data and REST would over/under-fetch — the client picks the fields, at the cost of harder caching and query-cost control. Often gRPC internally, REST or GraphQL at the edge."
+
+**Q: Over-fetching vs under-fetching?**
+"Over-fetching: the endpoint returns more than the view needs — wasted bandwidth. Under-fetching: the view needs multiple calls, causing waterfall round trips. REST suffers both; GraphQL fixes them by letting the client specify the exact shape, which I'd protect with depth/complexity limits and DataLoader batching to avoid N+1."
+
+**Q: WebSockets vs SSE vs long-polling?**
+"By direction and frequency. Server-to-client push at moderate rate — SSE: one long-lived HTTP stream with auto-reconnect, simple. Two-way or high-frequency — WebSocket: persistent full-duplex, but stateful so scaling needs sticky connections and a Redis pub/sub backplane to broadcast across instances. Long-polling only as a fallback. No real-time need — just refetch."
+
+**Q: How do you make a POST safe to retry?**
+"An idempotency key: the client sends a unique key per logical operation; the server records the key with its result, so a retry returns the original outcome instead of acting twice. Combined with timeouts and bounded retries, that makes the call safe under network failures."
+
+**Q: Sync vs async — when each?**
+"Sync when the caller needs the answer now and the chain is short — reading data. Async for slow, spiky, or fan-out work: return 202, enqueue, and process in workers, which decouples services and smooths load at the cost of eventual consistency. I'd pair async event publishing with the outbox pattern so the event and DB write are atomic."
+
+**Q: How do retries, timeouts, and circuit breakers fit together?**
+"Timeouts bound every call so a hung dependency can't exhaust my pool. Retries with exponential backoff and jitter handle transient failures — but only for idempotent calls, with a cap. A circuit breaker trips after sustained failures so I fail fast instead of retrying a dead service, then half-opens to probe recovery. Plus bulkheads to isolate pools and rate limiting at the edge."
+
+**Q: What does an API gateway do, and what should it not do?**
+"It centralizes cross-cutting concerns: auth, rate limiting, routing, request aggregation, protocol translation, TLS, observability — so services stay focused. It should NOT hold business logic (that recreates a monolith at the edge) and must be replicated since it's a choke point and SPOF."
+
+**Q: How do you version a REST API?**
+"Prefer additive, backward-compatible changes so I rarely need to version. When a breaking change is unavoidable, URL versioning (`/v1/`) is the most visible and cacheable; header-based is cleaner but less obvious. I deprecate old versions on a published timeline rather than breaking clients."
+
+## Common mistakes / what weak candidates do
+
+- **Returning `200` for everything** (including errors), defeating clients and caches.
+- **Treating `POST` as idempotent** — retrying without an idempotency key double-charges.
+- **Using verbs in REST paths** (`/getUser`) and ignoring HTTP method semantics.
+- **Defaulting to WebSockets** when SSE (or plain refetch) suffices, then ignoring the stateful-scaling cost.
+- **Making everything synchronous**, so one slow service stalls the whole request chain.
+- **Calling without timeouts**, or retrying non-idempotent ops / retrying without backoff+jitter (thundering herd).
+- **No circuit breaker**, so retries pile onto a failing dependency and cascade.
+- **Putting business logic in the gateway** or forgetting it's a SPOF that must be replicated.
+- **Choosing GraphQL** without addressing caching and query-cost/N+1 control.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Pick the style by the pattern: <b>REST</b> for public/CRUD, <b>gRPC</b> for internal high-throughput, <b>GraphQL</b> for flexible nested data across many clients. Do REST right — proper status codes, idempotency keys on unsafe retries, cursor pagination, additive versioning. <b>SSE</b> for server push, <b>WebSockets</b> for two-way. Default to <b>async</b> (202 + queue + outbox) for slow/spiky work to decouple services. And make every call resilient: <b>timeout, retry with backoff+jitter on idempotent ops, circuit breaker, bulkheads, and edge rate limiting.</b>"
+</div>

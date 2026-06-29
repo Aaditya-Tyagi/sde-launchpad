@@ -1,0 +1,219 @@
+---
+title: "TypeScript: Generics, Utility Types & Type Narrowing"
+track: javascript
+summary: "The TS features that separate shallow knowledge from real depth: generics, the built-in utility types, type narrowing, and mapped/conditional types."
+order: 11
+est: 25
+difficulty: hard
+priority: must
+tags: [typescript, generics, utility-types, narrowing, mapped-types, conditional-types]
+whyAsked: "Most modern React/RN roles require TypeScript. Interviewers probe beyond basic annotations to generics, type-safe patterns, and the structural type system."
+followUps:
+  - "What's the difference between interface and type?"
+  - "Explain generics with a real example."
+  - "What does the `extends` keyword do in a generic constraint?"
+  - "What is type narrowing and what techniques trigger it?"
+  - "What does `keyof` return?"
+  - "What's the difference between Partial<T> and Required<T>?"
+resources:
+  - { label: "TypeScript Handbook", url: "https://www.typescriptlang.org/docs/handbook/intro.html" }
+  - { label: "Total TypeScript: Generics", url: "https://www.totaltypescript.com/tips" }
+---
+
+TypeScript is a structural type system — two types are compatible if they have the same shape, regardless of name. Understanding this, plus generics and the utility types, unlocks the deep TS questions.
+
+## interface vs type
+
+Both define object shapes. The practical differences:
+
+```ts
+// interface — can be extended and merged (declaration merging)
+interface User { name: string; }
+interface User { age: number; }  // merged: User now has both
+interface Admin extends User { role: string; }
+
+// type — can represent any type, including unions and intersections
+type ID = string | number;
+type Point = { x: number; y: number };
+type Named = Point & { name: string }; // intersection
+type Result<T> = { data: T } | { error: string }; // union with generic
+```
+
+**Rule of thumb**: use `interface` for object shapes you may extend or override; use `type` for unions, intersections, aliases, and anything more complex.
+
+## Generics
+
+Generics let you write functions and types that work across many types while preserving type relationships:
+
+```ts
+// Without generics — loses type information
+function identity(value: any): any { return value; }
+const n = identity(42); // n: any — lost!
+
+// With generics — type is preserved
+function identity<T>(value: T): T { return value; }
+const n = identity(42);       // n: number ✓
+const s = identity("hello");  // s: string ✓
+
+// Generic array function
+function first<T>(arr: T[]): T | undefined { return arr[0]; }
+const num = first([1, 2, 3]); // num: number
+
+// Generic with multiple type params
+function pair<K, V>(key: K, value: V): [K, V] { return [key, value]; }
+const p = pair("age", 30); // p: [string, number]
+```
+
+## Generic constraints — `extends`
+
+Use `extends` to require a type has certain properties:
+
+```ts
+function getLength<T extends { length: number }>(item: T): number {
+  return item.length;
+}
+getLength("hello"); // ✓ strings have .length
+getLength([1,2,3]); // ✓ arrays have .length
+getLength(42);      // ✗ numbers have no .length — compile error
+
+// Constrain to object keys
+function getProperty<T, K extends keyof T>(obj: T, key: K): T[K] {
+  return obj[key];
+}
+const user = { name: "Alex", age: 30 };
+getProperty(user, "name");  // string — type-safe
+getProperty(user, "email"); // ✗ compile error — 'email' not in user
+```
+
+## Built-in utility types
+
+These are the ones you must know cold:
+
+```ts
+interface User { id: number; name: string; email: string; age?: number; }
+
+// Partial<T> — all properties become optional
+type PartialUser = Partial<User>;
+// { id?: number; name?: string; email?: string; age?: number }
+
+// Required<T> — all properties become required
+type RequiredUser = Required<User>; // age is now required too
+
+// Readonly<T> — all properties become readonly
+type ReadonlyUser = Readonly<User>;
+
+// Pick<T, K> — keep only K properties
+type UserPreview = Pick<User, 'id' | 'name'>;
+// { id: number; name: string }
+
+// Omit<T, K> — remove K properties
+type UserWithoutEmail = Omit<User, 'email'>;
+
+// Record<K, V> — object type with keys K and values V
+type RolePermissions = Record<'admin' | 'user' | 'guest', string[]>;
+
+// Exclude<T, U> — from union T, remove members assignable to U
+type StringOrNum = string | number | boolean;
+type NoBoolean = Exclude<StringOrNum, boolean>; // string | number
+
+// Extract<T, U> — keep only union members assignable to U
+type JustStrings = Extract<StringOrNum, string>; // string
+
+// NonNullable<T> — remove null and undefined
+type SafeString = NonNullable<string | null | undefined>; // string
+
+// ReturnType<T> — infer return type of a function
+function getUser() { return { id: 1, name: 'Alex' }; }
+type UserReturn = ReturnType<typeof getUser>; // { id: number; name: string }
+
+// Parameters<T> — infer parameter types as tuple
+type Params = Parameters<typeof getUser>; // []
+```
+
+## Type narrowing
+
+TypeScript narrows the type within a conditional block when you provide evidence:
+
+```ts
+function process(value: string | number) {
+  if (typeof value === 'string') {
+    // TypeScript knows value is string here
+    return value.toUpperCase();
+  }
+  // TypeScript knows value is number here
+  return value.toFixed(2);
+}
+
+// instanceof narrowing
+function logError(err: Error | string) {
+  if (err instanceof Error) {
+    console.log(err.message); // Error type
+  } else {
+    console.log(err);         // string type
+  }
+}
+
+// in narrowing — checks for property existence
+type Cat = { meow: () => void };
+type Dog = { bark: () => void };
+function speak(animal: Cat | Dog) {
+  if ('meow' in animal) animal.meow();
+  else animal.bark();
+}
+
+// Discriminated unions — the most powerful pattern
+type Result<T> =
+  | { status: 'ok'; data: T }
+  | { status: 'error'; message: string };
+
+function handleResult<T>(r: Result<T>) {
+  if (r.status === 'ok') {
+    console.log(r.data);     // data is accessible
+  } else {
+    console.log(r.message);  // message is accessible
+  }
+}
+```
+
+## Mapped types
+
+Transform every property of a type with new modifiers:
+
+```ts
+// Recreating Partial manually
+type MyPartial<T> = { [K in keyof T]?: T[K] };
+
+// Make all properties nullable
+type Nullable<T> = { [K in keyof T]: T[K] | null };
+
+// Remove readonly from all properties
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
+// Practical: API response wrapper
+type ApiResponse<T> = { [K in keyof T]: T[K] extends string ? string | null : T[K] };
+```
+
+## Conditional types
+
+Types that branch based on assignability:
+
+```ts
+// T extends U ? TrueType : FalseType
+type IsArray<T> = T extends any[] ? true : false;
+type A = IsArray<number[]>;  // true
+type B = IsArray<string>;    // false
+
+// Infer — extract a type from within a generic
+type Unpacked<T> = T extends (infer U)[] ? U : T;
+type C = Unpacked<string[]>;  // string
+type D = Unpacked<number>;    // number
+
+// Unwrap Promise
+type Awaited<T> = T extends Promise<infer U> ? U : T;
+// (This is now built-in as Awaited<T>)
+```
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "TypeScript is structurally typed — compatibility is by shape. Generics parameterize types to preserve relationships; `extends` constrains them. The utility types — Partial, Pick, Omit, Record, ReturnType — are the vocabulary for type transformations. Narrowing is TypeScript proving a union is a specific member based on runtime checks like typeof, instanceof, `in`, or discriminant literals. Mapped types iterate over `keyof T`; conditional types branch on assignability. These compose to make complex, type-safe patterns possible."
+</div>

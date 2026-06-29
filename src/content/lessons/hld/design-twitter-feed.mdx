@@ -1,0 +1,255 @@
+---
+title: "HLD: Design a Twitter/X Feed"
+track: hld
+summary: "Design the Twitter timeline — fanout-on-write vs fanout-on-read, hybrid strategy for celebrities, sharding, and real-time delivery."
+order: 5
+est: 35
+difficulty: hard
+priority: must
+tags: [hld, twitter, news-feed, fanout, sharding, timeline, social-graph]
+whyAsked: "Twitter-style feed is the most popular HLD question. It forces a deep decision on fanout strategy, which has non-obvious trade-offs at scale."
+followUps:
+  - "What is the difference between fanout-on-write and fanout-on-read?"
+  - "How do you handle celebrities with 100M followers?"
+  - "How do you shard the timeline table?"
+  - "How do you push real-time tweets to online followers?"
+  - "How do you rank the feed?"
+resources:
+  - { label: "Twitter's Architecture (2022 talk)", url: "https://www.infoq.com/presentations/twitter-infrastructure" }
+  - { label: "System Design Interview Vol.1 — Ch.11", url: "https://bytebytego.com" }
+---
+
+## Step 1: Requirements
+
+**Functional:**
+- Post a tweet (text, images, videos)
+- Follow/unfollow a user
+- View home timeline (posts from people I follow, reverse chronological)
+- Like, retweet, reply
+- Search tweets
+
+**Non-functional:**
+- 500M users, 300M DAU
+- Timeline load < 200ms p99
+- Tweets delivered to followers within 5 seconds
+- Reads >> writes (read-heavy)
+- Eventual consistency on timeline is OK
+
+**Estimation:**
+```
+Writes: 500K tweets/day ÷ 86,400 ≈ 6 tweets/sec
+Reads:  300M DAU × 5 timeline loads/day ÷ 86,400 ≈ 17,000 reads/sec
+Storage: 500K tweets/day × 500 bytes × 365 × 10 years ≈ 900 GB (text only)
+Fan-out: average 200 followers/user → 500K × 200 = 100M timeline writes/day
+```
+
+---
+
+## Step 2: Core data model
+
+```sql
+-- Users
+users(id BIGINT PK, username, email, follower_count, following_count, ...)
+
+-- Tweets
+tweets(id BIGINT PK, author_id BIGINT FK, content TEXT, media_urls TEXT[],
+       like_count INT, retweet_count INT, created_at TIMESTAMPTZ)
+
+-- Follow graph (write-heavy, separate from tweet storage)
+follows(follower_id BIGINT, followee_id BIGINT, created_at TIMESTAMPTZ)
+  PRIMARY KEY (follower_id, followee_id)
+  INDEX (followee_id, follower_id)  ← for "get all followers of user X"
+
+-- Home Timeline (precomputed — see fanout below)
+home_timeline(user_id BIGINT, tweet_id BIGINT, tweet_at TIMESTAMPTZ)
+  PRIMARY KEY (user_id, tweet_at DESC, tweet_id)
+```
+
+---
+
+## Step 3: The core decision — fanout strategy
+
+This is the heart of the design. Two approaches:
+
+### Option A: Fanout-on-write (push model)
+
+When Alice tweets, immediately write Alice's tweet_id into every follower's home timeline:
+
+```
+Alice posts tweet #12345
+    ↓
+Fan-out worker looks up Alice's followers (potentially millions)
+    ↓
+Writes tweet_id into home_timeline for each follower
+    ↓
+Bob loads his timeline → just reads pre-built home_timeline list
+```
+
+**Pros:**
+- Read is O(1) — timeline is pre-built, just fetch and display
+- Very fast timeline load
+
+**Cons:**
+- Write amplification: Kylie Jenner tweets once → 150M row inserts
+- Wasted writes for offline users
+- Hot-shard problem: celebrity's followers may all hash to same partition
+
+---
+
+### Option B: Fanout-on-read (pull model)
+
+When Bob loads his timeline, look up everyone he follows and merge their recent tweets:
+
+```
+Bob loads timeline
+    ↓
+Fetch IDs of all users Bob follows (from follows table)
+    ↓
+For each followee: fetch their last N tweets
+    ↓
+Merge-sort all tweets by timestamp → show top 20
+    ↓
+Cache result in Redis
+```
+
+**Pros:**
+- No write amplification; posting a tweet is O(1)
+- Naturally handles celebrities
+
+**Cons:**
+- Timeline load is slow: if Bob follows 1,000 people, that's 1,000 DB reads per load
+- Cache invalidation on new tweets is complex
+
+---
+
+### Option C: Hybrid (what Twitter actually does)
+
+```
+Normal users (< 10K followers): fanout-on-write
+Celebrity users (> 10K followers): fanout-on-read
+
+Bob's timeline = prebuilt_timeline_from_normal_users
+              + real-time merge of celebrity tweets on load
+```
+
+```
+When Alice (1K followers) tweets:
+  → Write to each follower's prebuilt home_timeline (fast, bounded)
+
+When Elon (100M followers) tweets:
+  → Store tweet only in tweets table
+
+When Bob (follows both Alice and Elon) loads timeline:
+  → Read prebuilt timeline (includes Alice's tweet)
+  → Additionally query tweets table for Bob's celebrity follows
+  → Merge by timestamp
+  → Cache result for 30s
+```
+
+---
+
+## Step 4: Architecture
+
+```
+Client
+  │ POST /tweets
+  ▼
+[ Tweet Service ]
+  ├─ Store tweet in tweets table (Cassandra or Postgres)
+  ├─ Publish to Kafka topic "new_tweets"
+  └─ Return to client immediately
+
+[ Kafka "new_tweets" ]
+  ↓
+[ Fanout Workers (consumer group) ]
+  ├─ Fetch follower list from Social Graph Service
+  │     (cached in Redis — follower list rarely changes)
+  ├─ For normal users: batch write to home_timeline (Cassandra)
+  └─ For celebrities: skip (read-time fanout instead)
+
+[ Timeline Service ]
+  ├─ Read home_timeline from Cassandra
+  ├─ Merge celebrity tweets from cache
+  └─ Return top 20 tweets
+
+[ Cache Layer ]
+  ├─ home_timeline:{user_id} → cached rendered timeline
+  ├─ celebrity_tweets:{user_id} → recent tweets for celebrity accounts
+  └─ follower_list:{user_id} → fan-out list
+```
+
+---
+
+## Step 5: Storage choices
+
+**Tweets:** Cassandra (wide column)
+- Partition key: `author_id`
+- Clustering key: `tweet_id DESC` (most recent first)
+- Write-optimized, handles high throughput
+
+**Home timeline:** Cassandra
+- Partition key: `user_id`
+- Clustering key: `tweet_at DESC, tweet_id`
+- `LIMIT 20` per query
+
+**Follow graph:** PostgreSQL
+- Fast lookup of follower lists
+- Indexed on both `follower_id` and `followee_id`
+- Much smaller data volume
+
+**Cache:** Redis
+- Rendered timeline JSON: TTL 30 seconds
+- Celebrity tweet IDs: TTL 10 seconds
+- Follower counts: TTL 60 seconds
+
+---
+
+## Step 6: Real-time delivery
+
+When Alice posts, Bob should see it within 5 seconds:
+
+```
+Alice tweets
+  → Kafka → Fanout worker → writes to Bob's home_timeline
+                          → publishes to Redis pub/sub "timeline:{bob_id}"
+
+Bob's client:
+  → Maintains WebSocket connection to Notification Service
+  → Notification Service subscribes to Redis pub/sub for Bob's channel
+  → On new message: pushes "new tweet" event to Bob's WebSocket
+  → Client fetches new tweets from Timeline API
+```
+
+**Simpler alternative:** Client polls every 10s. Works fine for most apps; WebSocket for premium/pro users.
+
+---
+
+## Step 7: Media (images/video)
+
+```
+POST /tweets with media:
+  1. Client uploads media to pre-signed S3 URL directly
+  2. After upload, client submits tweet with media S3 keys
+  3. Tweet service stores media keys in tweets table
+  4. Async transcoder (Lambda) generates thumbnails + video variants
+  5. CDN serves media; tweet stores CDN URLs
+```
+
+Never stream media through app servers.
+
+---
+
+## Step 8: Search
+
+Tweets are written to **Elasticsearch** asynchronously via Kafka consumer. Search API queries Elasticsearch.
+
+```
+Kafka "new_tweets" → Search Indexer → Elasticsearch index
+                                         ↑
+Client → Search API → Elasticsearch ────┘
+```
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "The core decision is fanout strategy. For normal users I use fanout-on-write — when they post, a Kafka consumer writes their tweet ID into each follower's home_timeline in Cassandra. Timeline read is O(1). But for users with more than ~10K followers, write amplification makes fanout-on-write impractical — Kylie Jenner tweeting would trigger 150M writes. So celebrity tweets are stored and read on-demand at timeline load time, merged with the prebuilt timeline. This is the hybrid model Twitter actually uses."
+</div>

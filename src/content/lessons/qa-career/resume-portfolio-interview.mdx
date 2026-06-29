@@ -1,0 +1,160 @@
+---
+title: "Portfolio, SDET resume & the interview process"
+track: qa-career
+summary: "Turn skills into offers — a quantified ATS-friendly resume, the GitHub portfolio that gets you hired, LinkedIn, how the QA/SDET interview process actually flows, how to talk about your projects, and salary negotiation basics."
+order: 2
+est: 24
+difficulty: medium
+priority: must
+tags: [resume, portfolio, interview, sdet, linkedin, negotiation]
+whyAsked: "This is the conversion step. A strong portfolio + quantified resume + interview readiness is what actually lands the role and the pay bump."
+followUps:
+  - "Walk me through a framework you built."
+  - "How would you reduce a flaky test suite's failures?"
+  - "How do you decide what to automate?"
+  - "How do you handle a salary negotiation?"
+resources:
+  - { label: "SDET resume guide", url: "https://aitestingguide.com/sdet-resume/" }
+  - { label: "NeetCode (light DSA)", url: "https://neetcode.io/practice" }
+  - { label: "Jobscan (ATS check)", url: "https://www.jobscan.co/" }
+  - { label: "shields.io (CI badges)", url: "https://shields.io/" }
+---
+
+You have the skills — now package and prove them. Three things land offers: a **quantified resume that passes ATS**, a **portfolio that proves you can build**, and **interview readiness across the full loop.**
+
+## The SDET resume
+
+### Structure (top to bottom)
+1. **Header** — name, title (e.g. "SDET / Automation Engineer"), city, email, phone, and **links to GitHub + LinkedIn**. Put the GitHub link where a recruiter can't miss it.
+2. **Summary (2–3 lines)** — who you are + your strongest quantified achievement. Skip "hardworking team player."
+3. **Technical skills** — grouped: Languages | Automation (Selenium/Playwright) | API (REST Assured/Postman) | Frameworks (TestNG/pytest) | CI/CD (GitHub Actions/Jenkins) | Tools (Git/Docker/JIRA/Allure) | Databases (SQL).
+4. **Experience** — reverse-chronological, **quantified impact bullets** (see below).
+5. **Projects** — your portfolio repos with one-line impact + link. Critical if you're early-career.
+6. **Education & certifications** — last; brief.
+
+### Quantify everything — before/after examples
+Lead with **impact** (time saved, coverage, flakiness reduced, releases unblocked), then the stack.
+
+- **Weak:** "Wrote automated tests in Selenium."
+  **Strong:** "Built a Playwright + POM framework covering 120 regression cases, cutting regression time from 6 hours to 25 minutes and reducing flaky failures ~80% via explicit-wait refactors and CI sharding."
+- **Weak:** "Did API testing with Postman."
+  **Strong:** "Automated 60+ REST API tests with schema validation in REST Assured, catching 3 contract-breaking changes before release."
+- **Weak:** "Responsible for CI/CD."
+  **Strong:** "Set up a GitHub Actions pipeline running UI + API suites in parallel on every PR, surfacing failures in under 8 minutes and unblocking daily releases."
+- **Weak:** "Found many bugs."
+  **Strong:** "Designed risk-based exploratory charters that uncovered a payment double-charge defect in staging, preventing a P1 production incident."
+
+The bullet formula: **action verb + what you built + the quantified outcome + (how/tech).** Numbers don't have to be perfect — estimate honestly ("~", "reduced from X to Y").
+
+### ATS tips
+- **Mirror the job description's keywords** (if it says "Playwright" and "CI/CD," those exact terms must appear — naturally, in skills and bullets).
+- **Simple single-column layout.** No tables, text boxes, headers/footers, images, or fancy columns — many parsers mangle them.
+- **Standard section headings** ("Experience," "Skills," "Education") so the parser finds them.
+- **Submit as PDF** unless the portal asks for .docx; keep the filename professional (`Firstname_Lastname_SDET.pdf`).
+- **Check your match** with a tool like Jobscan before applying to a role you really want.
+
+### Common resume mistakes
+- A wall of responsibilities with no numbers.
+- Listing every tool you've touched once (dilutes signal — list what you can defend in an interview).
+- No GitHub link, or a GitHub with empty/abandoned repos.
+- Typos and inconsistent tense/formatting (instant credibility hit for a *quality* role).
+- Generic summary; one resume blasted to every role instead of light tailoring per application.
+- More than 2 pages early-career (1 page is fine; 2 max).
+
+## The portfolio: the GitHub project that gets you hired
+
+Two or three polished repos beat a long resume. Together they must demonstrate: **you can design a framework, automate UI and API, run it in CI, and report results.**
+
+1. **UI automation framework** — Playwright/Selenium + Page Object Model + data-driven tests + Allure report + CI. Tests a real demo app.
+2. **API test suite** — REST Assured / requests / Playwright API with schema validation, auth handling, positive + negative cases, runnable in CI.
+3. **A CI pipeline** — GitHub Actions running the above on every push/PR, with a **passing badge** in the README.
+
+### What each repo must demonstrate
+- **Clean structure & naming** — folders for pages, tests, utils, config, test data.
+- **Maintainability** — POM/abstractions, no hard-coded waits, externalised config and data.
+- **Real assertions** — meaningful checks, not just "page loaded."
+- **Reporting** — an Allure/HTML report (screenshot it in the README).
+- **CI** — the workflow file, plus the green badge.
+
+### The README that sells it
+A strong README (this is what a busy reviewer actually reads) covers:
+- **What it is** — one-line purpose and what app/feature it tests.
+- **Tech stack** — badges for language, framework, CI.
+- **Architecture** — a short diagram or bullet list of the design and *why* (POM, data-driven, etc.).
+- **How to run** — copy-pasteable commands.
+- **Sample report** — a screenshot of the Allure/HTML output.
+- **CI badge** — `![CI](https://github.com/you/repo/actions/workflows/ci.yml/badge.svg)` showing green.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  The portfolio is the single highest-leverage thing you can build. It converts "trust me, I can automate" into "here's the running code, the green pipeline, and the report." Reviewers skim the README and the Actions tab — make both excellent.
+</div>
+
+## LinkedIn
+
+- **Headline** with role + key tech: "SDET | Playwright, Selenium, API Automation, CI/CD."
+- **About** — a few lines mirroring your resume summary, with your strongest quantified win and a link to GitHub.
+- **Experience** — same quantified bullets as the resume.
+- **Skills section** — add the keywords recruiters search (Selenium, Playwright, Java/Python, API testing, CI/CD); get a few endorsements.
+- **Activity** — post occasionally about something you built or learned; it signals engagement and surfaces you in recruiter searches.
+- **"Open to work"** — turn it on (recruiter-only visibility) when actively searching.
+
+## How the QA/SDET interview process works
+
+A typical loop, stage by stage — know what each is testing so you can prepare deliberately:
+
+1. **Recruiter screen** — fit, availability, salary expectations, top-line experience. Have a 60-second pitch and a salary range ready.
+2. **Coding round** — light-to-medium DSA (arrays, strings, hashmaps) or practical scripting ("parse this log," "find duplicates"). SDET loops almost always include one. Talk through your approach; write clean, working code.
+3. **Automation / framework round** — the core SDET round. Write Selenium/Playwright or API automation, **explain your framework's architecture**, justify design choices, discuss waits/flakiness/POM. Often you whiteboard or live-code a small framework.
+4. **System / scenario round** — "How would you test X?" and "design a test automation framework / test strategy." Tests your structured thinking, not memorisation (see the dedicated how-would-you-test lesson).
+5. **Behavioral round** — STAR stories: a bug you're proud of, a conflict with a developer, a missed bug, ownership under a deadline (see the behavioral lesson).
+6. **Hiring manager round** — fit with the team, how you think about quality, ownership, communication, and your questions for them. Often where the level/offer is shaped.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Each round tests a different muscle. Don't over-index on DSA and neglect framework design — for SDET roles, the automation/framework and scenario rounds are usually the deciding ones.
+</div>
+
+## How to talk about your projects
+
+Use a tight STAR-ish arc and **be ready to go three levels deep** on anything you mention:
+- **Context** — what the app/problem was and why it mattered.
+- **Your design** — the architecture and the *decisions* (why POM, why data-driven, why this tool), including trade-offs you considered and rejected.
+- **The hard part** — flakiness you debugged, a CI problem you solved, a tricky sync issue. This is what separates real builders from tutorial-followers.
+- **The outcome** — quantified: time saved, bugs caught, coverage, releases unblocked.
+
+Never name a tool on your resume you can't whiteboard. If you wrote "Docker," expect "walk me through your Dockerfile."
+
+## Salary negotiation basics
+
+- **Do your homework** — know the band for the role/level/region (levels.fyi, Glassdoor, local surveys) before any call.
+- **Let them go first if you can** — "I'd like to understand the full range for this level first." If pressed, give a researched range with your target near the bottom.
+- **Negotiate on the written offer, not verbally** — once you have it, you have leverage; before, you have none.
+- **Negotiate the whole package** — base, bonus, equity, sign-on, level, start date, remote/flex. If base is capped, ask for a sign-on or earlier review.
+- **Anchor on value, not need** — cite your impact ("I bring framework-design and CI ownership"), not your rent. Stay warm; this is a future colleague.
+- **Get it in writing**, and don't accept on the spot — "I'm excited; can I have until [date] to review?"
+
+## Interview Q&A
+
+**Q1. Walk me through a framework you built.**
+"I built a Playwright + TypeScript UI framework using the Page Object Model. Page objects encapsulate locators and actions; tests stay readable and assertion-focused. Config (base URL, browser, timeouts) is externalised per environment, test data is data-driven from JSON, and Allure produces the report. It runs in GitHub Actions on every PR, sharded across browsers, finishing in ~6 minutes. The hardest part was eliminating flakiness — I replaced fixed sleeps with web-first assertions and auto-waiting, which dropped flaky failures by about 80%."
+
+**Q2. How do you decide what to automate?**
+"Use the test pyramid and ROI. Automate high-value, stable, repetitive paths — regression, smoke, critical user journeys, and API/integration tests (cheap and fast). Keep exploratory, one-off, and rapidly-changing UI manual. I don't automate something that changes every sprint or runs once; the maintenance cost outweighs the benefit. I push tests down the pyramid: prefer API/unit-level checks over slow, brittle UI tests."
+
+**Q3. How would you reduce a flaky test suite's failures?**
+"First, measure — track which tests fail intermittently and categorise root causes. The usual culprits: fixed sleeps instead of explicit/auto waits, test interdependence and shared state, timing/race conditions, and environment instability. Fixes: replace `sleep` with explicit waits or web-first assertions, make each test independent with its own data and clean setup/teardown, stabilise test data, retry only genuinely non-deterministic externals (not to mask real bugs), and quarantine chronically flaky tests so they don't block the pipeline while you fix them."
+
+**Q4. Your resume says you cut regression time — how?**
+"Two levers. First, parallelisation/sharding in CI — running the suite across multiple workers and browsers instead of serially. Second, pushing checks down the pyramid — moving validations that don't need a browser to the API layer, which is far faster. Together those took regression from ~6 hours to ~25 minutes."
+
+**Q5. How should I handle the salary question on a recruiter screen?**
+"I research the band first, then try to learn their range before committing a number. If asked directly, I give a researched range aligned to the role and level, framed around the value I bring rather than my current pay. I keep the real negotiation for the written offer, where I have leverage, and I negotiate the whole package, not just base."
+
+**Q6. What makes a strong SDET portfolio repo?**
+"Clean, well-structured code with a real framework design (POM, externalised config and data), meaningful assertions, a reporting layer like Allure, and — crucially — a CI pipeline with a green badge so a reviewer can see it actually runs. The README should explain the architecture and *why*, show how to run it, and include a screenshot of the report. It turns claims into verifiable evidence."
+
+<div class="callout tip">
+  <div class="ct">The weekly loop</div>
+  Apply to 5–10 matched roles/week, run one mock interview out loud, and after every real interview log exactly what was asked in a mistakes file. Tighten the gaps; repeat until offer.
+</div>

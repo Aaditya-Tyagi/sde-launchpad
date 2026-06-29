@@ -1,0 +1,284 @@
+---
+title: "HTTP & REST foundations for API testing"
+track: qa-api
+summary: "Request/response anatomy, every method, the full status-code tour, headers, auth schemes, REST principles, JSON/JSONPath and what to assert — the protocol knowledge behind every API test, the layer in highest demand in 2026."
+order: 1
+est: 22
+difficulty: easy
+priority: must
+tags: [http, rest, api, json, jwt, status-codes]
+whyAsked: "API/integration tests are now in higher demand than UI tests. Solid HTTP knowledge is the foundation interviewers check first, and the 401-vs-403 / idempotency / what-to-assert questions are near-guaranteed."
+followUps:
+  - "Difference between 401 and 403?"
+  - "Is PUT idempotent? Is POST? Is PATCH?"
+  - "201 vs 200 vs 204 — when does an API return each?"
+  - "What do you assert on an API response?"
+  - "How would you test a JWT-protected endpoint?"
+resources:
+  - { label: "MDN HTTP", url: "https://developer.mozilla.org/en-US/docs/Web/HTTP" }
+  - { label: "MDN HTTP status codes", url: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status" }
+  - { label: "jwt.io (decode/inspect JWTs)", url: "https://jwt.io/" }
+  - { label: "Richardson Maturity Model (Fowler)", url: "https://martinfowler.com/articles/richardsonMaturityModel.html" }
+  - { label: "Practice: ReqRes", url: "https://reqres.in/" }
+  - { label: "Practice: httpbin", url: "https://httpbin.org/" }
+---
+
+APIs are the fastest-growing, most stable test layer. They run in milliseconds, don't break on UI re-skins, and catch bugs before they reach the screen. Before you can automate them, you have to *understand the protocol* — and that protocol knowledge is exactly what interviewers probe first.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  HTTP is a stateless, text-based request/response protocol. Every API call is one self-contained request that names a method, a URL, headers and (optionally) a body, and gets back a status line, headers and (optionally) a body. Master those five pieces and the rest is detail.
+</div>
+
+## Anatomy of a request and response
+
+A raw HTTP request looks like this:
+
+```http
+POST /api/users HTTP/1.1
+Host: reqres.in
+Content-Type: application/json
+Accept: application/json
+Authorization: Bearer eyJhbGciOi...
+
+{ "name": "sahil", "job": "sdet" }
+```
+
+Four parts:
+
+1. **Request line** — `METHOD path HTTP/version` (`POST /api/users HTTP/1.1`).
+2. **Headers** — key/value metadata (`Content-Type`, `Authorization`, ...).
+3. **Blank line** — separates headers from body.
+4. **Body** — optional payload (JSON here).
+
+The response mirrors it:
+
+```http
+HTTP/1.1 201 Created
+Content-Type: application/json; charset=utf-8
+Location: /api/users/123
+Cache-Control: no-store
+
+{ "id": "123", "name": "sahil", "job": "sdet", "createdAt": "2026-06-14T10:00:00Z" }
+```
+
+1. **Status line** — `HTTP/version code reason` (`HTTP/1.1 201 Created`).
+2. **Headers** — `Content-Type`, `Location`, caching, etc.
+3. **Body** — the resource representation.
+
+A URL itself has testable parts: `https://api.shop.com/v2/orders?status=open&page=2#section`
+— scheme (`https`), host (`api.shop.com`), path (`/v2/orders`), **query string** (`?status=open&page=2`), and fragment (`#section`, client-side only, never sent to the server).
+
+## HTTP methods, safety and idempotency
+
+| Method | Purpose | Safe? | Idempotent? | Typical success code |
+|---|---|---|---|---|
+| GET | Read a resource | Yes | Yes | 200 |
+| HEAD | Like GET, headers only (no body) | Yes | Yes | 200 |
+| OPTIONS | Discover allowed methods / CORS preflight | Yes | Yes | 200/204 |
+| POST | Create / non-idempotent action | No | No | 201 (or 200/202) |
+| PUT | Replace the whole resource | No | Yes | 200/204 |
+| PATCH | Partial update | No | No (usually) | 200/204 |
+| DELETE | Remove a resource | No | Yes | 200/204 |
+
+Two terms you must define cleanly:
+
+- **Safe** = the method does not change server state. GET/HEAD/OPTIONS only read.
+- **Idempotent** = making the same call N times leaves the server in the same state as making it once. The *response* may differ (e.g. first DELETE returns 200, second returns 404) but the *resource state* is identical.
+
+Why PUT is idempotent but POST is not: `PUT /users/1 {name:"A"}` sets user 1's name to "A" — run it 100 times, user 1's name is still "A". `POST /users {name:"A"}` creates a *new* user each time, so you'd end up with 100 users. PATCH is usually non-idempotent because partial ops can be relative (e.g. "increment balance by 10"); a PATCH that sets absolute fields can be idempotent in practice, but treat it as not-guaranteed.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Idempotency is about the <em>state</em>, not the response code. A second DELETE returning 404 does not make DELETE non-idempotent — the resource is still gone, which is the same end state.
+</div>
+
+## The full status-code tour
+
+Group by first digit, then memorize the tricky pairs.
+
+**1xx Informational** — rarely tested. `100 Continue`, `101 Switching Protocols`.
+
+**2xx Success**
+- **200 OK** — generic success; GET returns the body, PUT/PATCH often return the updated resource.
+- **201 Created** — a new resource was created; should include a `Location` header pointing to it. Expect this from POST.
+- **202 Accepted** — request accepted for *async* processing; work isn't done yet (queues, batch jobs).
+- **204 No Content** — success with no body. Common for DELETE and sometimes PUT/PATCH.
+
+**3xx Redirection**
+- **301 Moved Permanently** — resource has a new permanent URL; clients/SEO should update. Method may be rewritten to GET by old clients.
+- **302 Found** — temporary redirect; historically clients changed POST to GET (a spec ambiguity).
+- **303 See Other** — explicitly "GET the other resource" (post-redirect-get pattern).
+- **304 Not Modified** — used with conditional GET (`If-None-Match`/`ETag`); tells the client to use its cache. No body.
+- **307 Temporary Redirect** — like 302 but **method and body are preserved** (a POST stays a POST).
+- **308 Permanent Redirect** — like 301 but **method and body are preserved**.
+
+The interview cut: *301 vs 308 = permanent; 302/307 = temporary. 307/308 are the "modern, method-preserving" versions — use them when a redirected POST must stay a POST.*
+
+**4xx Client error** (the caller did something wrong)
+- **400 Bad Request** — malformed syntax / unparseable body / missing required param.
+- **401 Unauthorized** — *not authenticated*: missing or invalid credentials. Should return a `WWW-Authenticate` header.
+- **403 Forbidden** — *authenticated but not allowed*: you are who you say, but you lack permission.
+- **404 Not Found** — resource doesn't exist (also used to hide existence from unauthorized users).
+- **405 Method Not Allowed** — wrong verb for this URL (e.g. POST to a read-only endpoint).
+- **409 Conflict** — state conflict, e.g. duplicate unique field or a concurrent-edit clash.
+- **415 Unsupported Media Type** — server can't handle the `Content-Type` you sent.
+- **422 Unprocessable Entity** — syntax is fine but the *semantics* fail validation (e.g. email field present but not a valid email). The classic "400 vs 422" distinction: 400 = can't parse it; 422 = parsed it, but the values are invalid.
+- **429 Too Many Requests** — rate limit hit; honor the `Retry-After` header.
+
+**5xx Server error** (the server failed)
+- **500 Internal Server Error** — unhandled exception. As a tester, a 500 on bad *input* is itself a bug — you wanted a 4xx.
+- **502 Bad Gateway** — upstream returned an invalid response (proxy/gateway).
+- **503 Service Unavailable** — overloaded or down for maintenance; often paired with `Retry-After`.
+- **504 Gateway Timeout** — upstream didn't respond in time.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  401 = "who are you?" (fix your credentials). 403 = "I know you, but no" (fix your permissions). 400 = "I can't even read this". 422 = "I read it, your values are wrong". 404 = "doesn't exist". 429 = "slow down".
+</div>
+
+## Headers that matter for testing
+
+- **`Content-Type`** — the media type of the *body you are sending* (`application/json`, `application/x-www-form-urlencoded`, `multipart/form-data`). Get it wrong and you'll see 415.
+- **`Accept`** — the media type you *want back*. Server may content-negotiate.
+- **`Authorization`** — credentials (`Bearer <token>`, `Basic <base64>`, etc.).
+- **`Cache-Control` / `ETag` / `If-None-Match` / `Last-Modified`** — caching. `ETag` is a content fingerprint; resend it as `If-None-Match` to get a cheap `304`.
+- **`Location`** — where a created resource lives (with 201) or where to redirect (with 3xx).
+- **`Set-Cookie` (response) / `Cookie` (request)** — server sets a cookie; browser/client echoes it back. Flags worth knowing: `HttpOnly` (JS can't read it), `Secure` (HTTPS only), `SameSite` (CSRF protection).
+- **`Retry-After`** — how long to wait after 429/503.
+- **CORS headers** — `Access-Control-Allow-Origin`, `-Methods`, `-Headers`. CORS is a *browser-enforced* rule about which origins may read a cross-origin response; it does NOT affect server-to-server or tool calls (curl/Postman/REST Assured ignore it). A common bug report "CORS error" is really a missing `Access-Control-Allow-Origin` on the server.
+
+## Authentication schemes (deep)
+
+**1. API key** — a static secret sent in a header (`X-API-Key: abc123`) or query param. Simple, but coarse-grained and long-lived. To test: valid key → 200; missing key → 401; revoked/wrong key → 401/403.
+
+**2. HTTP Basic** — `Authorization: Basic base64(username:password)`. Base64 is *encoding, not encryption* — only safe over HTTPS. To test: decode the header to confirm the format; wrong password → 401.
+
+**3. Bearer / JWT** — `Authorization: Bearer <token>`. A **JWT** has three base64url parts separated by dots: `header.payload.signature`.
+
+```text
+eyJhbGciOiJIUzI1NiJ9 . eyJzdWIiOiIxMjMiLCJyb2xlIjoiYWRtaW4iLCJleHAiOjE5MDB9 . SflKxwRJSMeKKF2QT4
+   header (alg, typ)        payload (claims: sub, role, exp, iat, iss)        signature
+```
+
+The payload holds **claims** like `sub` (subject/user id), `exp` (expiry, epoch seconds), `iat` (issued-at), `iss` (issuer), and custom claims like `role`. The signature is computed over `header.payload` with a secret/key — that's what makes the token tamper-evident.
+
+How to *test* JWT auth:
+- Decode the payload (it's just base64url — paste into jwt.io or decode in code) and assert claims: correct `sub`, expected `role`, sensible `exp`.
+- **Expired token** → expect 401. (You can craft one by editing `exp` — but then the signature is invalid, which also yields 401; to test pure expiry you need a real expired token.)
+- **Tampered payload** (change `role` to `admin`) → signature check fails → 401/403. This is a real security test.
+- **No token** → 401; **valid token, insufficient role** → 403.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  JWT payloads are <strong>readable by anyone</strong> — base64url is not encryption. Never put secrets in a JWT payload, and as a tester, flag it as a bug if you find passwords or PII in there.
+</div>
+
+**4. OAuth2** (overview — you must recognize the flows):
+- **Authorization Code** (+ PKCE) — the standard for web/mobile apps; user logs in at the provider, your app exchanges a short-lived *code* for an access token. PKCE protects public clients.
+- **Client Credentials** — machine-to-machine, no user. Service sends `client_id`/`client_secret`, gets a token. This is the flow you most often automate in API tests.
+- **Refresh token** — long-lived token used to get new access tokens without re-login.
+- (Implicit and Resource-Owner-Password flows are legacy/deprecated — mention you'd avoid them.)
+
+**5. Session / cookie auth** — server creates a session, returns `Set-Cookie: session=...; HttpOnly; Secure; SameSite=Lax`; client sends it back on each request. Stateful (server stores the session); contrast with stateless JWT.
+
+## REST principles & the Richardson Maturity Model
+
+REST is an architectural style, not a protocol. Core constraints:
+
+- **Client-server** separation of concerns.
+- **Statelessness** — every request carries everything needed; the server keeps no per-client session state between requests. This is what lets APIs scale horizontally and makes tests independent.
+- **Uniform interface** — resources are nouns identified by URIs (`/orders/42`), manipulated through standard methods (GET/POST/PUT/DELETE).
+- **Cacheability**, **layered system**, optional **code-on-demand**.
+
+The **Richardson Maturity Model** grades "how RESTful" an API is:
+- **Level 0** — one URL, one verb (usually POST); RPC-over-HTTP. (SOAP lives here.)
+- **Level 1 — Resources** — multiple URLs (`/orders`, `/orders/42`) but still often one verb.
+- **Level 2 — HTTP verbs** — proper use of GET/POST/PUT/DELETE and status codes. **Most "REST" APIs in the wild are Level 2.**
+- **Level 3 — HATEOAS** — responses include hypermedia links telling the client what it can do next (`"_links": { "cancel": "/orders/42/cancel" }`). Rare in practice.
+
+## JSON & JSONPath
+
+JSON is the dominant API body format. Types: object `{}`, array `[]`, string, number, boolean, `null`. No comments, no trailing commas, keys must be double-quoted.
+
+**JSONPath** is the query language you use to assert on bodies. Given:
+
+```json
+{
+  "page": 2,
+  "data": [
+    { "id": 7, "name": "Ada",  "roles": ["admin", "qa"] },
+    { "id": 8, "name": "Linus", "roles": ["dev"] }
+  ]
+}
+```
+
+| JSONPath | Result |
+|---|---|
+| `$.page` | `2` |
+| `$.data[0].name` | `"Ada"` |
+| `$.data[*].id` | `[7, 8]` |
+| `$.data[-1].name` | `"Linus"` (last) |
+| `$.data[?(@.id==7)].name` | `"Ada"` (filter) |
+| `$.data.length` | `2` (size) |
+
+Different tools spell this slightly differently — REST Assured's Groovy GPath uses `data.find { it.id == 7 }.name`, Postman uses plain JS `pm.response.json().data[0].name`, jq uses `.data[0].name` — but the *mental model* is identical.
+
+## What to assert on a response
+
+A strong answer lists more than "status 200":
+
+1. **Status code** matches the scenario (200/201/204/4xx as appropriate).
+2. **Body values** via JSONPath — the right data came back, with correct values.
+3. **Body types & structure** — `id` is a number, `email` is a string, required fields present, no unexpected `null`s.
+4. **Schema validity** — the whole body matches the agreed JSON Schema, so structural drift fails loudly.
+5. **Headers** — `Content-Type`, `Location` (on 201), caching, security headers.
+6. **Response time** within an SLA (`time < 2000ms`).
+7. **Negative cases** — invalid input returns the correct 4xx with a clear, machine-readable error body; auth failures return 401/403; rate limits return 429.
+8. **Side effects** — after a POST, a follow-up GET actually returns the created resource (and after DELETE, it's gone).
+
+## REST vs SOAP vs GraphQL (one-paragraph each)
+
+- **REST** — resource-oriented, multiple endpoints, JSON over HTTP verbs and status codes. Simple, cacheable, ubiquitous. Risk: over-/under-fetching (you get the whole resource or make many calls).
+- **SOAP** — XML envelope, strict WSDL contract, transport-agnostic, built-in standards (WS-Security). Verbose; still common in enterprise/banking. Testing means asserting on XML and the SOAP fault element.
+- **GraphQL** — a single endpoint; the *client* specifies exactly the fields it wants via a query. Solves over-fetching; one round trip for nested data. But it usually returns **200 even on errors** (errors live in an `errors` array in the body), which changes how you assert — covered in the advanced lesson.
+
+## Interview questions & model answers
+
+**Q1. What's the difference between 401 and 403?**
+401 Unauthorized means you are *not authenticated* — your credentials are missing or invalid; the server can't tell who you are. 403 Forbidden means you *are* authenticated but lack permission for this resource. Mnemonic: 401 = "log in"; 403 = "you can't do that".
+
+**Q2. Is PUT idempotent? Is POST? Is PATCH?**
+PUT is idempotent — it replaces the whole resource, so repeating it yields the same state. POST is not — each call typically creates a new resource. PATCH is generally not guaranteed idempotent because partial updates can be relative; a PATCH that sets absolute values can be idempotent in practice, but I wouldn't rely on it.
+
+**Q3. When does an API return 200 vs 201 vs 204?**
+200 OK for a successful read or update that returns a body. 201 Created when a new resource was created (POST), ideally with a `Location` header pointing to it. 204 No Content for success with nothing to return — common for DELETE or a PUT/PATCH that doesn't echo the resource.
+
+**Q4. 400 vs 422 — what's the difference?**
+400 Bad Request means the server couldn't parse or understand the request at all (malformed JSON, missing required parameter). 422 Unprocessable Entity means the request was well-formed and parsed fine, but the *values* failed business/validation rules (e.g. a syntactically valid but non-existent email, or age = -5).
+
+**Q5. Explain a JWT and how you'd test a JWT-protected endpoint.**
+A JWT is `header.payload.signature`, each base64url-encoded. The payload holds claims (`sub`, `role`, `exp`, `iat`). The signature over header+payload makes it tamper-evident, but the payload is readable by anyone — it's not encrypted. To test: log in to get a token, decode and assert its claims, then hit a protected endpoint with (a) a valid token → 200, (b) no token → 401, (c) an expired token → 401, (d) a tampered token → 401/403, and (e) a valid token with insufficient role → 403.
+
+**Q6. What does idempotency mean and why does it matter for testing and retries?**
+Idempotency means N identical calls leave the same server state as one. It matters because clients and gateways retry on timeouts; if a non-idempotent POST is retried, you can get duplicate records. Well-designed write APIs use an idempotency key to make POSTs safely retryable. As a tester I verify retried writes don't duplicate.
+
+**Q7. Why don't curl / Postman / REST Assured hit CORS errors but the browser does?**
+CORS is a *browser*-enforced same-origin policy — the browser blocks JavaScript from reading a cross-origin response unless the server sends the right `Access-Control-Allow-*` headers. Non-browser HTTP clients ignore CORS entirely, so the same request that fails in a web app succeeds from Postman. A "CORS error" is therefore a server-config issue, not a network failure.
+
+**Q8. What's statelessness in REST and how does it help testing?**
+Each request must carry all the context it needs (auth, params); the server doesn't keep per-client session memory between calls. This makes requests independent — so I can run API tests in parallel and in any order without shared session state, and I can scale the service horizontally.
+
+**Q9. What do you assert on an API response beyond the status code?**
+Body values and types via JSONPath, full JSON Schema validity, key headers (Content-Type, Location), response time SLA, and negative cases (correct 4xx + clear error body). I also verify side effects — e.g. after creating a resource, a follow-up GET returns it.
+
+## Common mistakes
+
+- Saying "401 means no permission" — that's 403. 401 is *not authenticated*.
+- Claiming POST is idempotent, or that idempotency is about getting the same *response code* rather than the same *state*.
+- Asserting only `status == 200` and calling it a test — no body, schema, or negative coverage.
+- Treating a JWT payload as secret/encrypted. It's just base64url.
+- Confusing `Content-Type` (what you send) with `Accept` (what you want back).
+- Expecting a 4xx from a GraphQL error — GraphQL usually returns 200 with an `errors` array.
+- Reporting a "CORS bug" as a client/network problem when it's a missing server header.
+- Forgetting that a 500 on bad *input* is a defect — the API should return a 4xx, not crash.

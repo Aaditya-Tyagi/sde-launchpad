@@ -1,0 +1,202 @@
+---
+title: "AI Integration: LLM APIs, Vector DBs & RAG"
+track: backend
+summary: "Integrate LLMs like any other remote dependency — non-deterministic, slow, and costly. Call shape (system + messages), tokens, streaming, retries and 429 backoff, structured output. Then model routing, embeddings + vector search, RAG end to end, tool calling, and the production concerns: prompt injection, hallucination, evals, observability, and semantic caching."
+order: 11
+est: 32
+difficulty: medium
+priority: deep
+tags: [ai, llm, rag, embeddings, vector-db, tool-calling, prompt-injection, observability]
+whyAsked: "Almost every backend now wraps an LLM. Interviewers want to see you treat it as an engineering dependency — bounded with timeouts, retries, and fallbacks; routed by cost and latency; grounded with RAG; and watched with evals and tracing — not as magic you sprinkle on."
+followUps:
+  - "Walk me through a RAG pipeline end to end."
+  - "How do you make an LLM call resilient and cost-bounded?"
+  - "pgvector or a dedicated vector DB — how do you choose?"
+  - "How do you defend against prompt injection?"
+  - "How do you know your AI feature actually works — what do you eval?"
+resources:
+  - { label: "Anthropic — Building with Claude (docs)", url: "https://docs.anthropic.com/en/docs/build-with-claude/overview" }
+  - { label: "OpenAI — Retrieval & embeddings guide", url: "https://platform.openai.com/docs/guides/embeddings" }
+  - { label: "pgvector", url: "https://github.com/pgvector/pgvector" }
+---
+
+An LLM is a **remote dependency** that happens to be non-deterministic, slow (hundreds of ms to tens of seconds), and metered by the token. The backend job is not prompt-crafting — it's wrapping that dependency the way you'd wrap any flaky third-party API: bounded calls, retries, structured I/O, cost controls, and observability. This lesson is the integration view; the [AI Engineering track](/lessons/ai-engineering/) goes deeper on modeling and evaluation.
+
+## The call: system + messages, tokens, temperature
+
+Every chat-completion API is the same shape — a **system** prompt (role, rules, format) plus a **messages** array of alternating user/assistant turns. The API is **stateless**: you resend the whole conversation each request, so context grows every turn.
+
+| Concept | What it is | Why the backend cares |
+|---|---|---|
+| **Context window** | Max tokens (input + output) per request | Hard ceiling; overflow = error or truncation. Frontier models reach ~200K-1M tokens. |
+| **Input tokens** | Prompt you send | Billed per token; dominate cost in RAG (big retrieved context). |
+| **Output tokens** | Tokens generated | Billed higher than input; drive **latency** (generated serially). |
+| **temperature** | Randomness (0 = near-deterministic, higher = creative) | Low for extraction/classification, higher for ideation. Note: some frontier models drop sampling params — check provider docs. |
+| **max output tokens** | Cap on generation | Bound cost and latency; too low truncates mid-answer. |
+
+A token is roughly ¾ of a word. Count tokens with the **provider's tokenizer/endpoint**, not a generic library — counts are model-specific. Exact model IDs, context sizes, and prices change often, so read them from provider docs (OpenAI, Anthropic) rather than hard-coding.
+
+<div class="callout tip">
+  <div class="ct">Latency mental model</div>
+  Time-to-first-token depends mostly on <b>input</b> size; total time depends on <b>output</b> size, because tokens stream out one at a time. Want a snappier feel? Stream the response and keep outputs short — don't ask for a 2,000-token essay when 200 will do.
+</div>
+
+## Treat it like a remote call: timeouts, retries, streaming
+
+The LLM is the slowest, flakiest thing in your request path. Wrap it exactly like [any distributed call](/lessons/backend/distributed-systems):
+
+- **Timeout** — generous (LLMs are slow) but bounded. A 60s+ call still needs a ceiling so one hung request doesn't pin a worker.
+- **Streaming (SSE)** — stream tokens as they generate. Server-Sent Events push partial output to the client so the user sees words appear instead of staring at a spinner for 20s. It also dodges request timeouts on long generations. This is a UX necessity, not a nice-to-have.
+- **Retries with backoff** — providers return **`429`** (rate limit) and `5xx` (overload). Retry with **exponential backoff + jitter**, honoring the `Retry-After` header. Cap attempts; most SDKs retry `429`/`5xx` automatically.
+- **Rate limits** — you're capped on requests/min and **tokens/min**. Queue or shed load; don't hammer through a `429` storm.
+- **Idempotency** — generation isn't idempotent (same prompt, different output). For safe retries, send an **idempotency key** so a network retry returns the original result instead of paying for a second generation.
+
+```python
+# Resilient call: bounded, streamed, retried with backoff.
+for attempt in range(MAX_RETRIES):
+    try:
+        with client.stream(model=MODEL, max_tokens=512,
+                            timeout=60, idempotency_key=req_id,
+                            messages=msgs) as resp:
+            for token in resp:           # SSE: forward to client as it arrives
+                yield token
+        break
+    except RateLimitError as e:          # HTTP 429
+        sleep(backoff(attempt) + jitter())   # honor Retry-After if present
+```
+
+## Structured output: JSON mode & tool schemas
+
+If your backend consumes the answer programmatically, **never parse free-form prose**. Constrain the output:
+
+- **JSON mode / structured outputs** — pass a JSON Schema; the model returns schema-valid JSON you can deserialize directly. Eliminates "the model wrapped JSON in markdown again" bugs.
+- **Tool / function schemas** — describe functions with typed parameters; the model emits a structured call instead of text.
+
+Even with schema enforcement, **validate on receipt** (types, enums, ranges) — a syntactically valid object can be semantically wrong. Treat model output as untrusted input.
+
+## Model selection: route by task
+
+There is no single "best" model — there's a cost/latency/quality triangle, and you pick per task.
+
+| Tier | Profile | Use for |
+|---|---|---|
+| **Small / fast** | Cheap, low latency, weaker reasoning | Classification, routing, extraction, high-volume/simple calls |
+| **Large / frontier** | Costly, slower, strong reasoning | Hard reasoning, agentic multi-step work, nuanced generation |
+| **Open models** (self-host) | No per-token fee, you own infra/ops | Data-residency needs, predictable high volume, fine-tuning control |
+
+The **model-cascade / router** pattern: try a small model first; escalate to a large one only when a cheap confidence/quality check fails, or route by classifying the request up front. Most production traffic is easy — sending all of it to a frontier model is the classic cost bug. Concrete numbers (price per million tokens, exact model IDs) shift constantly, so benchmark on **your** traffic and check current provider pricing rather than trusting a static table.
+
+## Embeddings + vector databases
+
+An **embedding** turns text into a fixed-length vector (e.g. 768-1536 dims) where semantic similarity ≈ geometric closeness. Compare with **cosine similarity**. This powers semantic search and retrieval.
+
+Exact nearest-neighbor over millions of vectors is too slow, so vector DBs use **ANN** (approximate nearest neighbor) indexes:
+
+| Index | Idea | Trade-off |
+|---|---|---|
+| **HNSW** | Navigable small-world graph | Fast, high recall, more memory; the common default |
+| **IVF** | Cluster vectors, search nearest clusters | Lower memory, tune `nprobe` for recall vs speed |
+
+**pgvector vs a dedicated store:**
+
+| | pgvector (Postgres extension) | Dedicated (Pinecone, Qdrant, Weaviate, Milvus) |
+|---|---|---|
+| Ops | Reuse your existing [database](/lessons/backend/databases) — one system, transactional, joins with metadata | Another service to run/pay for |
+| Scale | Great to ~1-10M vectors | Built for 100M+ with sharding/replication |
+| Filtering | SQL `WHERE` alongside the search | Native metadata filters |
+
+Default to **pgvector** if you already run Postgres and aren't at huge scale — fewer moving parts beats a shiny vector DB. Reach for a dedicated store when vector count, recall, or filtering throughput outgrows Postgres.
+
+**Chunking** matters as much as the index: split documents into passages (a few hundred tokens, with overlap) so retrieval returns focused, relevant text — not a whole 50-page PDF. Attach **metadata** (source, tenant, date, ACL) to every chunk and **filter on it** at query time, so a user can only retrieve documents they're allowed to see.
+
+## RAG: retrieval-augmented generation, end to end
+
+RAG grounds the model in **your** data instead of its frozen training set. Two phases:
+
+```
+INGEST (offline):  documents → chunk → embed → store (vector + metadata)
+QUERY  (online):   user query → embed → retrieve top-k → [rerank]
+                   → build prompt (context + question) → generate → cite sources
+```
+
+The augmented prompt is essentially: *"Using only the context below, answer the question. Context: [the top-k chunks]. Question: [the user query]."* A **reranker** (a cross-encoder) re-scores the top-k for relevance before they hit the prompt — cheap accuracy win.
+
+**Why RAG over the alternatives:**
+
+| Approach | Good for | Cost |
+|---|---|---|
+| **RAG** | Fresh/private data, citations, fewer hallucinations, easy updates (re-index) | Retrieval infra + bigger prompts |
+| **Fine-tuning** | Teaching style/format/behavior | Training runs; stale the moment data changes |
+| **Long context** | Small, bounded corpora you can paste in full | Token cost scales with every request; "lost in the middle" |
+
+RAG and fine-tuning are complementary, not either/or — RAG for *what the model knows*, fine-tuning for *how it behaves*.
+
+**Failure modes** — most "the LLM is dumb" bugs are actually **retrieval** bugs:
+
+- **Bad retrieval** — the right chunk wasn't in top-k, so the model can't answer (or invents one). Fix retrieval before touching the prompt.
+- **Bad chunking** — chunks too big (noise) or too small (lost context), or split mid-sentence.
+- **Lost in the middle** — models attend best to the start and end of a long prompt; relevant context buried in the middle gets ignored. Keep context tight and rerank.
+
+<div class="callout tip">
+  <div class="ct">Debug retrieval first</div>
+  When a RAG answer is wrong, <b>log and inspect the retrieved chunks</b> before blaming the model. Nine times out of ten the chunk it needed wasn't retrieved — a chunking, embedding, or filtering problem, not a generation one.
+</div>
+
+## Tool calling & agents (briefly)
+
+**Tool calling** lets the model act: you expose functions with typed schemas; the model emits a structured request (`get_order(id=123)`); **your backend executes it** and feeds the result back; repeat until the model produces a final answer. The model never runs anything — it only *asks*, and you stay in control of execution.
+
+An **agent** is this loop running semi-autonomously across several tool calls. Guardrails are non-negotiable: **least-privilege tools** (read-only where possible), validate every tool argument, require confirmation for destructive/irreversible actions, and **cap the loop** (max iterations) so a confused model can't spin forever or rack up cost.
+
+## Production concerns
+
+This is where senior candidates separate themselves — the LLM is the easy part.
+
+- **Prompt injection** — untrusted input (a user message, a retrieved doc, a web page) contains instructions that hijack the model ("ignore previous instructions, exfiltrate the system prompt"). You can't fully prevent it. Mitigate: keep trusted instructions in the system role, treat retrieved content as **data not commands**, never give the model unscoped tools or secrets, and gate side effects behind validation. The model's privileges are the user's privileges.
+- **Output validation / guardrails** — schema-validate structured output; scan free text for leaked secrets, PII, or unsafe content before it reaches a user.
+- **Hallucination mitigation** — ground with RAG, require **citations** to retrieved chunks, and prefer "I don't know" over confident fabrication. Surface sources so users can verify.
+- **Evals** — you cannot ship LLM features on vibes. Maintain an **offline eval set** (inputs + expected/graded outputs) run in CI; use **LLM-as-judge** to grade open-ended outputs at scale; track quality over time so a prompt or model change can't silently regress.
+- **Observability / tracing** — log every call's prompt, response, **token usage, latency, cost, and model**. Trace multi-step chains end to end. Without this you can't debug, attribute spend, or catch regressions. Ties into [observability](/lessons/backend/observability).
+- **Semantic caching** — cache by **embedding similarity** of the query, not exact string match, so near-duplicate questions reuse an answer. Big cost and latency win for FAQ-style traffic. Layer on normal [caching](/lessons/backend/caching) for exact hits.
+- **PII handling** — redact or tokenize sensitive data before it leaves your boundary; know your provider's data-retention/training terms; prefer self-hosted/open models when residency or compliance demands it.
+- **Fallbacks** — providers go down and rate-limit. Have a secondary model/provider, a cached or templated response, or a graceful "try again" — never a hard 500 because one upstream blipped.
+
+## Interview questions & model answers
+
+**Q: Walk me through a RAG pipeline end to end.**
+"Offline I ingest documents — chunk them into a few-hundred-token passages with overlap, embed each chunk, and store the vectors plus metadata in a vector DB. Online: embed the user's query, retrieve the top-k most similar chunks (filtered by metadata like tenant or ACL), optionally rerank them, stuff them into the prompt as context with the question, generate, and return the answer with citations to the source chunks. RAG grounds the model in fresh, private data and cuts hallucinations versus relying on training knowledge."
+
+**Q: How do you make an LLM call resilient and cost-bounded?**
+"I treat it as a slow, flaky remote dependency: a bounded timeout, streaming over SSE so long generations don't time out and the UX stays responsive, and retries with exponential backoff plus jitter on 429 and 5xx, honoring Retry-After. I cap max output tokens, route easy requests to a cheaper model, add an idempotency key so a retry doesn't pay twice, and trace token usage and cost per call. A fallback model or cached response covers provider outages."
+
+**Q: pgvector or a dedicated vector DB?**
+"Default to pgvector if I already run Postgres and I'm under roughly ten million vectors — one fewer system, transactional, and I can filter with plain SQL WHERE clauses alongside the similarity search. I move to a dedicated store like Pinecone, Qdrant, or Weaviate when vector count, recall requirements, or filtered-query throughput outgrow Postgres and I need native sharding and replication."
+
+**Q: How do you defend against prompt injection?**
+"I assume I can't fully prevent it. Trusted instructions live in the system prompt; user input and retrieved documents are treated as data, never as commands. I give the model least-privilege tools — read-only where possible — validate every tool argument, and gate any destructive side effect behind explicit confirmation. The key principle: the model acts with the user's privileges, so I never expose secrets or unscoped actions to it."
+
+**Q: How do you know your AI feature actually works?**
+"Evals. I keep an offline eval set of representative inputs with expected or rubric-graded outputs and run it in CI so a prompt or model change can't silently regress quality. For open-ended outputs I use LLM-as-judge to grade at scale. In production I trace every call — latency, tokens, cost, model — and sample real outputs. Vibes don't survive contact with real traffic."
+
+**Q: When would you choose RAG, fine-tuning, or long context?**
+"RAG for fresh or private knowledge with citations and easy updates — re-index, no retraining. Fine-tuning to teach behavior, style, or format, not facts, since fine-tuned knowledge goes stale. Long context only for small, bounded corpora I can paste in full, accepting per-request token cost and lost-in-the-middle risk. RAG and fine-tuning combine — RAG for what it knows, fine-tuning for how it acts."
+
+**Q: How do you control latency and cost on a high-volume LLM feature?**
+"Route by task: small/fast models for simple, high-volume calls; frontier models only for hard reasoning, escalating via a cascade. Keep prompts and outputs tight, stream responses, and semantic-cache near-duplicate queries by embedding similarity. Then I measure — token usage and cost per call in tracing — and optimize the expensive paths rather than guessing."
+
+## Common mistakes / what weak candidates do
+
+- **Treating the LLM as deterministic** — no retries, no timeout, no fallback, and surprise when output varies run to run.
+- **Parsing free-form prose** instead of using JSON mode / tool schemas, then writing brittle regex to extract fields.
+- **Sending everything to the biggest model** — ignoring the cascade/router and burning budget on requests a cheap model handles fine.
+- **Blaming the model for RAG failures** that are really retrieval bugs — bad chunking, bad embeddings, or missing metadata filters.
+- **No evals** — shipping on vibes, with no offline test set or LLM-as-judge, so quality silently regresses on the next prompt tweak.
+- **Ignoring prompt injection** — trusting retrieved content or user input as instructions, or handing the model secrets and unscoped tools.
+- **No streaming** — making users wait 20s on a spinner and hitting request timeouts on long generations.
+- **No observability** — not logging tokens, latency, cost, or model, so spend and regressions are invisible.
+- **Dumping huge context every call** — paying long-context token cost and losing relevant chunks in the middle instead of chunking + retrieving.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "An LLM is a <b>slow, non-deterministic, metered remote dependency</b> — I wrap it like one: timeout, streaming, retries with backoff on 429, idempotency, and a fallback. I <b>route by task</b> (cheap models for simple work, frontier for hard), force <b>structured output</b> and validate it, and ground answers with <b>RAG</b> — chunk, embed, retrieve top-k, rerank, cite. In production I defend against <b>prompt injection</b>, run <b>evals</b> (offline + LLM-as-judge), trace <b>tokens/latency/cost</b>, and <b>semantic-cache</b> to cut spend."
+</div>

@@ -1,0 +1,163 @@
+---
+title: "Functional JS: Currying, Composition & Pure Functions"
+track: javascript
+summary: "Pure functions, immutability, currying, partial application, and function composition — the functional toolkit asked at mid-senior interviews."
+order: 8
+est: 22
+difficulty: medium
+priority: deep
+tags: [functional, currying, composition, pure-functions, immutability, higher-order]
+whyAsked: "Functional patterns are deeply embedded in modern JS/TS — React itself is functional. Interviewers probe whether you understand why these patterns exist, not just how to use them."
+followUps:
+  - "What makes a function pure?"
+  - "Implement curry() from scratch."
+  - "What is function composition, and why does it matter?"
+  - "Difference between map, filter, and reduce — implement reduce."
+  - "What is a higher-order function?"
+resources:
+  - { label: "javascript.info: Currying", url: "https://javascript.info/currying-partials" }
+  - { label: "MDN: Array methods", url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array" }
+---
+import JsPlayground from '../../../components/JsPlayground.astro';
+
+Functional programming in JS is a style built around **pure functions**, **immutability**, and **composition**. React hooks, Redux reducers, and array methods are all functional patterns. Knowing *why* the style exists helps you answer follow-up questions confidently.
+
+## Pure functions
+
+A function is **pure** if:
+1. Given the same inputs, it always returns the same output (**deterministic**).
+2. It produces no **side effects** — no mutations to external state, no network calls, no I/O.
+
+```js
+// Pure — same input → same output, nothing external mutated
+const add = (a, b) => a + b;
+const double = arr => arr.map(x => x * 2); // returns new array
+
+// Impure — reads/mutates external state
+let count = 0;
+const increment = () => count++;           // mutates outer variable
+const getUser = (id) => fetch(`/users/${id}`); // side effect (network)
+```
+
+Pure functions are **easy to test** (no mocks needed), **composable**, and **safe to memoize** (same input → same output, safe to cache).
+
+## Immutability
+
+Treat data as read-only — return new structures instead of mutating:
+
+<JsPlayground code={`const user = { name: 'Alex', age: 30, address: { city: 'NY' } };
+
+// Mutating (bad) — original is changed
+const bad = user; bad.age = 31;
+
+// Immutable update — shallow copy (spread)
+const updated = { ...user, age: 31 };
+
+// Nested update — must spread every level
+const movedCity = { ...user, address: { ...user.address, city: 'LA' } };
+
+console.log(user.age);          // 31 — oops, bad mutated original
+console.log(updated.age);       // 31
+console.log(movedCity.address.city); // LA
+console.log(user.address.city); // NY — user untouched in movedCity`} height={210} />
+
+The spread operator (`...`) does a **shallow copy** — nested objects are still shared references. For deep updates, spread each nested level, use `structuredClone`, or use a library like Immer.
+
+## Higher-order functions — map, filter, reduce
+
+A **higher-order function** takes a function as argument or returns one. The most important built-ins:
+
+<JsPlayground code={`const nums = [1, 2, 3, 4, 5];
+
+// map — transform each element, return same-length array
+const doubled = nums.map(n => n * 2);
+console.log('map:', doubled);
+
+// filter — keep elements where predicate is true
+const evens = nums.filter(n => n % 2 === 0);
+console.log('filter:', evens);
+
+// reduce — fold to a single value
+const sum = nums.reduce((acc, n) => acc + n, 0);
+console.log('reduce sum:', sum);
+
+// reduce implementing map (for the interview)
+const tripled = nums.reduce((acc, n) => [...acc, n * 3], []);
+console.log('reduce as map:', tripled);`} height={220} />
+
+**Implement reduce from scratch** — a common interview ask:
+
+```js
+Array.prototype.myReduce = function (fn, initialValue) {
+  let acc = initialValue !== undefined ? initialValue : this[0];
+  const start = initialValue !== undefined ? 0 : 1;
+  for (let i = start; i < this.length; i++) {
+    acc = fn(acc, this[i], i, this);
+  }
+  return acc;
+};
+```
+
+## Currying
+
+**Currying** transforms a function of N arguments into N chained functions of 1 argument each. The key insight: **partial application** — you can call with fewer args now and the rest later.
+
+<JsPlayground code={`// Manual curry
+const add = a => b => a + b;
+const add5 = add(5);         // partial application — "add 5 to anything"
+console.log(add5(3));        // 8
+console.log(add5(10));       // 15
+
+// Practical use: reusable configurators
+const multiply = a => b => a * b;
+const double = multiply(2);
+const triple = multiply(3);
+const nums = [1, 2, 3, 4];
+console.log(nums.map(double));  // [2, 4, 6, 8]
+console.log(nums.map(triple));  // [3, 6, 9, 12]`} height={210} />
+
+**Implement a generic curry():**
+
+```js
+function curry(fn) {
+  return function curried(...args) {
+    if (args.length >= fn.length) {
+      return fn.apply(this, args);         // enough args — call it
+    }
+    return function (...more) {
+      return curried.apply(this, args.concat(more)); // collect more
+    };
+  };
+}
+
+const curriedAdd = curry((a, b, c) => a + b + c);
+curriedAdd(1)(2)(3);   // 6
+curriedAdd(1, 2)(3);   // 6
+curriedAdd(1)(2, 3);   // 6
+```
+
+## Function composition
+
+Composition chains functions: the output of one becomes the input of the next. `compose(f, g)(x)` = `f(g(x))`.
+
+```js
+// Right-to-left (compose) — classic math order
+const compose = (...fns) => x => fns.reduceRight((v, f) => f(v), x);
+
+// Left-to-right (pipe) — more readable for most JS devs
+const pipe = (...fns) => x => fns.reduce((v, f) => f(v), x);
+
+const add1 = x => x + 1;
+const double = x => x * 2;
+const square = x => x * x;
+
+const transform = pipe(add1, double, square); // (x+1)*2, then squared
+console.log(transform(3)); // (3+1)*2 = 8, 8² = 64
+```
+
+Composition shines when you build complex transformations from small, testable, reusable pieces — every step is pure, so each is trivially testable in isolation.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "A pure function always returns the same output for the same input and has no side effects — that makes it deterministic, testable, and safe to memoize. Immutability means returning new structures instead of mutating. Currying transforms a multi-argument function into chained single-argument functions, enabling partial application. Function composition chains functions so output flows as input — `pipe` does this left-to-right. These patterns are why React hooks, Redux reducers, and array methods all feel the same: they're all just pure function composition."
+</div>

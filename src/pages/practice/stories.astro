@@ -1,0 +1,397 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+
+// Curated bank of the behavioral questions that actually get asked at SDE-2+,
+// grouped by the competency each one probes.
+const THEMES = [
+  { theme: 'Leadership & Influence', icon: '🧭', items: [
+    { id: 'lead-1', q: 'Tell me about a time you led a project or initiative.' },
+    { id: 'lead-2', q: 'Describe a time you influenced a decision without formal authority.' },
+    { id: 'lead-3', q: 'Tell me about a time you mentored or unblocked a teammate.' },
+  ]},
+  { theme: 'Conflict & Collaboration', icon: '🤝', items: [
+    { id: 'conf-1', q: 'Describe a disagreement with a coworker or manager. How did you resolve it?' },
+    { id: 'conf-2', q: 'Tell me about working with a difficult person.' },
+    { id: 'conf-3', q: 'A time you had to convince a team to adopt your approach.' },
+  ]},
+  { theme: 'Failure & Growth', icon: '🌱', items: [
+    { id: 'fail-1', q: 'Tell me about your biggest failure and what you learned.' },
+    { id: 'fail-2', q: 'A time you received tough or critical feedback.' },
+    { id: 'fail-3', q: 'Describe a mistake you made that affected others.' },
+  ]},
+  { theme: 'Ownership & Drive', icon: '🚀', items: [
+    { id: 'own-1', q: 'Tell me about a time you went above and beyond.' },
+    { id: 'own-2', q: 'A time you took on something outside your role.' },
+    { id: 'own-3', q: 'Describe delivering a project under a tight deadline.' },
+  ]},
+  { theme: 'Ambiguity & Problem-Solving', icon: '🧩', items: [
+    { id: 'amb-1', q: 'Tell me about the hardest technical problem you solved.' },
+    { id: 'amb-2', q: 'A time you made a decision with incomplete information.' },
+    { id: 'amb-3', q: 'How did you handle competing priorities?' },
+  ]},
+  { theme: 'Impact & Customer', icon: '📈', items: [
+    { id: 'imp-1', q: 'What is your most significant technical contribution?' },
+    { id: 'imp-2', q: 'A time you improved a process, system, or performance.' },
+    { id: 'imp-3', q: 'Describe a time you put the user or customer first.' },
+  ]},
+];
+const totalQuestions = THEMES.reduce((s, t) => s + t.items.length, 0);
+---
+<BaseLayout title="STAR Story Bank · SDE-2 Launchpad" active="stories">
+  <div class="wrap" style="padding-top:28px;max-width:920px">
+    <div class="row" style="justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap">
+      <div>
+        <h1>STAR Story Bank</h1>
+        <p class="sub" style="margin:0">The behavioral round decides offers and pay — and it's the half most engineers neglect. Build a handful of strong stories in <b>S</b>ituation · <b>T</b>ask · <b>A</b>ction · <b>R</b>esult, map them to the questions they answer, then rehearse out loud.</p>
+      </div>
+    </div>
+
+    <!-- action bar -->
+    <div class="panel" style="margin-top:18px;display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+      <div style="flex:1;min-width:200px">
+        <b id="stStatLine" style="font-size:16px">0 stories · 0 / {totalQuestions} questions covered</b>
+        <div class="bar" style="margin-top:8px;max-width:340px"><i id="stCovBar"></i></div>
+      </div>
+      <div class="row">
+        <button class="btn" id="rehearseBtn">🎙 Rehearse</button>
+        <button class="btn btn-primary" id="newStoryBtn">＋ New story</button>
+      </div>
+    </div>
+
+    <!-- coverage map -->
+    <h2 style="margin-top:30px;font-size:20px">Question coverage</h2>
+    <p class="muted" style="font-size:13px;margin:4px 0 14px">A <span style="color:var(--accent-2)">mint</span> chip means you have a story for it. Click a <span style="color:var(--faint)">grey</span> gap to draft one.</p>
+    <div id="stCoverage"></div>
+
+    <!-- stories -->
+    <h2 style="margin-top:30px;font-size:20px">Your stories</h2>
+    <div id="stList" style="margin-top:12px"></div>
+  </div>
+
+  <!-- ════════ BUILDER MODAL ════════ -->
+  <div class="st-overlay" id="builderOverlay" hidden>
+    <div class="st-modal glass">
+      <div class="st-modal-head">
+        <h2 id="builderTitle">New story</h2>
+        <button class="st-x" id="builderClose">✕</button>
+      </div>
+      <div class="st-modal-body">
+        <label class="st-flabel">Title <span class="muted">— a short handle you'll recognize</span></label>
+        <input type="text" id="fTitle" class="st-input" placeholder="e.g. Migrated the feed to FlashList under deadline" />
+
+        <div class="st-star-grid">
+          <div>
+            <label class="st-flabel"><span class="st-letter">S</span> Situation <span class="muted">— context, briefly</span></label>
+            <textarea id="fS" class="st-input st-area" placeholder="Set the scene in 1–2 sentences. When, where, what was at stake."></textarea>
+          </div>
+          <div>
+            <label class="st-flabel"><span class="st-letter">T</span> Task <span class="muted">— your responsibility</span></label>
+            <textarea id="fT" class="st-input st-area" placeholder="What were YOU specifically responsible for? What was the goal?"></textarea>
+          </div>
+          <div>
+            <label class="st-flabel"><span class="st-letter">A</span> Action <span class="muted">— what you did</span></label>
+            <textarea id="fA" class="st-input st-area" placeholder="The steps YOU took. Use 'I', not 'we'. This is the longest part."></textarea>
+          </div>
+          <div>
+            <label class="st-flabel"><span class="st-letter">R</span> Result <span class="muted">— the outcome, quantified</span></label>
+            <textarea id="fR" class="st-input st-area" placeholder="Impact with numbers if possible (%, time saved, $, users). What you learned."></textarea>
+          </div>
+        </div>
+
+        <label class="st-flabel" style="margin-top:18px">Which questions does this answer?</label>
+        <div id="fQuestions" class="st-qpick"></div>
+      </div>
+      <div class="st-modal-foot">
+        <button class="btn" id="builderCancel">Cancel</button>
+        <span class="muted" id="builderHint" style="font-size:12px"></span>
+        <button class="btn btn-primary" id="builderSave">Save story</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════ REHEARSE MODAL ════════ -->
+  <div class="st-overlay" id="rehearseOverlay" hidden>
+    <div class="st-modal glass" style="max-width:560px">
+      <div class="st-modal-head">
+        <h2>🎙 Rehearse</h2>
+        <button class="st-x" id="rehearseClose">✕</button>
+      </div>
+      <div class="st-modal-body" style="text-align:center">
+        <span class="tag" id="rhTheme" style="margin-bottom:14px;display:inline-block"></span>
+        <div id="rhQuestion" style="font-size:22px;font-weight:700;line-height:1.3;margin:6px 0 20px"></div>
+        <p class="muted" id="rhPrompt" style="font-size:14px">Answer this out loud using one of your stories. Then reveal to check.</p>
+
+        <div id="rhReveal" class="hide" style="text-align:left;margin-top:18px"></div>
+      </div>
+      <div class="st-modal-foot" id="rhFootReveal">
+        <button class="btn" id="rhSkip">Skip →</button>
+        <div class="spacer"></div>
+        <button class="btn btn-primary" id="rhRevealBtn">Reveal my story</button>
+      </div>
+      <div class="st-modal-foot hide" id="rhFootRate">
+        <span class="muted" style="font-size:13px">How did it feel?</span>
+        <div class="spacer"></div>
+        <button class="btn rh-rate" data-r="1" style="border-color:var(--hot);color:var(--hot)">Shaky</button>
+        <button class="btn rh-rate" data-r="2">OK</button>
+        <button class="btn rh-rate" data-r="3" style="border-color:var(--accent-2);color:var(--accent-2)">Strong</button>
+      </div>
+    </div>
+  </div>
+
+  <style is:global>
+    .st-letter { display:inline-grid; place-items:center; width:20px; height:20px; border-radius:5px; background:var(--accent-deep); color:#fff; font-weight:800; font-size:12px; margin-right:2px; }
+
+    /* coverage map */
+    .st-theme { margin-bottom:16px; }
+    .st-theme-head { display:flex; align-items:center; gap:8px; font-size:14px; font-weight:600; margin-bottom:9px; }
+    .st-theme-head .st-theme-ct { font-family:var(--mono); font-size:11px; color:var(--muted); font-weight:400; }
+    .st-chips { display:flex; flex-wrap:wrap; gap:8px; }
+    .st-chip { padding:8px 13px; border-radius:10px; border:1px solid; font-size:13px; cursor:pointer; transition:.15s; max-width:100%; }
+    .st-chip.covered { background:rgba(78,222,163,.12); border-color:rgba(78,222,163,.35); color:var(--text); }
+    .st-chip.covered::before { content:'✓ '; color:var(--accent-2); font-weight:700; }
+    .st-chip.gap { background:rgba(255,255,255,.03); border-color:var(--line); color:var(--muted); }
+    .st-chip.gap:hover { border-color:var(--accent); color:var(--text); }
+
+    /* story cards */
+    .st-card { border:1px solid var(--line); border-radius:13px; background:var(--panel); margin-bottom:12px; overflow:hidden; }
+    .st-card-head { display:flex; align-items:center; gap:12px; padding:14px 16px; cursor:pointer; }
+    .st-card-head:hover { background:var(--panel-2); }
+    .st-card-title { flex:1; min-width:0; font-size:15px; font-weight:600; }
+    .st-card-meta { font-family:var(--mono); font-size:11px; color:var(--muted); display:flex; gap:10px; flex-wrap:wrap; }
+    .st-card-body { padding:0 16px 16px; border-top:1px solid var(--line); }
+    .st-star-block { margin-top:12px; }
+    .st-star-block .st-sl { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:var(--accent); }
+    .st-star-block p { font-size:14px; color:var(--text); margin-top:3px; white-space:pre-wrap; }
+    .st-card-covers { margin-top:14px; display:flex; flex-wrap:wrap; gap:6px; }
+    .st-card-actions { margin-top:14px; display:flex; gap:8px; }
+    .st-empty { text-align:center; padding:36px 20px; color:var(--muted); border:1px dashed var(--line); border-radius:13px; }
+
+    /* modals */
+    .st-overlay { position:fixed; inset:0; background:rgba(6,14,32,.86); backdrop-filter:blur(5px); z-index:300; display:flex; align-items:center; justify-content:center; padding:18px; }
+    .st-overlay[hidden] { display:none; }
+    .st-modal { width:min(640px,96vw); max-height:90vh; display:flex; flex-direction:column; border-radius:18px; overflow:hidden; box-shadow:var(--shadow); }
+    .st-modal-head { display:flex; justify-content:space-between; align-items:center; padding:18px 22px; border-bottom:1px solid var(--line); }
+    .st-modal-head h2 { font-size:20px; font-weight:700; }
+    .st-x { width:32px; height:32px; border-radius:50%; border:none; background:none; color:var(--muted); font-size:16px; cursor:pointer; }
+    .st-x:hover { background:var(--panel-3); color:var(--text); }
+    .st-modal-body { padding:20px 22px; overflow-y:auto; }
+    .st-modal-foot { display:flex; align-items:center; gap:10px; padding:14px 22px; border-top:1px solid var(--line); }
+    .st-flabel { display:block; font-size:13px; font-weight:600; margin-bottom:6px; }
+    .st-input { width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:rgba(255,255,255,.03); color:var(--text); font-size:14px; font-family:var(--font); }
+    .st-input:focus { outline:none; border-color:var(--accent); }
+    .st-area { resize:vertical; min-height:64px; line-height:1.5; }
+    .st-star-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:16px; }
+    @media (max-width:560px){ .st-star-grid{grid-template-columns:1fr} }
+    .st-qpick { display:flex; flex-direction:column; gap:14px; }
+    .st-qpick-theme b { font-size:12px; color:var(--muted); }
+    .st-qpick-items { display:flex; flex-direction:column; gap:6px; margin-top:6px; }
+    .st-qpick label { display:flex; gap:9px; align-items:flex-start; font-size:13.5px; cursor:pointer; padding:4px 0; }
+    .st-qpick input { margin-top:2px; accent-color:var(--accent-2); }
+  </style>
+
+  <script define:vars={{ base, THEMES, totalQuestions }}>
+    const store = window.SDE2;
+    const el = (id) => document.getElementById(id);
+    const qById = {}; const themeByQid = {};
+    THEMES.forEach((t) => t.items.forEach((it) => { qById[it.id] = it.q; themeByQid[it.id] = t.theme; }));
+
+    let editingId = null;
+
+    /* ── coverage + stats ── */
+    function coveredQids() {
+      const set = new Set();
+      store.stories().forEach((s) => (s.questions || []).forEach((q) => set.add(q)));
+      return set;
+    }
+    function paintStats() {
+      const stories = store.stories();
+      const cov = coveredQids();
+      el('stStatLine').textContent = `${stories.length} ${stories.length === 1 ? 'story' : 'stories'} · ${cov.size} / ${totalQuestions} questions covered`;
+      el('stCovBar').style.width = Math.round(cov.size / totalQuestions * 100) + '%';
+    }
+    function paintCoverage() {
+      const cov = coveredQids();
+      el('stCoverage').innerHTML = THEMES.map((t) => {
+        const covCt = t.items.filter((i) => cov.has(i.id)).length;
+        return `<div class="st-theme">
+          <div class="st-theme-head">${t.icon} ${t.theme} <span class="st-theme-ct">${covCt}/${t.items.length}</span></div>
+          <div class="st-chips">
+            ${t.items.map((i) => `<div class="st-chip ${cov.has(i.id) ? 'covered' : 'gap'}" data-qid="${i.id}" title="${cov.has(i.id) ? 'Covered — click to view story' : 'Gap — click to draft a story'}">${i.q}</div>`).join('')}
+          </div>
+        </div>`;
+      }).join('');
+      el('stCoverage').querySelectorAll('.st-chip').forEach((c) => {
+        c.addEventListener('click', () => {
+          const qid = c.dataset.qid;
+          const owner = store.stories().find((s) => (s.questions || []).includes(qid));
+          if (owner) { openBuilder(owner.id); }
+          else { openBuilder(null, qid); }
+        });
+      });
+    }
+
+    /* ── story list ── */
+    function paintList() {
+      const stories = store.stories();
+      if (!stories.length) {
+        el('stList').innerHTML = `<div class="st-empty">No stories yet. Aim for <b>6–8</b> strong ones that cover the themes above.<br><button class="btn btn-primary" id="emptyNew" style="margin-top:14px">＋ Build your first story</button></div>`;
+        el('emptyNew').addEventListener('click', () => openBuilder());
+        return;
+      }
+      el('stList').innerHTML = stories.map((s) => {
+        const covers = (s.questions || []).map((q) => qById[q]).filter(Boolean);
+        const conf = s.confidence ? ['', 'Shaky', 'OK', 'Strong'][s.confidence] : '';
+        return `<div class="st-card" data-id="${s.id}">
+          <div class="st-card-head" data-toggle="${s.id}">
+            <span class="st-card-title">${esc(s.title || 'Untitled story')}</span>
+            <span class="st-card-meta">
+              <span>${covers.length} Q</span>
+              <span>🎙 ${s.rehearsals || 0}</span>
+              ${conf ? `<span style="color:var(--accent-2)">${conf}</span>` : ''}
+            </span>
+            <span class="chev" data-chev="${s.id}">▶</span>
+          </div>
+          <div class="st-card-body hide" data-body="${s.id}">
+            ${starBlock('Situation', s.situation)}
+            ${starBlock('Task', s.task)}
+            ${starBlock('Action', s.action)}
+            ${starBlock('Result', s.result)}
+            ${covers.length ? `<div class="st-card-covers">${covers.map((q) => `<span class="tag">${esc(q)}</span>`).join('')}</div>` : ''}
+            <div class="st-card-actions">
+              <button class="btn" data-edit="${s.id}">✎ Edit</button>
+              <button class="btn" data-del="${s.id}" style="color:var(--hot);border-color:var(--hot)">Delete</button>
+            </div>
+          </div>
+        </div>`;
+      }).join('');
+
+      el('stList').querySelectorAll('[data-toggle]').forEach((h) => h.addEventListener('click', (e) => {
+        if (e.target.closest('button')) return;
+        const id = h.dataset.toggle;
+        el('stList').querySelector(`[data-body="${id}"]`).classList.toggle('hide');
+        const chev = el('stList').querySelector(`[data-chev="${id}"]`);
+        chev.style.transform = chev.style.transform ? '' : 'rotate(90deg)';
+      }));
+      el('stList').querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => openBuilder(b.dataset.edit)));
+      el('stList').querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => {
+        if (confirm('Delete this story?')) { store.delStory(b.dataset.del); paintAll(); }
+      }));
+    }
+    function starBlock(label, val) {
+      if (!val) return '';
+      return `<div class="st-star-block"><div class="st-sl">${label}</div><p>${esc(val)}</p></div>`;
+    }
+    function esc(s) { return String(s || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+    /* ── builder ── */
+    function buildQuestionPicker(selected) {
+      el('fQuestions').innerHTML = THEMES.map((t) => `
+        <div class="st-qpick-theme">
+          <b>${t.icon} ${t.theme}</b>
+          <div class="st-qpick-items">
+            ${t.items.map((i) => `<label><input type="checkbox" value="${i.id}" ${selected.includes(i.id) ? 'checked' : ''}>${i.q}</label>`).join('')}
+          </div>
+        </div>`).join('');
+    }
+    function openBuilder(id, preselectQid) {
+      editingId = id || null;
+      const s = id ? store.stories().find((x) => x.id === id) : null;
+      el('builderTitle').textContent = s ? 'Edit story' : 'New story';
+      el('fTitle').value = s ? (s.title || '') : '';
+      el('fS').value = s ? (s.situation || '') : '';
+      el('fT').value = s ? (s.task || '') : '';
+      el('fA').value = s ? (s.action || '') : '';
+      el('fR').value = s ? (s.result || '') : '';
+      const sel = s ? (s.questions || []).slice() : (preselectQid ? [preselectQid] : []);
+      buildQuestionPicker(sel);
+      el('builderHint').textContent = '';
+      el('builderOverlay').hidden = false;
+      setTimeout(() => el('fTitle').focus(), 30);
+    }
+    function closeBuilder() { el('builderOverlay').hidden = true; editingId = null; }
+    el('builderSave').addEventListener('click', () => {
+      const title = el('fTitle').value.trim();
+      if (!title) { el('builderHint').textContent = 'Give it a title first.'; return; }
+      const questions = [...el('fQuestions').querySelectorAll('input:checked')].map((c) => c.value);
+      const data = {
+        title, situation: el('fS').value.trim(), task: el('fT').value.trim(),
+        action: el('fA').value.trim(), result: el('fR').value.trim(), questions,
+      };
+      if (editingId) store.updateStory(editingId, data);
+      else store.addStory(data);
+      closeBuilder(); paintAll();
+    });
+    el('builderClose').addEventListener('click', closeBuilder);
+    el('builderCancel').addEventListener('click', closeBuilder);
+    el('newStoryBtn').addEventListener('click', () => openBuilder());
+    el('builderOverlay').addEventListener('click', (e) => { if (e.target === el('builderOverlay')) closeBuilder(); });
+
+    /* ── rehearse ── */
+    let rhQid = null;
+    function pickQuestion() {
+      // prefer questions the user HAS a story for; fall back to any
+      const cov = [...coveredQids()];
+      const pool = cov.length ? cov : Object.keys(qById);
+      return pool[Math.floor(Math.random() * pool.length)];
+    }
+    function openRehearse() {
+      if (!store.stories().length) {
+        alert('Build at least one story first, then rehearse it.');
+        openBuilder(); return;
+      }
+      el('rehearseOverlay').hidden = false;
+      nextRehearse();
+    }
+    function nextRehearse() {
+      rhQid = pickQuestion();
+      el('rhTheme').textContent = themeByQid[rhQid] || '';
+      el('rhQuestion').textContent = qById[rhQid];
+      el('rhPrompt').classList.remove('hide');
+      el('rhReveal').classList.add('hide');
+      el('rhReveal').innerHTML = '';
+      el('rhFootReveal').classList.remove('hide');
+      el('rhFootRate').classList.add('hide');
+    }
+    el('rhRevealBtn').addEventListener('click', () => {
+      const owners = store.stories().filter((s) => (s.questions || []).includes(rhQid));
+      el('rhPrompt').classList.add('hide');
+      if (!owners.length) {
+        el('rhReveal').innerHTML = `<div class="callout warn"><div class="ct">No story mapped yet</div>This is a gap. Draft a story for it while it's fresh.</div><button class="btn btn-primary" id="rhMake" style="margin-top:10px">＋ Draft a story</button>`;
+        el('rhReveal').classList.remove('hide');
+        el('rhMake').addEventListener('click', () => { el('rehearseOverlay').hidden = true; openBuilder(null, rhQid); });
+        el('rhFootReveal').classList.add('hide');
+        el('rhFootRate').classList.remove('hide');
+        rhRateTarget = null;
+        return;
+      }
+      const s = owners[0];
+      rhRateTarget = s.id;
+      el('rhReveal').innerHTML = `<div class="muted" style="font-size:12px;font-family:var(--mono);margin-bottom:6px">YOUR STORY: ${esc(s.title)}</div>
+        ${starBlock('Situation', s.situation)}${starBlock('Task', s.task)}${starBlock('Action', s.action)}${starBlock('Result', s.result)}`;
+      el('rhReveal').classList.remove('hide');
+      el('rhFootReveal').classList.add('hide');
+      el('rhFootRate').classList.remove('hide');
+    });
+    let rhRateTarget = null;
+    document.querySelectorAll('.rh-rate').forEach((b) => b.addEventListener('click', () => {
+      if (rhRateTarget) store.rehearseStory(rhRateTarget, Number(b.dataset.r));
+      store.markDailyTask('mock'); // rehearsing counts as the daily speaking rep
+      paintStats(); paintList();
+      nextRehearse();
+    }));
+    el('rhSkip').addEventListener('click', nextRehearse);
+    function closeRehearse() { el('rehearseOverlay').hidden = true; }
+    el('rehearseClose').addEventListener('click', closeRehearse);
+    el('rehearseBtn').addEventListener('click', openRehearse);
+    el('rehearseOverlay').addEventListener('click', (e) => { if (e.target === el('rehearseOverlay')) closeRehearse(); });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { closeBuilder(); closeRehearse(); }
+    });
+
+    function paintAll() { paintStats(); paintCoverage(); paintList(); }
+    store.onChange(paintStats);
+    paintAll();
+  </script>
+</BaseLayout>

@@ -1,0 +1,197 @@
+---
+title: "Test planning & strategy"
+track: qa-foundations
+summary: "How QA leads plan: test plan vs test strategy, IEEE-829 plan contents, risk-based testing, estimation, entry/exit criteria, and test environment & data strategy."
+order: 4
+est: 26
+difficulty: medium
+priority: deep
+tags: [test-plan, test-strategy, risk-based, estimation, test-data]
+whyAsked: "Senior and lead QA interviews move past 'write test cases' to 'how would you plan testing for this release?' This shows you can scope, estimate, manage risk and lead."
+followUps:
+  - "Test plan vs test strategy — what's the difference?"
+  - "How do you estimate testing effort?"
+  - "What is risk-based testing?"
+  - "How do you decide what NOT to test?"
+resources:
+  - { label: "IEEE 829 / ISO/IEC/IEEE 29119 test documentation", url: "https://www.iso.org/standard/81291.html" }
+  - { label: "ISTQB Test Manager syllabus", url: "https://www.istqb.org/certifications/advanced-level-test-management" }
+  - { label: "Ministry of Testing — risk-based testing", url: "https://www.ministryoftesting.com/" }
+---
+
+Once you can design test cases, the next bar is planning a whole test effort: scoping it, estimating it, managing risk, and deciding — explicitly — what *not* to test. This is the territory of senior QA and QA-lead interviews, where the question shifts from "how would you test this field?" to "how would you plan testing for this release with three weeks and two testers?"
+
+## Test strategy vs test plan
+
+These are different documents at different altitudes. Mixing them up is a common slip.
+
+| | Test strategy | Test plan |
+|---|---|---|
+| Altitude | Organization / program level | Project / release / sprint level |
+| Question | *How* do we test, in general? | *What, when, who* for this specific effort? |
+| Lifespan | Long-lived, rarely changes | Per project/release, frequently updated |
+| Owner | QA head / architect | Test lead / QA on the project |
+| Contents | Testing approach, levels, tools, standards, automation policy, environments policy, defect process | Scope, schedule, resources, deliverables, entry/exit criteria, risks for *this* project |
+
+One-liner: "Strategy is the long-lived, organization-wide *approach* to testing; the plan is the project-specific *application* of that approach — scope, schedule, people, and exit criteria for this release." In some companies the strategy section lives *inside* the test plan as a chapter; either way, know which is which.
+
+## IEEE-829 / ISO 29119 test plan contents
+
+The classic test plan template (IEEE 829, now folded into ISO/IEC/IEEE 29119) is a reliable checklist interviewers expect you to reproduce:
+
+| Section | What goes in it |
+|---|---|
+| **Test plan identifier** | Unique ID/version |
+| **Introduction** | Purpose, references (requirements, strategy) |
+| **Test items** | What's being tested (features, builds, versions) |
+| **Features to be tested** | In-scope functionality, with priorities |
+| **Features NOT to be tested** | Explicitly out of scope (and *why*) |
+| **Approach** | Levels, types, techniques, automation vs manual |
+| **Item pass/fail criteria** | When an item is considered passed |
+| **Suspension & resumption criteria** | When to stop testing (e.g., smoke fails) and when to resume |
+| **Test deliverables** | Plan, cases, data, reports, RTM, defect logs |
+| **Test environment** | Hardware, software, network, tools, data needs |
+| **Responsibilities** | Who does what |
+| **Staffing & training** | People and skills needed |
+| **Schedule** | Milestones, dependencies, timeline |
+| **Risks & contingencies** | Project/product risks and mitigations |
+| **Approvals** | Sign-offs |
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  The two sections weak candidates skip are "Features NOT to be tested" and "Risks & contingencies." Naming what's out of scope (and why) is a maturity signal — it shows you make deliberate trade-offs instead of pretending you'll test everything.
+</div>
+
+## Risk-based testing
+
+You can't test everything, so prioritize by **risk = likelihood of failure × impact of failure**. Risk-based testing concentrates effort where the product is both most likely to break and most costly if it does.
+
+A simple risk matrix:
+
+| | Low impact | High impact |
+|---|---|---|
+| **High likelihood** | Test (medium) | **Test first / most** |
+| **Low likelihood** | Test lightly / defer | Test (medium-high) |
+
+How to apply it:
+
+1. List features/areas.
+2. Score each on likelihood (complexity, churn, history of defects, new tech, integration points) and impact (revenue, safety, data, brand, number of users).
+3. Multiply/rank to get a priority order.
+4. Allocate depth of testing to match — exhaustive on the top quadrant, sampling on the bottom-left.
+5. Be explicit about residual risk: "we deprioritized X; the residual risk is Y."
+
+This is also how you answer "what would you cut if the deadline moves up by a week?" — cut the lowest-risk areas, document the residual risk, and tell stakeholders so *they* own the decision.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Risk-based testing turns "I can't test everything" from a weakness into a strategy: you make the prioritization explicit and let the business sign off on the residual risk.
+</div>
+
+## Estimation techniques
+
+Lead interviews ask "how do you estimate testing effort?" Know several techniques and when each fits:
+
+- **Work breakdown structure (WBS):** break testing into tasks (design, execution, automation, retest, reporting), estimate each, sum, then add buffer.
+- **Three-point / PERT:** for each task estimate Optimistic (O), Most-likely (M), Pessimistic (P); estimate = (O + 4M + P) / 6. Accounts for uncertainty.
+- **Test-case-point / function-point based:** size from the number and complexity of cases or features.
+- **Analogy / historical:** "last release of similar size took N tester-days." Cheap and surprisingly accurate when you have data.
+- **Percentage of dev effort:** testing often runs ~25–50% of development effort; a rough sanity check, not a primary method.
+- **Wideband Delphi / planning poker:** team estimates independently, then converges — reduces individual bias.
+
+Always factor in: test design, environment setup, execution *cycles* (you rarely run once — plan for re-test + regression rounds), defect logging/retesting, automation build vs maintenance, meetings, and a risk buffer (commonly 10–20%). State your assumptions out loud — that's what interviewers grade.
+
+## Entry & exit criteria
+
+Crisp, testable gates around the test phase. Don't confuse these with suspension/resumption criteria (which are about *pausing* mid-cycle).
+
+**Entry criteria (can we start testing?):**
+- Requirements/AC reviewed and stable.
+- Test cases designed and reviewed; test data ready.
+- A build is deployed to a ready, stable test environment.
+- Smoke test of the build passes.
+
+**Exit criteria (can we stop / release?):**
+- Planned test cases executed (e.g., ≥ 95%); critical paths 100%.
+- No open critical or high-severity defects (or formally accepted with sign-off).
+- Coverage targets met against the RTM.
+- Defect arrival rate has flattened/trended down.
+- Test summary report produced and signed off.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  "Zero bugs" is not a realistic exit criterion. Mature exit criteria are about *residual risk being acceptable*: no open criticals, key journeys pass, and any remaining known issues are documented and accepted by the business.
+</div>
+
+## Test environments
+
+A controlled environment is where most schedules quietly die. Plan for it:
+
+- **Tiers:** dev → integration/QA → staging (production-like) → production. Staging should mirror prod config, data shape, and integrations as closely as possible.
+- **Environment risks:** shared environments cause data collisions and "works on my machine"; config drift between staging and prod hides defects; flaky third-party sandboxes block execution.
+- **Strategy:** isolated/ephemeral environments (containers, IaC) per team or branch; environment health smoke checks; clear ownership; mocked/stubbed third parties when their sandboxes are unreliable.
+
+## Test data strategy
+
+Realistic, controlled data is as important as the environment. Approaches:
+
+- **Production-like masked data:** copy prod and anonymize/mask PII (GDPR/privacy compliance) — realistic, but governance-heavy.
+- **Synthetic / generated data:** scripted or tool-generated; safe, scalable, repeatable; good for boundary and volume cases.
+- **Seeded fixtures:** known, version-controlled data sets set up before a run and torn down after — best for deterministic automation.
+- **On-demand setup via API:** create exactly the state a test needs (a user with a specific cart) through APIs rather than the UI — faster and less flaky.
+
+Key concerns: data privacy/masking (never use real PII in lower environments), data independence (tests shouldn't depend on each other's data), refresh/cleanup, and covering edge data (max-length strings, unicode, leap years, time zones, currency rounding).
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Deterministic tests need deterministic data. Prefer per-test setup/teardown over a shared mutable database — shared data is the number-one cause of flaky, order-dependent test suites.
+</div>
+
+## What a QA lead is actually asked
+
+Beyond planning artifacts, lead interviews probe leadership judgment:
+
+- **"How do you decide what not to test?"** — risk-based prioritization with documented residual risk and business sign-off.
+- **"The release is in two days and regression isn't done — what do you do?"** — run the highest-risk regression first, communicate coverage and residual risk transparently, recommend a go/no-go with data, and let the business own the call. Never silently sign off.
+- **"How do you estimate?"** — WBS + three-point with explicit assumptions and buffer; calibrate against history.
+- **"How do you measure your team's effectiveness?"** — DRE, escape rate, coverage vs RTM, defect trends — as signals, not weapons.
+- **"Automation vs manual split?"** — automate stable, repetitive, high-value regression; keep exploratory and one-off checks manual; follow the pyramid.
+
+## Interview questions & model answers
+
+**Q: Test plan vs test strategy?**
+"Strategy is the long-lived, organization-wide approach — levels, tools, automation policy, defect process. The plan applies that approach to a specific project: scope, schedule, resources, deliverables, and entry/exit criteria. Strategy is the *how in general*; the plan is the *what, when, and who* for this release."
+
+**Q: What's in a test plan?**
+"Roughly the IEEE-829 sections: scope and items, features in and *out* of scope, approach, pass/fail and suspension/resumption criteria, entry/exit criteria, deliverables, environment, responsibilities, schedule, and risks with mitigations."
+
+**Q: What is risk-based testing?**
+"Prioritizing test effort by risk — likelihood of failure times impact. I score each area, test the high-likelihood/high-impact items first and deepest, sample the low-risk ones, and document residual risk so the business can accept it."
+
+**Q: How do you estimate testing effort?**
+"Usually a work breakdown plus three-point estimation: for each task I take optimistic, most-likely and pessimistic and weight them, summing across design, execution cycles, automation, retest and reporting, then add a 10–20% risk buffer. I calibrate against similar past releases and state my assumptions."
+
+**Q: How do you decide what NOT to test?**
+"Through risk. The lowest likelihood-times-impact areas get minimal or no dedicated testing. I make that explicit in 'features not to be tested', state the residual risk, and get business sign-off rather than deciding silently."
+
+**Q: What are good exit criteria?**
+"Planned cases executed with critical paths at 100%, no open critical or high defects (or accepted with sign-off), coverage met against the RTM, defect arrival trending down, and a signed-off summary report. Not 'zero bugs' — acceptable residual risk."
+
+**Q: How do you handle unreliable third-party dependencies in testing?**
+"Mock or stub them for deterministic functional testing, and run a smaller set of real integration tests against their sandbox on a schedule. That keeps the suite stable while still verifying the real contract periodically."
+
+## Common mistakes / what weak candidates say
+
+- Treating test plan and test strategy as the same thing.
+- Forgetting "features not to be tested" and risk sections of a plan.
+- Estimating a single number with no assumptions, buffer, or multiple cycles.
+- Claiming exit criterion is "zero defects."
+- Ignoring environment and test-data strategy — where real schedules slip.
+- Using real production PII in lower environments.
+- Owning the go/no-go decision themselves instead of giving the business the data to decide.
+- Treating metrics as targets to hit rather than signals.
+
+<div class="callout tip">
+  <div class="ct">Interview-ready summary</div>
+  "I separate the long-lived strategy from the project test plan, scope with an IEEE-829-style template — including what's explicitly out of scope — and prioritize with risk-based testing. I estimate via WBS plus three-point with a buffer, gate the effort with concrete entry/exit criteria, plan production-like masked or synthetic data in isolated environments, and on a tight deadline I run highest-risk first and hand the business the residual-risk data to make the call."
+</div>

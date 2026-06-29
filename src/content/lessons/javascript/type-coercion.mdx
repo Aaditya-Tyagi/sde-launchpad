@@ -1,0 +1,127 @@
+---
+title: "Type Coercion & Equality"
+track: javascript
+summary: "Why == is dangerous, how JS coerces types automatically, and the truthy/falsy rules that trip up even experienced devs."
+order: 6
+est: 18
+difficulty: medium
+priority: must
+tags: [coercion, equality, truthy-falsy, typeof, NaN]
+whyAsked: "Interviewers use coercion puzzles to test whether you understand the language deeply or just use it. These are common screen questions precisely because they surprise people."
+followUps:
+  - "What does `[] == ![]` evaluate to, and why?"
+  - "Why is `typeof null === 'object'` — is null an object?"
+  - "How do you reliably check for NaN?"
+  - "What values are falsy in JavaScript?"
+  - "When is it actually safe to use ==?"
+resources:
+  - { label: "MDN: Equality comparisons", url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Equality_comparisons_and_sameness" }
+  - { label: "javascript.info: Type conversions", url: "https://javascript.info/type-conversions" }
+---
+import JsPlayground from '../../../components/JsPlayground.astro';
+
+JavaScript has two kinds of equality and an automatic type-conversion system that runs silently. Understanding both is essential for reading legacy code and for answering the coercion puzzles that appear in screens.
+
+## Strict vs loose equality
+
+`===` (strict) compares type **and** value — no coercion. `==` (loose) first coerces both operands to a common type, then compares. The coercion rules are complex enough that you should use `===` by default and only reach for `==` when you explicitly want type flexibility (e.g., `value == null` to catch both `null` and `undefined`).
+
+<JsPlayground code={`// Strict equality — no surprises
+console.log(1 === "1");     // false — different types
+console.log(null === undefined); // false
+
+// Loose equality — coercion happens
+console.log(1 == "1");      // true  — "1" → 1
+console.log(null == undefined); // true  — special rule
+console.log(null == 0);     // false — null only == undefined
+console.log(0 == false);    // true  — false → 0
+console.log("" == false);   // true  — both → 0
+console.log([] == false);   // true  — [] → "" → 0, false → 0
+console.log([] == ![]);     // true  — ![] is false, then [] == false`} height={230} />
+
+The `[] == ![]` case is the classic puzzle. `![]` evaluates to `false` (arrays are truthy), so you get `[] == false`. Then `[]` converts to `""`, which converts to `0`, and `false` converts to `0`. Both sides are `0` — `true`. This is why you avoid `==`.
+
+## The falsy seven
+
+Exactly seven values are falsy in JavaScript — everything else is truthy:
+
+```js
+false, 0, -0, 0n, "", null, undefined, NaN
+```
+
+Common surprises: `[]` and `{}` are **truthy** (even empty). `"0"` is truthy. `new Boolean(false)` is truthy (it's an object). `document.all` is a historical exception but ignore that.
+
+<JsPlayground code={`const values = [false, 0, "", null, undefined, NaN, [], {}, "0", -0, 0n];
+values.forEach(v => {
+  const label = Object.is(v, -0) ? "-0" : Object.is(v, 0n) ? "0n" : JSON.stringify(v) ?? String(v);
+  console.log(label + " is " + (v ? "truthy" : "falsy"));
+});`} height={180} />
+
+## Type coercion rules
+
+When JS needs to convert a value, it uses one of three abstract operations:
+
+- **ToNumber**: `""` → `0`, `"3"` → `3`, `null` → `0`, `undefined` → `NaN`, `true` → `1`, `false` → `0`, `[]` → `0`, `[1]` → `1`, `[1,2]` → `NaN`.
+- **ToString**: `null` → `"null"`, `undefined` → `"undefined"`, `[]` → `""`, `{}` → `"[object Object]"`, numbers use their numeric string.
+- **ToPrimitive**: for objects, calls `[Symbol.toPrimitive]`, then `.valueOf()`, then `.toString()`.
+
+The `+` operator is the sneakiest — it prefers string concatenation if **either** operand is a string:
+
+```js
+1 + "2"     // "12"   — string wins
+1 + 2 + "3" // "33"  — left to right: 3 then "3"
+"3" + 2 + 1 // "321" — "3" first poisons everything
++"3"        // 3     — unary + triggers ToNumber
++[]         // 0
++{}         // NaN
+```
+
+## typeof and the null bug
+
+`typeof` returns a string describing the type — with one infamous bug:
+
+```js
+typeof 42          // "number"
+typeof "hi"        // "string"
+typeof true        // "boolean"
+typeof undefined   // "undefined"
+typeof Symbol()    // "symbol"
+typeof 42n         // "bigint"
+typeof function(){} // "function"
+typeof {}          // "object"
+typeof []          // "object"   — arrays are objects
+typeof null        // "object"   ← the bug, baked in since 1995
+```
+
+`null` is **not** an object — it's its own primitive type. The `typeof null === "object"` result is a historical bug that can't be fixed without breaking the web. To check for null: use `value === null`.
+
+## NaN — the only value not equal to itself
+
+`NaN` (Not a Number) is the result of invalid numeric operations. It's infectious and bizarre:
+
+```js
+NaN === NaN       // false — NaN is never equal to anything including itself
+isNaN("hello")    // true  — but isNaN coerces first! ("hello" → NaN)
+Number.isNaN("hello") // false — strict, only true for actual NaN values
+Number.isNaN(NaN)     // true  — the right check
+Number.isFinite(Infinity) // false
+Object.is(NaN, NaN)   // true  — Object.is uses SameValue, not ===
+```
+
+Always use `Number.isNaN()`, not global `isNaN()`.
+
+## Object.is — SameValue equality
+
+`Object.is(a, b)` is like `===` but handles two edge cases differently:
+
+```js
+Object.is(NaN, NaN)   // true  (=== returns false)
+Object.is(+0, -0)     // false (=== returns true)
+```
+
+This is what React uses internally to compare state values for bail-outs.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Use `===` everywhere by default — it never coerces. `==` triggers abstract equality coercion: operands are converted via ToNumber/ToString/ToPrimitive until they share a type. The seven falsy values are `false`, `0`, `-0`, `0n`, `""`, `null`, `undefined`, and `NaN`. `typeof null` is `'object'` — a legacy bug. `NaN` is not equal to itself, so use `Number.isNaN()` to detect it. `Object.is` is stricter than `===` and correctly handles `NaN` and `-0`."
+</div>

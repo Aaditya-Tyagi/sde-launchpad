@@ -1,0 +1,214 @@
+---
+title: "Arrays & Hashing"
+track: dsa
+summary: "Frequency counting, seen-sets, and prefix products — the warm-up category that unlocks O(1) lookups and turns quadratic scans into linear."
+order: 1
+est: 30
+difficulty: easy
+priority: must
+tags: [arrays, hashmap, prefix-sum]
+whyAsked: "Almost every interview opens here. Hash maps turn O(n²) scans into O(n) by trading space for time — the single most reused trick in coding rounds."
+followUps:
+  - "Why is a hash map lookup O(1) average, and when is it not?"
+  - "How do you do Product Except Self without division?"
+  - "How would you find a subarray that sums to k?"
+  - "What changes if the array is sorted?"
+resources:
+  - { label: "NeetCode 150", url: "https://neetcode.io/practice" }
+  - { label: "Arrays 101 (LeetCode Explore)", url: "https://leetcode.com/explore/learn/card/fun-with-arrays/" }
+---
+
+The core idea: a **hash map / set gives O(1) average lookup**, so instead of re-scanning the array to answer "have I seen this?" or "how many of these?", you answer in constant time. You trade O(n) space for a huge time win. This is the most reused trick in coding rounds — recognizing it instantly is half the battle.
+
+## When to reach for it — recognition triggers
+
+- "Find a **pair / two elements** that satisfy a condition" → complement lookup in a hash map.
+- "**Count / how many / most frequent / duplicates / anagram**" → frequency map.
+- "Sum/product over a **range or subarray**" → prefix aggregates.
+- "Does X **exist** in this collection?" repeatedly → put it in a `Set`.
+- You wrote a nested loop scanning the array twice → ask "can a map remember the inner loop's work?"
+
+<div class="callout key">
+  <div class="ct">Pattern trigger</div>
+  See "pair / count / exists / duplicate / anagram / subarray-sum" → a hash map or set is almost always the linear-time answer. The map remembers what a second loop would otherwise recompute.
+</div>
+
+## The three sub-patterns
+
+### 1. Seen-set / complement lookup
+
+As you scan, store what you've seen; check if the thing you need is already there. The classic is Two Sum: for each `x`, ask "is `target - x` already in the map?"
+
+```js
+// Two Sum: for each x, is (target - x) already seen?  O(n) time, O(n) space
+function twoSum(nums, target) {
+  const seen = new Map();              // value -> index
+  for (let i = 0; i < nums.length; i++) {
+    const need = target - nums[i];
+    if (seen.has(need)) return [seen.get(need), i];
+    seen.set(nums[i], i);             // record AFTER checking, so we don't pair x with itself
+  }
+  return [];
+}
+```
+
+The ordering matters: check first, then insert. That guarantees you never match an element with itself.
+
+### 2. Frequency counting
+
+Tally occurrences in a map, then reason over the counts.
+
+```js
+function countChars(s) {
+  const freq = new Map();
+  for (const c of s) freq.set(c, (freq.get(c) || 0) + 1);
+  return freq;
+}
+```
+
+For fixed alphabets (lowercase letters) a length-26 array is faster than a Map and lets you compare two count arrays directly.
+
+### 3. Prefix products / sums
+
+Precompute running aggregates so each range answer is O(1). The key identity for prefix sums:
+
+```text
+sum(i..j) = prefix[j + 1] - prefix[i]
+```
+
+This converts "is there a subarray summing to k?" into a complement lookup over prefix sums.
+
+## Worked examples
+
+### Group Anagrams — hash by a canonical key
+
+Two words are anagrams iff they share the same multiset of letters. Use a **canonical key** (sorted string, or a 26-length count signature) as the map key.
+
+```js
+// O(n · k log k) with sorted key, where k = max word length
+function groupAnagrams(strs) {
+  const groups = new Map();
+  for (const word of strs) {
+    const key = word.split('').sort().join('');  // canonical form
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(word);
+  }
+  return [...groups.values()];
+}
+```
+
+Idea: anagrams collapse to the same key, so they land in the same bucket. Using a count signature `"a1b0c2..."` drops the sort to make it O(n · k).
+**Time** O(n·k log k) · **Space** O(n·k).
+
+### Top K Frequent Elements — count + bucket sort
+
+Naive sort by frequency is O(n log n). We can hit O(n) with **bucket sort**: an element's frequency is at most `n`, so index buckets by frequency.
+
+```js
+// O(n) time and space
+function topKFrequent(nums, k) {
+  const freq = new Map();
+  for (const x of nums) freq.set(x, (freq.get(x) || 0) + 1);
+
+  const buckets = Array.from({ length: nums.length + 1 }, () => []);
+  for (const [val, count] of freq) buckets[count].push(val);
+
+  const out = [];
+  for (let c = buckets.length - 1; c >= 0 && out.length < k; c--) {
+    for (const val of buckets[c]) {
+      out.push(val);
+      if (out.length === k) return out;
+    }
+  }
+  return out;
+}
+```
+
+Idea: walk buckets from highest frequency down, collecting until you have `k`. A heap of size `k` is the alternative at O(n log k) — mention both.
+**Time** O(n) · **Space** O(n).
+
+### Product of Array Except Self — prefix/suffix products (no division)
+
+`answer[i]` is the product of everything to the left of `i` times everything to the right. Two passes, no division (so it survives zeros).
+
+```js
+// O(n) time, O(1) extra space (output array excluded)
+function productExceptSelf(nums) {
+  const n = nums.length, res = new Array(n).fill(1);
+  let prefix = 1;
+  for (let i = 0; i < n; i++) { res[i] = prefix; prefix *= nums[i]; }   // left products
+  let suffix = 1;
+  for (let i = n - 1; i >= 0; i--) { res[i] *= suffix; suffix *= nums[i]; } // multiply in right
+  return res;
+}
+```
+
+Idea: the first pass fills each slot with the product of all elements before it; the second pass multiplies in the product of all elements after it.
+**Time** O(n) · **Space** O(1) extra.
+
+### Subarray Sum Equals K — prefix sums + complement map
+
+Count subarrays summing to `k`. A subarray `(i..j)` sums to `k` iff `prefix[j] - prefix[i-1] = k`, i.e. `prefix[i-1] = prefix[j] - k`. So as we sweep, we count how many earlier prefix sums equal `running - k`.
+
+```js
+// O(n) time and space
+function subarraySum(nums, k) {
+  const counts = new Map([[0, 1]]);   // empty prefix has sum 0, seen once
+  let running = 0, total = 0;
+  for (const x of nums) {
+    running += x;
+    total += counts.get(running - k) || 0;   // earlier prefixes that complete a k-sum
+    counts.set(running, (counts.get(running) || 0) + 1);
+  }
+  return total;
+}
+```
+
+Idea: the `[[0,1]]` seed handles subarrays starting at index 0. This works with negatives (sliding window would not).
+**Time** O(n) · **Space** O(n).
+
+## Complexity & why it beats brute force
+
+| Problem | Brute force | Hashing |
+|---|---|---|
+| Two Sum | O(n²) | O(n) |
+| Contains Duplicate | O(n²) / O(n log n) | O(n) |
+| Subarray Sum = K | O(n²) | O(n) |
+| Top K Frequent | O(n log n) | O(n) bucket sort |
+
+Every win is the same trade: a hash structure remembers earlier work so the inner loop disappears, at the cost of O(n) space.
+
+## Edge cases & common bugs
+
+- **Insert vs check order** in Two Sum — check for the complement *before* inserting, or you can pair an element with itself.
+- **Empty input** — return `[]`/`0` cleanly; don't index `nums[0]` blindly.
+- **Duplicates** — a `Set` collapses them; if you need indices or counts, use a `Map`.
+- **Subarray sum with negatives** — must use prefix-sum map, not a sliding window (windows assume monotonic growth).
+- **Prefix-sum seed** — forgetting `counts.set(0, 1)` drops subarrays that start at index 0.
+- **`Map` vs object** — `Map` keeps insertion order and allows any key type; plain objects coerce keys to strings.
+
+<div class="callout warn">
+  <div class="ct">The O(1) caveat</div>
+  Hash lookups are O(1) <i>average</i>, not worst-case. With adversarial keys and collisions they degrade to O(n) per op. In interviews say "O(1) average" — it shows you know the difference between amortized and worst-case.
+</div>
+
+## Interview tips & questions
+
+- Interviewers probe: "What's the worst-case complexity of your hash map?" (O(n) on pathological collisions). "Can you do it without extra space?" (often forces sorting + two pointers).
+- For frequency problems on a known alphabet, mention the fixed-size array optimization — it signals you think about constants.
+- Be ready to justify prefix sums for the negatives case versus sliding window.
+
+| Problem | Difficulty | Pattern |
+|---|---|---|
+| [Two Sum](https://leetcode.com/problems/two-sum/) | Easy | complement lookup |
+| [Contains Duplicate](https://leetcode.com/problems/contains-duplicate/) | Easy | seen-set |
+| [Valid Anagram](https://leetcode.com/problems/valid-anagram/) | Easy | frequency count |
+| [Group Anagrams](https://leetcode.com/problems/group-anagrams/) | Medium | hash by canonical key |
+| [Top K Frequent Elements](https://leetcode.com/problems/top-k-frequent-elements/) | Medium | count + bucket sort |
+| [Product of Array Except Self](https://leetcode.com/problems/product-of-array-except-self/) | Medium | prefix/suffix products |
+| [Subarray Sum Equals K](https://leetcode.com/problems/subarray-sum-equals-k/) | Medium | prefix sum + map |
+| [Longest Consecutive Sequence](https://leetcode.com/problems/longest-consecutive-sequence/) | Medium | set + sequence-start check |
+
+## Say it out loud (20s)
+
+> "When I see 'find a pair / count occurrences / check existence', I reach for a hash map to get O(1) average lookups and turn a quadratic scan into linear. For range aggregates I precompute prefix sums or products so each query is constant time — and prefix-sum-plus-map handles subarray-sum questions even with negatives."

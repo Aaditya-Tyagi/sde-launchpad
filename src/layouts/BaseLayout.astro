@@ -1,0 +1,269 @@
+---
+import '../styles/global.css';
+const {
+  title = 'SDE-2 Launchpad',
+  desc = 'Your interactive, offline interview-prep platform.',
+  active = '',
+  program = 'sde2',
+} = Astro.props;
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+
+const NAVS = {
+  sde2: {
+    brand: 'SDE-2 Launchpad',
+    logo: 'S2',
+    home: '/sde2',
+    links: [
+      { href: '/sde2', label: 'Today', key: 'home' },
+      { href: '/plan', label: 'Plan', key: 'plan' },
+      { href: '/tracks', label: 'Learn', key: 'tracks' },
+      { href: '/game', label: '🎮 DSA Quest', key: 'game' },
+      { href: '/practice/code', label: 'Code Lab', key: 'code' },
+      { href: '/practice/quiz', label: 'Output Quiz', key: 'quiz' },
+      { href: '/practice/flashcards', label: 'Flashcards', key: 'flash' },
+      { href: '/practice/mock', label: 'Mock', key: 'mock' },
+      { href: '/practice/stories', label: 'STAR Stories', key: 'stories' },
+      { href: '/practice/design', label: 'SD Canvas', key: 'design' },
+      { href: '/mistakes', label: 'Mistakes Log', key: 'mistakes' },
+    ],
+    footer: [
+      { href: '/tracks', label: 'Curriculum' },
+      { href: '/game', label: 'DSA Quest' },
+      { href: '/practice/design', label: 'SD Canvas' },
+      { href: '/prep', label: 'Company Prep' },
+      { href: '/cheatsheets', label: 'Cheat Sheets' },
+      { href: '/diagnostic', label: 'Diagnostic' },
+      { href: '/mistakes', label: 'Mistakes' },
+    ],
+  },
+  qa: {
+    brand: 'QA · Automation Launchpad',
+    logo: 'QA',
+    home: '/qa',
+    links: [
+      { href: '/qa', label: 'Today', key: 'home' },
+      { href: '/qa/plan', label: '12-Week Plan', key: 'plan' },
+      { href: '/qa/tracks', label: 'Learn', key: 'tracks' },
+      { href: '/lessons/qa-web/playwright-core', label: 'Playwright', key: 'pw' },
+      { href: '/lessons/qa-web/selenium-core', label: 'Selenium', key: 'sel' },
+      { href: '/lessons/qa-api/http-foundations', label: 'API', key: 'api' },
+      { href: '/lessons/qa-ai/ai-in-testing-2026', label: '🤖 AI Testing', key: 'ai' },
+      { href: '/lessons/qa-cheatsheets/cheatsheets', label: 'Cheat Sheets', key: 'cheat' },
+      { href: '/mistakes', label: 'Mistakes Log', key: 'mistakes' },
+    ],
+    footer: [
+      { href: '/qa/tracks', label: 'Curriculum' },
+      { href: '/qa/plan', label: '12-Week Plan' },
+      { href: '/lessons/qa-web/playwright-core', label: 'Playwright' },
+      { href: '/lessons/qa-api/http-foundations', label: 'API Testing' },
+      { href: '/lessons/qa-cheatsheets/cheatsheets', label: 'Cheat Sheets' },
+      { href: '/lessons/qa-career/certifications-and-roadmap', label: 'Certifications' },
+      { href: '/mistakes', label: 'Mistakes' },
+    ],
+  },
+};
+const isHome = program === 'home';
+const nav = NAVS[program] || NAVS.sde2;
+const brandName = isHome ? 'Interview Launchpad' : nav.brand;
+const brandLogo = isHome ? 'IL' : nav.logo;
+const brandHref = isHome ? '/' : nav.home;
+const links = isHome ? [] : nav.links;
+const footerLinks = isHome ? [] : nav.footer;
+---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{title}</title>
+  <meta name="description" content={desc} />
+  <meta name="theme-color" content="#0b1326" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="manifest" href={`${base}/manifest.webmanifest`} />
+  <link rel="icon" href={`${base}/favicon.svg`} type="image/svg+xml" />
+  <script is:inline src={`${base}/store.js`}></script>
+  <script is:inline src={`${base}/anim.js`} defer></script>
+  <slot name="head" />
+</head>
+<body>
+  <div class="aurora-bg" aria-hidden="true"></div>
+  <nav class="topnav">
+    <div class="inner">
+      <a class="brand" href={`${base}${brandHref}`}>
+        <span class="logo">{brandLogo}</span>
+        <span>{brandName}</span>
+      </a>
+      <div class="navlinks" id="navlinks">
+        {links.map((l) => (
+          <a href={`${base}${l.href}`} class={active === l.key ? 'active' : ''}>{l.label}</a>
+        ))}
+        {!isHome && <a href={`${base}/`} class="nav-switch" title="Switch path">⇄ Paths</a>}
+      </div>
+      <div class="nav-right">
+        <button class="cmdk" id="cmdkBtn" title="Search lessons">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3" stroke-linecap="round"/></svg>
+          <span class="cmdk-text">Search <kbd>⌘K</kbd></span></button>
+        <span class="streakpill" id="streakPill" title="Daily streak">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2c.6 3.6-1.6 5.2-3 7-1 1.4-.6 3.1 1 3.1 1.5 0 2.2-1.4 1.9-2.8 2.4 1.7 3.4 4.5 2.1 7.2-1 2-2.9 3-5 3-3 0-5.4-2.3-5.4-5.5 0-2.8 1.8-4.8 3.5-6.6C9.6 6.5 11.4 4.9 13 2z"/></svg>
+          <span id="streakNum">0</span></span>
+        <span class="xppill" id="xpPill" title="Level / XP">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.9 6.3 6.9.6-5.2 4.6 1.6 6.8L12 17.3 5.8 20.9l1.6-6.8L2.2 8.9l6.9-.6z"/></svg>
+          <span id="lvlNum">1</span></span>
+        <span class="nav-avatar" aria-hidden="true">S</span>
+      </div>
+      <button class="nav-burger" id="navBurger" aria-label="Menu" aria-expanded="false">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 6h18M3 12h18M3 18h18" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </nav>
+
+  <main>
+    <slot />
+  </main>
+
+  <footer class="site">
+    <div class="wrap site-foot" style="padding:0">
+      <div>
+        <div style="font-size:20px;font-weight:700;color:var(--text)">{brandName}</div>
+        <p style="margin-top:6px;max-width:460px">Everything is stored locally in your browser; nothing leaves this device. Precision practice for technical mastery.</p>
+        <button class="btn hide" id="installBtn" style="margin-top:12px">📲 Install as an app</button>
+      </div>
+      <nav class="site-foot-links">
+        {footerLinks.map((l) => <a href={`${base}${l.href}`}>{l.label}</a>)}
+        <a href={`${base}/`}>⇄ Switch path</a>
+      </nav>
+    </div>
+  </footer>
+
+  <!-- Command palette -->
+  <div class="cmdk-overlay" id="cmdkOverlay">
+    <div class="cmdk-box">
+      <input type="text" id="cmdkInput" placeholder="Search topics, patterns, problems…" autocomplete="off" />
+      <div class="cmdk-results" id="cmdkResults"></div>
+    </div>
+  </div>
+
+  <script is:inline>
+    const store = window.SDE2;
+
+    // ---- hydrate streak / xp pills ----
+    function paintPills() {
+      const s = store.streak();
+      const lp = store.levelProgress();
+      const sn = document.getElementById('streakNum');
+      const ln = document.getElementById('lvlNum');
+      if (sn) sn.textContent = String(s.count || 0);
+      if (ln) ln.textContent = String(lp.lvl);
+      const xpEl = document.getElementById('xpPill');
+      if (xpEl) xpEl.title = `Level ${lp.lvl} · ${lp.xp} XP (${lp.pct}% to next)`;
+    }
+    paintPills();
+    store.onChange(paintPills);
+
+    // ---- mobile nav ----
+    const burger = document.getElementById('navBurger');
+    const navlinks = document.getElementById('navlinks');
+    if (burger && navlinks) {
+      burger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const open = navlinks.classList.toggle('open');
+        burger.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+      navlinks.addEventListener('click', (e) => { if (e.target.tagName === 'A') navlinks.classList.remove('open'); });
+      document.addEventListener('click', (e) => {
+        if (!navlinks.contains(e.target) && e.target !== burger && !burger.contains(e.target)) navlinks.classList.remove('open');
+      });
+    }
+
+    // ---- command palette ----
+    const overlay = document.getElementById('cmdkOverlay');
+    const input = document.getElementById('cmdkInput');
+    const results = document.getElementById('cmdkResults');
+    const baseUrl = (document.querySelector('link[rel=manifest]')?.getAttribute('href') || '/manifest.webmanifest').replace('/manifest.webmanifest', '');
+    let INDEX = [];
+    let sel = 0;
+
+    async function loadIndex() {
+      if (INDEX.length) return;
+      try {
+        const res = await fetch(`${baseUrl}/search.json`);
+        INDEX = await res.json();
+      } catch {}
+    }
+    function openCmdk() {
+      overlay.classList.add('open');
+      input.value = '';
+      loadIndex().then(() => renderResults(''));
+      setTimeout(() => input.focus(), 30);
+    }
+    function closeCmdk() { overlay.classList.remove('open'); }
+    function renderResults(q) {
+      q = q.trim().toLowerCase();
+      let items = INDEX;
+      if (q) {
+        items = INDEX
+          .map((it) => ({ it, score: scoreMatch(it, q) }))
+          .filter((x) => x.score > 0)
+          .sort((a, b) => b.score - a.score)
+          .map((x) => x.it);
+      }
+      items = items.slice(0, 12);
+      sel = 0;
+      results.innerHTML = items.map((it, i) => `
+        <a href="${baseUrl}${it.url}" class="${i === 0 ? 'sel' : ''}" data-i="${i}">
+          <div class="r-track">${it.track}</div>
+          <div class="r-title">${it.title}</div>
+        </a>`).join('') || '<div style="padding:16px;color:var(--muted)">No matches.</div>';
+    }
+    function scoreMatch(it, q) {
+      const t = it.title.toLowerCase();
+      const tags = (it.tags || []).join(' ').toLowerCase();
+      const sum = (it.summary || '').toLowerCase();
+      let s = 0;
+      if (t.includes(q)) s += 10;
+      if (t.startsWith(q)) s += 8;
+      if (tags.includes(q)) s += 5;
+      if (sum.includes(q)) s += 2;
+      // token overlap
+      q.split(/\s+/).forEach((tok) => { if (tok && (t.includes(tok) || tags.includes(tok))) s += 1; });
+      return s;
+    }
+    document.getElementById('cmdkBtn')?.addEventListener('click', openCmdk);
+    overlay?.addEventListener('click', (e) => { if (e.target === overlay) closeCmdk(); });
+    input?.addEventListener('input', (e) => renderResults(e.target.value));
+    document.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); overlay.classList.contains('open') ? closeCmdk() : openCmdk(); }
+      if (!overlay.classList.contains('open')) return;
+      const links = [...results.querySelectorAll('a')];
+      if (e.key === 'Escape') closeCmdk();
+      if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, links.length - 1); }
+      if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); }
+      if (e.key === 'Enter' && links[sel]) { window.location.href = links[sel].getAttribute('href'); }
+      links.forEach((a, i) => a.classList.toggle('sel', i === sel));
+    });
+
+    // ---- PWA install affordance ----
+    let deferredPrompt = null;
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault(); deferredPrompt = e;
+      const b = document.getElementById('installBtn'); if (b) b.classList.remove('hide');
+    });
+    document.getElementById('installBtn')?.addEventListener('click', async () => {
+      if (!deferredPrompt) return;
+      deferredPrompt.prompt();
+      await deferredPrompt.userChoice;
+      deferredPrompt = null;
+      document.getElementById('installBtn').classList.add('hide');
+    });
+
+    // ---- service worker (offline) ----
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register(`${baseUrl}/sw.js`).catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>

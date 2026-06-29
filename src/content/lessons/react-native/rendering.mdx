@@ -1,0 +1,62 @@
+---
+title: "Rendering, Reconciliation & Re-renders"
+track: react-native
+summary: "What triggers a re-render, how reconciliation and keys work, and where memoization actually helps."
+order: 1
+est: 22
+difficulty: medium
+priority: must
+tags: [rendering, reconciliation, keys, memo, performance]
+whyAsked: "Performance questions live here. Interviewers want to know you understand *why* components re-render and can reason about it, rather than sprinkling useMemo everywhere."
+followUps:
+  - "What causes a component to re-render?"
+  - "Why are keys important in lists, and what happens with index keys?"
+  - "When does React.memo actually prevent a re-render — and when doesn't it?"
+  - "Does a parent re-render always re-render all children?"
+resources:
+  - { label: "react.dev: Render and commit", url: "https://react.dev/learn/render-and-commit" }
+---
+
+Rendering in React is two phases. **Render phase**: React calls your components to produce a tree of elements (just calling functions — no DOM/native touched yet). **Commit phase**: React diffs the new tree against the previous one (*reconciliation*) and applies the minimal set of real changes to the native views.
+
+## What triggers a re-render
+
+A component re-renders when:
+
+1. Its **state** changes (`setState`/`useState` setter), or
+2. Its **parent re-renders** (by default, children re-render too), or
+3. A **context** it consumes changes.
+
+Note what's **not** on the list: props "changing" doesn't independently trigger anything — a child re-renders because its parent rendered, and *then* React decides whether to bail out. Crucially, **a parent re-render re-renders all its children by default**, even children whose props didn't change. That's usually fine (render is cheap), but it's the root of most "why is this re-rendering?" questions.
+
+## Reconciliation & keys
+
+When React diffs two trees, it compares element types at each position. Same type → reuse the instance and update props. Different type → throw away the subtree and rebuild.
+
+For **lists**, React needs `key` to match elements across renders by identity, not position. With a stable `key` (an id), React knows "this row is the same row that moved." With **index keys**, inserting at the front shifts every index, so React thinks every row changed — causing wasted work and, worse, **state attached to the wrong row** (an input's text following the wrong item).
+
+<div class="callout warn">
+  <div class="ct">Index keys are a real bug, not just slow</div>
+  Use index as key only for static, never-reordered, never-filtered lists. Otherwise use a stable unique id.
+</div>
+
+## Where memoization actually helps
+
+The tools — and the honest truth about each:
+
+- **`React.memo(Component)`** wraps a component so it skips re-rendering when its props are shallow-equal to last time. It only helps if the parent re-renders often **and** the props are stable. If you pass a fresh inline object/array/function every render, the shallow compare fails and `memo` does nothing.
+- **`useMemo(fn, deps)`** caches a computed *value* between renders. Worth it for genuinely expensive computations or to keep a referenced object/array stable so a `memo`'d child or an effect dependency doesn't churn.
+- **`useCallback(fn, deps)`** is `useMemo` for functions — keeps a callback's identity stable so a `memo`'d child doesn't re-render.
+
+<div class="callout key">
+  <div class="ct">The senior answer</div>
+  Memoization isn't free — it adds memory and comparison cost. Reach for it when you've identified a real, repeated, expensive render or an unstable prop breaking a `memo` boundary — not preemptively. "Measure, then memo."
+</div>
+
+## RN-specific note
+
+In React Native the same rules apply, but the cost of an unnecessary re-render can be higher because committing touches native views across the bridge/JSI. List rendering (`FlatList`) and stable props matter even more — see the Lists & performance topics.
+
+## Say it out loud (30s)
+
+> "A component re-renders when its state changes, its parent re-renders, or a consumed context changes — and by default a parent re-render cascades to all children. React reconciles by diffing element trees; keys let it match list items by identity, so index keys cause bugs when lists reorder. `React.memo`/`useMemo`/`useCallback` let you bail out of unnecessary work, but only when props are actually stable — so I measure first and memoize the real hotspots rather than everywhere."

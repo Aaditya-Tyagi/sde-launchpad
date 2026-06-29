@@ -1,0 +1,183 @@
+---
+title: "Concurrency & Async: Reactive & Structured Concurrency"
+track: backend
+summary: "The models that let one service handle thousands of in-flight requests: thread pools and their sizing, async/event-loop I/O, virtual threads, reactive streams with backpressure, and structured concurrency. Plus the hazards — races, deadlock, visibility — and how to reason about them."
+order: 6
+est: 32
+difficulty: hard
+priority: must
+tags: [concurrency, async, threads, reactive, backpressure, structured-concurrency, deadlock]
+whyAsked: "Concurrency separates engineers who can scale a service from those who can't. It probes whether you understand I/O-bound vs CPU-bound, how to size pools, why you must never block an event loop, and how to avoid the races and deadlocks that produce the worst production bugs."
+followUps:
+  - "Concurrency vs parallelism — what's the difference?"
+  - "How do you size a thread pool?"
+  - "Why must you never block the event loop?"
+  - "What is backpressure and who controls it?"
+  - "What is a deadlock and how do you prevent one?"
+resources:
+  - { label: "Java Project Loom / Virtual Threads (JEP 444)", url: "https://openjdk.org/jeps/444" }
+  - { label: "Reactive Streams spec", url: "https://www.reactive-streams.org/" }
+  - { label: "Structured Concurrency (JEP 453)", url: "https://openjdk.org/jeps/453" }
+---
+
+Concurrency is about **structure** — composing a program so independent tasks can make progress — while parallelism is about **execution**: actually running tasks at the same instant on multiple cores. A single-core box can be highly concurrent (interleaving thousands of connections) without any parallelism. Getting the model right hinges on one question: is the work **I/O-bound** (waiting on network/disk) or **CPU-bound** (crunching numbers)? This lesson is the backend-dev view; the [Node.js internals lesson](/lessons/system-design/nodejs-internals) goes deep on one event loop, and [event-driven systems](/lessons/backend/event-driven-systems) covers async at the architecture level.
+
+## Concurrency vs parallelism, I/O- vs CPU-bound
+
+> "Concurrency is dealing with many things at once. Parallelism is doing many things at once." — Rob Pike
+
+The distinction drives the model you pick:
+
+| Work type | Bottleneck | Right model | Why |
+|---|---|---|---|
+| **I/O-bound** | Waiting (network, disk, DB) | Async / event loop, or many cheap threads | Threads mostly sit idle; you want thousands of cheap waiters, not CPU |
+| **CPU-bound** | The cores themselves | Parallelism, threads ≈ core count | More threads than cores just adds context-switch overhead |
+
+An I/O-bound web service spends 95% of each request blocked on a database. Throwing 200 OS threads at it can work, but they're expensive idle waiters — the async or virtual-thread models exist precisely to make those waiters cheap. A CPU-bound image-resize job is the opposite: there's nothing to wait on, so the answer is N threads on N cores and a queue.
+
+## Threading models and pool sizing
+
+The naive model is **thread-per-request**: one OS thread per connection. It's simple and the code reads top-to-bottom, but each thread costs real memory (a ~1MB stack by default) and the OS scheduler pays a **context-switch** cost (saving/restoring registers, cache pollution) every time it swaps threads. At a few thousand connections you hit the classic **C10k problem** — the box drowns in context switches and stack memory long before the CPU is busy.
+
+**Thread pools** bound the damage: a fixed set of worker threads pull tasks off a queue. The hard part is sizing it:
+
+- **CPU-bound:** pool size ≈ number of cores (maybe cores + 1). More threads can't do more work; they just thrash.
+- **I/O-bound:** pool size can be much higher, because threads spend most of their time blocked. The classic formula: `threads = cores × (1 + waitTime / computeTime)`. If a request waits 9× as long as it computes, ~10 threads per core keeps cores busy.
+
+**Little's Law** gives the intuition for the queue: `L = λ × W` — concurrent requests in the system = arrival rate × average time each spends inside. If 500 requests/sec arrive and each takes 0.2s, you have ~100 in flight at any moment, so your pool plus queue must absorb 100 or latency climbs and the queue grows unbounded.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Size CPU-bound pools to <b>core count</b>; size I/O-bound pools by how long requests <b>wait vs compute</b>. Always <b>bound the queue</b> — an unbounded queue turns a latency spike into an out-of-memory crash.
+</div>
+
+## Async / non-blocking I/O and the event loop
+
+The async model flips thread-per-request on its head: **one thread services thousands of connections** by never blocking. It registers interest in many sockets with the OS (`epoll` on Linux, `kqueue` on BSD/macOS), and the kernel hands back only the sockets that are *ready*. The single **event loop** thread dispatches each ready event to a handler, which runs briefly and yields. This is how Node.js, Netty, and nginx serve enormous connection counts on a handful of threads.
+
+The iron rule: **never block the event loop.** A synchronous DB call, a `JSON.parse` on 50MB, or a tight CPU loop on the loop thread stalls *every* connection that thread is serving, not just one. CPU-heavy work goes to a worker pool; I/O must be non-blocking. See [Node.js internals](/lessons/system-design/nodejs-internals) for how the loop, the libuv thread pool, and the microtask queue actually interleave.
+
+## Programming models: callbacks → promises → async/await → coroutines
+
+Async code's history is a fight against readability:
+
+| Model | Shape | Pain it solves / causes |
+|---|---|---|
+| **Callbacks** | `read(f, cb)` | Works, but nesting → "callback hell"; error handling is manual |
+| **Futures / Promises** | `read(f).then(...)` | Composable, chainable; flattens nesting, unifies errors |
+| **async / await** | `await read(f)` | Reads like sync code, keeps the non-blocking semantics |
+| **Coroutines** | suspend functions | Language-level suspension points; cheap, structured (Kotlin, Go) |
+
+Underneath all of these sits a scheduling choice. **Preemptive** scheduling (OS threads) can interrupt a task anywhere — fair, but every switch is a kernel context switch and any shared state needs locking. **Cooperative** scheduling (coroutines, event loops) only switches at explicit suspension points (`await`, a channel op) — far cheaper and easier to reason about, but one task that never yields starves everyone, which is exactly why blocking the event loop is fatal.
+
+## Virtual threads and goroutines
+
+Virtual (or "green") threads give you blocking-style code with async-style cost. A **virtual thread** is scheduled by the *runtime*, not the OS: it's a cheap object (a few hundred bytes) that gets mounted onto a small pool of OS "carrier" threads. When it blocks on I/O, the runtime *unmounts* it and runs another virtual thread on that carrier — so a blocking call no longer pins an expensive OS thread.
+
+- **Java Project Loom** (virtual threads, JDK 21+): write plain blocking `getOrder()` code, run millions of virtual threads. The blocking call is transparently turned into a yield.
+- **Go goroutines:** `go handler()` spawns a goroutine the Go runtime multiplexes (M:N) onto OS threads, with channels for communication.
+
+This **changes pool sizing**: with virtual threads you stop sizing pools for I/O concurrency at all. You spawn a virtual thread per task and let the runtime handle multiplexing; bounded pools survive only for genuinely CPU-bound work or for limiting load on a downstream dependency.
+
+## Reactive programming and backpressure
+
+Reactive programming models data as asynchronous **streams** you compose with operators (`map`, `filter`, `flatMap`). The core contract is **Reactive Streams**: a `Publisher` emits items to a `Subscriber`, but crucially the subscriber controls the flow via **backpressure** — it calls `request(n)` to signal how many items it can handle. The producer must not outrun the consumer; if it can, it buffers, drops, or slows per a defined strategy. This is the answer to the firehose problem: a fast Kafka producer feeding a slow database.
+
+```text
+Publisher --(onSubscribe)--> Subscriber
+Subscriber --request(10)--> Publisher     // "I can take 10"
+Publisher --(onNext × 10)--> Subscriber
+Subscriber --request(10)--> Publisher     // demand-driven, never overwhelmed
+```
+
+Reactive (Project Reactor, RxJava, WebFlux) shines when you have high concurrency on limited threads, streaming data, and real backpressure needs. The cost is real: stack traces are scrambled across operators, debugging is hard, and the mental model is steep. With virtual threads now offering similar throughput with ordinary blocking code, reach for reactive when you specifically need **streaming + backpressure**, not as a default.
+
+## Structured concurrency
+
+Fire-and-forget concurrency leaks: you spawn background tasks, lose track of them, and on error or shutdown they keep running, hide failures, or leak resources. **Structured concurrency** ties child task lifetimes to a parent scope — like a `try`/`finally` for concurrency. Children spawned in a scope *must* finish before the scope exits; if one fails, the rest are **cancelled**, and cancellation **propagates** down the tree. No leaked tasks, errors surface where you can see them.
+
+```kotlin
+// Kotlin: coroutineScope returns only when BOTH children complete.
+// If either throws, the other is cancelled and the exception propagates.
+suspend fun loadDashboard(): Dashboard = coroutineScope {
+    val user   = async { userService.fetch() }
+    val orders = async { orderService.recent() }
+    Dashboard(user.await(), orders.await())
+}
+```
+
+Java's `StructuredTaskScope` (preview) gives the same shape with `ShutdownOnFailure` — fork subtasks, `join()`, and a failure short-circuits the rest. The win is that concurrency becomes scoped, cancellable, and leak-free instead of a tangle of detached futures.
+
+## Hazards: races, deadlock, visibility
+
+The moment threads share mutable state, you inherit a class of bugs that don't reproduce on demand:
+
+| Hazard | What it is | Tool |
+|---|---|---|
+| **Race condition** | Result depends on thread interleaving | Mutex / critical section |
+| **Deadlock** | Threads wait on each other forever | Lock ordering, timeouts |
+| **Livelock** | Threads keep reacting, no progress | Backoff / randomization |
+| **Starvation** | A thread never gets the resource | Fair locks, priorities |
+| **Visibility** | One thread can't see another's write | `volatile`, happens-before |
+
+A **critical section** is code that must run atomically; you guard it with a **mutex** (one holder), a **semaphore** (N holders, e.g. a connection pool), or lock-free **atomics/CAS** (compare-and-swap retries until it wins, no blocking). **Memory visibility** is subtler than races: without a **happens-before** relationship (a `volatile` write, a lock release, thread start), one thread's write may never become visible to another due to CPU caches and reordering.
+
+A classic data race and its fix:
+
+```java
+// RACE: read-modify-write is not atomic; ++ is load, add, store.
+// Two threads can both read 0, both write 1 — a lost update.
+class Counter { int n = 0; void inc() { n++; } }
+
+// FIX: an atomic makes the whole RMW a single CAS operation.
+class Counter {
+    private final java.util.concurrent.atomic.AtomicInteger n =
+        new java.util.concurrent.atomic.AtomicInteger();
+    void inc() { n.incrementAndGet(); }  // lock-free, correct
+}
+```
+
+**Deadlock** needs all four **Coffman conditions** simultaneously — break any one and it can't occur: **mutual exclusion** (resource held exclusively), **hold-and-wait** (hold one, wait for another), **no preemption** (can't force a release), and **circular wait** (a cycle in the wait graph). The standard fix is to break circular wait by **acquiring locks in a global order**; lock timeouts and `tryLock` are a backstop.
+
+## Interview questions & model answers
+
+**Q: Concurrency vs parallelism — what's the difference?**
+"Concurrency is structuring a program so multiple tasks can be in progress and make independent progress — dealing with many things at once. Parallelism is literally running them simultaneously on multiple cores — doing many things at once. A single core can be highly concurrent by interleaving tasks with no parallelism at all. Concurrency is about composition; parallelism is about execution."
+
+**Q: How do you size a thread pool?**
+"Start with the workload. CPU-bound work caps at roughly the core count — more threads just add context-switch overhead. I/O-bound work can run far more threads since they spend most of their time blocked; I'd use cores × (1 + wait/compute). I always bound the queue too, because an unbounded queue converts a load spike into an OOM. With virtual threads, I'd stop sizing for I/O entirely and just spawn one per task."
+
+**Q: Why must you never block the event loop?**
+"The event loop is one thread serving thousands of connections by handling ready events and yielding fast. If I block it — a synchronous DB call or a heavy CPU loop — every connection that thread serves stalls, not just one. So CPU-heavy work goes to a worker pool and all I/O must be non-blocking; the loop thread only ever does quick dispatch."
+
+**Q: What is backpressure and who controls it?**
+"Backpressure is flow control where the consumer signals how much it can handle. In Reactive Streams the subscriber calls request(n), and the publisher must not emit more than the outstanding demand. It controls the flow, not the producer. That prevents a fast producer from overwhelming a slow consumer — without it you buffer until OOM or drop data."
+
+**Q: What is a deadlock and how do you prevent it?**
+"Deadlock is two or more threads each waiting on a resource the other holds, so none proceed. It requires all four Coffman conditions: mutual exclusion, hold-and-wait, no preemption, and circular wait. Break any one and it can't happen — the usual move is eliminating circular wait by acquiring locks in a consistent global order, with lock timeouts as a backstop."
+
+**Q: What are virtual threads and how do they change things?**
+"A virtual thread is scheduled by the runtime, not the OS — a cheap object mounted on a small pool of carrier threads. When it blocks on I/O the runtime unmounts it and runs another, so blocking no longer pins an expensive OS thread. You write plain blocking code but get async-level scalability, and you stop sizing thread pools for I/O concurrency. Loom in Java and goroutines in Go are the examples."
+
+**Q: What is structured concurrency and why use it?**
+"It scopes child tasks to a parent, like try/finally for concurrency. Children must complete before the scope exits, a failure cancels the siblings, and cancellation propagates down the tree. That kills the fire-and-forget problems — leaked tasks, swallowed errors, orphaned work on shutdown. Kotlin's coroutineScope and Java's StructuredTaskScope implement it."
+
+**Q: What's a memory-visibility bug versus a race?**
+"A race is about ordering — two threads' operations interleave badly, like a lost increment. Visibility is about whether a write is even seen: without a happens-before edge — a volatile write, a lock release, a thread start — one thread's update can sit in a CPU cache and never reach another. You can have correct ordering and still read stale data, which is why volatile and proper synchronization matter beyond just mutual exclusion."
+
+## Common mistakes / what weak candidates do
+
+- **Conflating concurrency and parallelism** — using them interchangeably instead of structure vs execution.
+- **Ignoring I/O-bound vs CPU-bound** when sizing pools, then picking the wrong model entirely.
+- **Unbounded thread pools or queues** — turning a load spike into an OOM crash instead of backpressure.
+- **Blocking the event loop** with a sync call or heavy CPU work, stalling every connection on that thread.
+- **Assuming `i++` or check-then-act is atomic** — the canonical lost-update race.
+- **Treating every concurrency bug as a race** and missing memory-visibility issues (no happens-before).
+- **Inconsistent lock ordering** — the direct cause of most real deadlocks.
+- **Fire-and-forget tasks** with no scope, cancellation, or error propagation — leaks and swallowed failures.
+- **Reaching for reactive by default** for the throughput, eating the debugging cost when virtual threads would do.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Concurrency is structure, parallelism is execution. I size pools by <b>I/O- vs CPU-bound</b> and always bound the queue — Little's Law for the math. For high connection counts I use a <b>non-blocking event loop</b> and never block it, or <b>virtual threads</b> for cheap blocking-style code. Reactive when I need <b>streaming + backpressure</b>. I scope tasks with <b>structured concurrency</b> so nothing leaks, and I defend shared state against <b>races, deadlock</b> (break a Coffman condition via lock ordering), and <b>visibility</b> via happens-before."
+</div>

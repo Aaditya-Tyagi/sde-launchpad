@@ -1,0 +1,13 @@
+{
+  "name": "SDE-2 Launchpad",
+  "short_name": "SDE-2 Prep",
+  "description": "An interactive, offline interview-prep platform to reach SDE-2 level.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0b1326",
+  "theme_color": "#0b1326",
+  "icons": [
+    { "src": "./favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

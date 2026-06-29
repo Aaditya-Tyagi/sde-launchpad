@@ -1,0 +1,346 @@
+---
+title: "FSD: Design a Kanban / Drag-and-Drop Board"
+track: frontend-system-design
+summary: "Design a Kanban board — column/card data model, drag-and-drop with optimistic reorder, virtualized columns, and undo/redo."
+order: 4
+est: 30
+difficulty: hard
+priority: deep
+tags: [frontend-system-design, kanban, drag-and-drop, dnd-kit, optimistic-updates, undo-redo]
+whyAsked: "Kanban tests data modeling for ordered lists, drag-and-drop mechanics, optimistic UI with rollback, and complex local state — a strong senior signal."
+followUps:
+  - "How do you represent card order in the database?"
+  - "How do you handle concurrent reorder conflicts from multiple users?"
+  - "How do you implement undo/redo?"
+  - "How do you make drag-and-drop keyboard accessible?"
+  - "How would you virtualize a column with thousands of cards?"
+resources:
+  - { label: "dnd-kit docs", url: "https://docs.dndkit.com" }
+  - { label: "Lexorank ordering algorithm", url: "https://medium.com/whisperarts/lexorank-what-are-they-and-how-to-use-them-in-jira-5b8d1a93b5a8" }
+---
+
+## Step 1: Requirements clarification
+
+**Ask the interviewer:**
+- Multi-user realtime sync, or single-user for now?
+- Max cards per column? (for virtualization decision)
+- Do we need nested subtasks?
+- Do we need drag between boards?
+- Is undo/redo in scope?
+
+**For this design:**
+- Single-board view: N columns (e.g. To Do, In Progress, Done)
+- Cards draggable within a column (reorder) and across columns (move)
+- Optimistic drag-and-drop with rollback on failure
+- Undo last action with Ctrl+Z
+- Keyboard accessible drag
+
+---
+
+## Step 2: Data model
+
+**The order problem** — how to persist card order:
+
+Bad: integer index (1, 2, 3…) — every reorder requires updating N rows.
+
+Good: **fractional indexing** (Lexorank / float ranks):
+
+```ts
+// Cards store a `rank` string that sorts lexicographically
+// Insert between rank "a" and "c" → assign "b"
+// Insert between "a" and "b" → assign "an" (midpoint)
+// Library: fractional-indexing (by rocicorp)
+
+interface Card {
+  id: string;
+  columnId: string;
+  title: string;
+  description: string;
+  rank: string;       // lexicographic sort key
+  assigneeId: string | null;
+  labels: string[];
+  createdAt: string;
+}
+
+interface Column {
+  id: string;
+  boardId: string;
+  title: string;
+  rank: string;
+  cardIds: string[];  // denormalized ordered list for fast render
+}
+
+interface Board {
+  id: string;
+  title: string;
+  columnIds: string[];
+}
+```
+
+**Normalized store:**
+```ts
+interface BoardStore {
+  board: Board;
+  columns: Record<string, Column>;
+  cards: Record<string, Card>;
+}
+```
+
+---
+
+## Step 3: High-level architecture
+
+```
+Browser                              Server
+┌─────────────────────────────────┐  ┌────────────────────────┐
+│  Zustand (local board state)    │  │  GET /boards/:id       │
+│  ↓                              │──│  PATCH /cards/:id/move │
+│  dnd-kit (DnDContext)           │  │  PATCH /cards/:id/rank │
+│  ↓                              │  │                        │
+│  BoardColumns (horizontal scroll│  │  WebSocket (optional   │
+│    ColumnList × N               │  │  for multi-user sync)  │
+│      CardList (react-window)    │  └────────────────────────┘
+│        CardItem × M             │
+└─────────────────────────────────┘
+```
+
+---
+
+## Step 4: Drag-and-drop with dnd-kit
+
+```tsx
+import {
+  DndContext,
+  DragOverlay,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+  DragOverEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+
+function Board() {
+  const { board, columns, cards, moveCard } = useBoard();
+  const [activeCardId, setActiveCardId] = useState<string | null>(null);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    setActiveCardId(null);
+    if (!over || active.id === over.id) return;
+
+    const cardId = active.id as string;
+    const overId = over.id as string;
+
+    // Determine target column and position
+    const overCard = cards[overId];
+    const overColumn = columns[overId]; // dropping on column itself
+    const targetColumnId = overCard?.columnId ?? overColumn?.id;
+    const targetIndex = overCard
+      ? columns[targetColumnId].cardIds.indexOf(overId)
+      : columns[targetColumnId].cardIds.length;
+
+    moveCard(cardId, targetColumnId, targetIndex);
+  };
+
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragStart={({ active }) => setActiveCardId(active.id as string)}
+      onDragEnd={handleDragEnd}
+    >
+      <div style={{ display: 'flex', gap: 16, overflowX: 'auto', padding: 16, height: '100vh' }}>
+        {board.columnIds.map(colId => (
+          <Column key={colId} column={columns[colId]} cards={cards} />
+        ))}
+      </div>
+
+      {/* Drag preview — renders the card being dragged */}
+      <DragOverlay>
+        {activeCardId ? (
+          <CardItem card={cards[activeCardId]} isOverlay />
+        ) : null}
+      </DragOverlay>
+    </DndContext>
+  );
+}
+
+function Column({ column, cards }: { column: Column; cards: Record<string, Card> }) {
+  const columnCards = column.cardIds.map(id => cards[id]);
+
+  return (
+    <div
+      role="group"
+      aria-label={`${column.title} column`}
+      style={{ width: 280, display: 'flex', flexDirection: 'column', background: '#1e293b', borderRadius: 12 }}
+    >
+      <div style={{ padding: '12px 16px', fontWeight: 600 }}>
+        {column.title} <span aria-label={`${column.cardIds.length} cards`}>({column.cardIds.length})</span>
+      </div>
+      <SortableContext items={column.cardIds} strategy={verticalListSortingStrategy}>
+        <div
+          role="list"
+          aria-label={`Cards in ${column.title}`}
+          style={{ flex: 1, overflowY: 'auto', padding: '0 8px 8px' }}
+        >
+          {columnCards.map(card => (
+            <SortableCardItem key={card.id} card={card} />
+          ))}
+        </div>
+      </SortableContext>
+    </div>
+  );
+}
+```
+
+---
+
+## Step 5: Optimistic reorder with Zustand
+
+```ts
+const useBoardStore = create<BoardStore & BoardActions>((set, get) => ({
+  board: null!,
+  columns: {},
+  cards: {},
+
+  moveCard(cardId: string, targetColumnId: string, targetIndex: number) {
+    const state = get();
+    const card = state.cards[cardId];
+    const sourceColumnId = card.columnId;
+
+    // Snapshot for rollback
+    const snapshot = {
+      columns: state.columns,
+      cards: state.cards,
+    };
+
+    // Compute new rank using fractional-indexing
+    const targetColumn = state.columns[targetColumnId];
+    const siblingIds = targetColumn.cardIds.filter(id => id !== cardId);
+    const prevRank = siblingIds[targetIndex - 1]
+      ? state.cards[siblingIds[targetIndex - 1]].rank
+      : null;
+    const nextRank = siblingIds[targetIndex]
+      ? state.cards[siblingIds[targetIndex]].rank
+      : null;
+    const newRank = generateKeyBetween(prevRank, nextRank); // fractional-indexing
+
+    // Apply locally
+    set(produce(draft => {
+      // Remove from source column
+      draft.columns[sourceColumnId].cardIds =
+        draft.columns[sourceColumnId].cardIds.filter(id => id !== cardId);
+      // Insert at target position
+      draft.columns[targetColumnId].cardIds.splice(targetIndex, 0, cardId);
+      // Update card
+      draft.cards[cardId].columnId = targetColumnId;
+      draft.cards[cardId].rank = newRank;
+    }));
+
+    // Sync to server
+    api.moveCard(cardId, { columnId: targetColumnId, rank: newRank })
+      .catch(() => {
+        // Rollback
+        set({ columns: snapshot.columns, cards: snapshot.cards });
+        toast.error('Failed to move card — change reverted');
+      });
+  },
+}));
+```
+
+---
+
+## Step 6: Undo/redo
+
+```ts
+interface HistoryEntry {
+  before: Pick<BoardStore, 'columns' | 'cards'>;
+  after: Pick<BoardStore, 'columns' | 'cards'>;
+}
+
+const history: HistoryEntry[] = [];
+let historyIndex = -1;
+
+function pushHistory(before: any, after: any) {
+  history.splice(historyIndex + 1); // clear redo stack
+  history.push({ before, after });
+  historyIndex = history.length - 1;
+}
+
+function undo() {
+  if (historyIndex < 0) return;
+  const { before } = history[historyIndex--];
+  useBoardStore.setState(before);
+  // Sync to server
+  api.syncBoardState(before);
+}
+
+function redo() {
+  if (historyIndex >= history.length - 1) return;
+  const { after } = history[++historyIndex];
+  useBoardStore.setState(after);
+  api.syncBoardState(after);
+}
+
+// Register global handler
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
+    e.shiftKey ? redo() : undo();
+  }
+});
+```
+
+---
+
+## Step 7: Keyboard accessibility
+
+dnd-kit includes a `KeyboardSensor` out of the box:
+- **Space** — pick up card
+- **Arrow keys** — move card up/down in column or left/right between columns
+- **Enter / Space** — drop card at current position
+- **Escape** — cancel drag
+
+Additionally announce drag actions to screen readers:
+
+```tsx
+const announcements = {
+  onDragStart: ({ active }) => `Picked up card: ${cards[active.id].title}`,
+  onDragOver: ({ active, over }) => over
+    ? `Moving ${cards[active.id].title} over ${columns[over.id]?.title ?? cards[over.id]?.title}`
+    : undefined,
+  onDragEnd: ({ active, over }) => over
+    ? `Dropped ${cards[active.id].title} in ${columns[cards[active.id].columnId].title}`
+    : `Cancelled drag of ${cards[active.id].title}`,
+};
+
+<DndContext accessibility={{ announcements }}>
+```
+
+---
+
+## Step 8: Performance checklist
+
+| Concern | Solution |
+|---|---|
+| Large columns (1000+ cards) | `react-window` FixedSizeList per column |
+| Re-renders on drag hover | Use `useSortable` IDs, not full card objects |
+| Drag overlay | Portal + `will-change: transform` |
+| Concurrent edits (multi-user) | WebSocket events; last-write-wins by default; show conflict toast |
+| Column dragging | Same DnD context, outer `SortableContext` for column IDs |
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "The key data modeling decision is fractional indexing for card order — assigning a `rank` string that sorts lexicographically, so inserting a card only requires updating one row. I'd use dnd-kit with `PointerSensor` plus `KeyboardSensor` for accessibility. On drag end, I apply the reorder locally in Zustand (optimistic), compute the new rank with `generateKeyBetween`, then sync to the server — rolling back on failure. Undo/redo is a parallel history stack of before/after snapshots; Ctrl+Z pops the stack and sets Zustand state back."
+</div>

@@ -1,0 +1,466 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { getCollection } from 'astro:content';
+import { TRACKS, PLAN } from '../data/curriculum';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const sde2TrackIds = new Set(TRACKS.filter((t) => t.program === 'sde2').map((t) => t.id));
+const lessons = (await getCollection('lessons')).filter((l) => !l.data.draft && sde2TrackIds.has(l.data.track));
+
+const W: Record<string, number> = { must: 3, deep: 2, know: 1 };
+const wt = (p?: string | null) => (p ? W[p] ?? 1 : 1);
+
+const lessonMeta = lessons.map((l) => ({
+  id: l.id, title: l.data.title, track: l.data.track,
+  priority: l.data.priority ?? null, w: wt(l.data.priority),
+}));
+const lessonWeightTotal = lessonMeta.reduce((s, l) => s + l.w, 0);
+const behavioralTotal = lessonMeta.filter((l) => l.track === 'behavioral').length;
+
+// recommended lesson order from the week-by-week plan
+const planLessonOrder: string[] = [];
+PLAN.forEach((w) => w.items.forEach((it) => { if (it.lesson) planLessonOrder.push(it.lesson); }));
+
+const trackNames = Object.fromEntries(TRACKS.map((t) => [t.id, t.name]));
+---
+<BaseLayout title="Today · SDE-2 Launchpad" active="home" program="sde2">
+  <!-- ════════ ONBOARDING OVERLAY ════════ -->
+  <div class="onb-overlay" id="onbOverlay" hidden>
+    <div class="onb-card glass">
+      <div class="onb-progress"><i id="onbBar"></i></div>
+
+      <!-- step 1 -->
+      <div class="onb-step" data-step="1">
+        <div class="onb-emoji">🚀</div>
+        <h2>Let's set up your prep</h2>
+        <p class="muted">Three quick questions so your plan and readiness score fit <em>you</em>. Everything stays on this device.</p>
+        <label class="onb-q">Which role are you targeting?</label>
+        <div class="onb-opts" id="onbRole">
+          <button class="onb-opt" data-v="SDE-1">SDE-1 / Junior</button>
+          <button class="onb-opt" data-v="SDE-2">SDE-2 / Mid</button>
+          <button class="onb-opt" data-v="Senior">Senior / SDE-3</button>
+          <button class="onb-opt" data-v="Frontend">Frontend / RN</button>
+          <button class="onb-opt" data-v="Full-stack">Full-stack</button>
+          <button class="onb-opt" data-v="Backend">Backend</button>
+        </div>
+      </div>
+
+      <!-- step 2 -->
+      <div class="onb-step hide" data-step="2">
+        <div class="onb-emoji">📅</div>
+        <h2>When's the interview?</h2>
+        <p class="muted">A target date drives your daily pace and a countdown. No date is fine — you can add one later.</p>
+        <label class="onb-q">Target / first interview date</label>
+        <input type="date" id="onbDate" class="onb-date" />
+        <button class="onb-opt onb-nodate" id="onbNoDate" data-v="">No date yet — just building skills</button>
+      </div>
+
+      <!-- step 3 -->
+      <div class="onb-step hide" data-step="3">
+        <div class="onb-emoji">📊</div>
+        <h2>How ready do you feel today?</h2>
+        <p class="muted">Be honest — this seeds your starting point and flags where to focus first.</p>
+        <div id="onbConf">
+          <div class="onb-conf-row" data-area="dsa">
+            <span>🧩 Data structures &amp; algorithms</span>
+            <div class="onb-scale" data-area="dsa">
+              <button data-v="1">Shaky</button><button data-v="2">OK</button><button data-v="3">Solid</button>
+            </div>
+          </div>
+          <div class="onb-conf-row" data-area="system">
+            <span>🏗️ System design</span>
+            <div class="onb-scale" data-area="system">
+              <button data-v="1">Shaky</button><button data-v="2">OK</button><button data-v="3">Solid</button>
+            </div>
+          </div>
+          <div class="onb-conf-row" data-area="behavioral">
+            <span>🎯 Behavioral</span>
+            <div class="onb-scale" data-area="behavioral">
+              <button data-v="1">Shaky</button><button data-v="2">OK</button><button data-v="3">Solid</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="onb-foot">
+        <button class="btn" id="onbBack" style="visibility:hidden">← Back</button>
+        <span class="muted" id="onbStepLabel" style="font-size:12px">Step 1 of 3</span>
+        <button class="btn btn-primary" id="onbNext" disabled>Next →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════ TODAY VIEW ════════ -->
+  <div class="wrap" style="padding-top:28px;max-width:1080px">
+    <div class="today-head">
+      <div>
+        <h1 id="greeting" style="margin-bottom:4px">Today</h1>
+        <p class="sub" id="subline" style="margin:0">Your daily prep, in one place.</p>
+      </div>
+      <div class="today-head-right">
+        <a class="countdown-chip" id="countdown" href={`${base}/prep`}></a>
+        <button class="btn" id="editProfile" style="font-size:13px">⚙ Profile</button>
+      </div>
+    </div>
+
+    <!-- diagnostic prompt (only before first diagnostic) -->
+    <a class="dg-banner hide" id="dgPrompt" href={`${base}/diagnostic`}>
+      <span style="font-size:24px">🧭</span>
+      <div style="flex:1;min-width:0">
+        <b>Take the 10-minute readiness diagnostic</b>
+        <div class="muted" style="font-size:13px">Find your weak spots and get a focused starting plan — it tunes your dashboard.</div>
+      </div>
+      <span class="dg-banner-cta">Start →</span>
+    </a>
+
+    <!-- Readiness hero -->
+    <div class="panel readiness-panel" style="margin-top:18px">
+      <div class="rd-gauge">
+        <svg width="150" height="150" viewBox="0 0 150 150">
+          <circle cx="75" cy="75" r="58" stroke="var(--panel-4)" stroke-width="11" fill="none"></circle>
+          <circle id="rdArc" cx="75" cy="75" r="58" stroke="var(--accent-2)" stroke-width="11" fill="none"
+            stroke-linecap="round" stroke-dasharray="364.4" stroke-dashoffset="364.4"
+            transform="rotate(-90 75 75)"></circle>
+        </svg>
+        <div class="rd-gauge-center">
+          <b id="rdScore">0</b>
+          <span>readiness</span>
+        </div>
+      </div>
+
+      <div class="rd-mid">
+        <div class="rd-label" id="rdLabel">Just getting started</div>
+        <p class="muted" id="rdAdvice" style="font-size:14px;margin:8px 0 14px">Complete onboarding to see your personalized focus.</p>
+        <a class="btn btn-primary" id="rdAction" href={`${base}/tracks`} style="font-size:13px">Start now →</a>
+      </div>
+
+      <div class="rd-radar" id="rdRadar"></div>
+    </div>
+
+    <!-- Today's queue -->
+    <div class="panel" style="margin-top:16px">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <h2 style="font-size:20px">Today's plan</h2>
+        <span class="muted" style="font-size:13px;font-family:var(--mono)" id="queueCount">0 / 4</span>
+      </div>
+      <p class="muted" style="font-size:13px;margin:4px 0 14px">Clear all four and you've kept the loop alive today. <span id="streakLine"></span></p>
+
+      <div class="queue" id="queue">
+        <a class="q-item" id="q-cards" href={`${base}/practice/flashcards`}>
+          <span class="q-check" data-k="cards"></span>
+          <span class="q-ico">🃏</span>
+          <span class="q-body"><b>Review due flashcards</b><span class="q-sub" id="q-cards-sub">—</span></span>
+          <span class="q-cta">Review →</span>
+        </a>
+        <a class="q-item" id="q-dsa" href={`${base}/game`}>
+          <span class="q-check" data-k="dsa"></span>
+          <span class="q-ico">🧩</span>
+          <span class="q-body"><b>Hit your DSA goal</b><span class="q-sub" id="q-dsa-sub">—</span></span>
+          <span class="q-cta">Solve →</span>
+        </a>
+        <a class="q-item" id="q-lesson" href={`${base}/tracks`}>
+          <span class="q-check" data-k="lesson"></span>
+          <span class="q-ico">📘</span>
+          <span class="q-body"><b id="q-lesson-title">Read your next lesson</b><span class="q-sub" id="q-lesson-sub">—</span></span>
+          <span class="q-cta">Read →</span>
+        </a>
+        <a class="q-item" id="q-mock" href={`${base}/practice/mock`}>
+          <span class="q-check" data-k="mock"></span>
+          <span class="q-ico">🎤</span>
+          <span class="q-body"><b>Mock warm-up</b><span class="q-sub">Answer one question out loud</span></span>
+          <span class="q-cta">Start →</span>
+        </a>
+      </div>
+
+      <div class="queue-done hide" id="queueDone">
+        🎉 <b>Today's loop complete.</b> This is exactly how offers get built — one consistent day at a time.
+      </div>
+    </div>
+
+    <!-- shortcuts -->
+    <h2 style="margin-top:26px;font-size:18px">Jump in</h2>
+    <div class="sc-grid" style="margin-top:12px">
+      <a class="sc-card" href={`${base}/prep`}><span>🏢</span><b>Company Prep</b><small>Target-company focus packs</small></a>
+      <a class="sc-card" href={`${base}/plan`}><span>🗺️</span><b>Study Plan</b><small>Curriculum &amp; weekly path</small></a>
+      <a class="sc-card" href={`${base}/game`}><span>🎮</span><b>DSA Quest</b><small>30-pattern problem ladder</small></a>
+      <a class="sc-card" href={`${base}/practice/code`}><span>⚡</span><b>Code Lab</b><small>Solve &amp; run in-browser</small></a>
+      <a class="sc-card" href={`${base}/practice/quiz`}><span>🔮</span><b>Output Quiz</b><small>Predict-the-output drills</small></a>
+      <a class="sc-card" href={`${base}/practice/design`}><span>🏗️</span><b>SD Canvas</b><small>6-step design scaffold</small></a>
+      <a class="sc-card" href={`${base}/practice/stories`}><span>🎯</span><b>STAR Stories</b><small>Behavioral story bank</small></a>
+      <a class="sc-card" href={`${base}/practice/mock`}><span>🎤</span><b>Mock Mode</b><small>Pressure-test out loud</small></a>
+      <a class="sc-card" href={`${base}/practice/flashcards`}><span>🃏</span><b>Flashcards</b><small>Spaced repetition</small></a>
+      <a class="sc-card" href={`${base}/cheatsheets`}><span>📑</span><b>Cheat Sheets</b><small>Printable quick reference</small></a>
+    </div>
+  </div>
+
+  <style is:global>
+    /* ── diagnostic banner ── */
+    .dg-banner { display:flex; align-items:center; gap:14px; margin-top:16px; padding:14px 18px; border-radius:14px; text-decoration:none; color:var(--text);
+      background:linear-gradient(100deg, rgba(192,193,255,.12), rgba(78,222,163,.08)); border:1px solid rgba(192,193,255,.3); transition:.16s; }
+    .dg-banner:hover { border-color:var(--accent); transform:translateY(-1px); }
+    .dg-banner b { font-size:15px; }
+    .dg-banner-cta { font-family:var(--mono); font-size:13px; color:var(--accent); font-weight:700; flex:0 0 auto; }
+
+    /* ── today header ── */
+    .today-head { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; }
+    .today-head-right { display:flex; gap:10px; align-items:center; }
+    .countdown-chip { font-family:var(--mono); font-size:13px; padding:7px 13px; border-radius:999px; background:rgba(255,185,95,.12); border:1px solid rgba(255,185,95,.3); color:var(--warn); text-decoration:none; transition:.15s; }
+    .countdown-chip:hover { background:rgba(255,185,95,.2); }
+    .countdown-chip:empty { display:none; }
+    .sc-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px; }
+
+    /* ── readiness panel ── */
+    .readiness-panel { display:flex; gap:26px; align-items:center; flex-wrap:wrap; }
+    .rd-gauge { position:relative; flex:0 0 auto; width:150px; height:150px; }
+    .rd-gauge-center { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+    .rd-gauge-center b { font-size:42px; font-weight:800; line-height:1; }
+    .rd-gauge-center span { font-size:11px; color:var(--muted); font-family:var(--mono); text-transform:uppercase; letter-spacing:.1em; margin-top:2px; }
+    .rd-mid { flex:1; min-width:220px; }
+    .rd-label { font-size:22px; font-weight:700; letter-spacing:-.3px; }
+    .rd-radar { flex:0 0 auto; width:300px; max-width:100%; display:flex; justify-content:center; }
+    @media (max-width:760px){ .rd-mid{order:3} .rd-radar{order:2;margin:0 auto} }
+
+    /* ── queue ── */
+    .queue { display:flex; flex-direction:column; gap:9px; }
+    .q-item { display:flex; align-items:center; gap:14px; padding:13px 15px; border:1px solid var(--line); border-radius:12px; background:rgba(255,255,255,.02); text-decoration:none; color:var(--text); transition:.16s; }
+    .q-item:hover { background:rgba(192,193,255,.06); border-color:var(--accent); transform:translateX(2px); }
+    .q-item.done { opacity:.62; }
+    .q-item.done .q-cta { color:var(--accent-2); }
+    .q-check { flex:0 0 auto; width:22px; height:22px; border-radius:50%; border:2px solid var(--line); display:grid; place-items:center; transition:.16s; }
+    .q-item.done .q-check { background:var(--accent-2); border-color:var(--accent-2); }
+    .q-item.done .q-check::after { content:'✓'; color:#06251a; font-size:13px; font-weight:800; }
+    .q-ico { flex:0 0 auto; font-size:22px; }
+    .q-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+    .q-body b { font-size:15px; font-weight:600; }
+    .q-item.done .q-body b { text-decoration:line-through; text-decoration-color:rgba(78,222,163,.4); }
+    .q-sub { font-size:12.5px; color:var(--muted); font-family:var(--mono); }
+    .q-cta { flex:0 0 auto; font-size:13px; font-family:var(--mono); color:var(--accent); font-weight:600; }
+    .queue-done { margin-top:14px; padding:14px 16px; border-radius:12px; background:rgba(78,222,163,.1); border:1px solid rgba(78,222,163,.3); color:var(--text); font-size:14px; }
+
+    /* ── shortcut cards ── */
+    .grid.cols-4 { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+    @media (max-width:760px){ .grid.cols-4{grid-template-columns:repeat(2,1fr)} }
+    .sc-card { display:flex; flex-direction:column; gap:3px; padding:16px; border:1px solid var(--line); border-radius:13px; background:var(--panel); text-decoration:none; color:var(--text); transition:.16s; }
+    .sc-card:hover { border-color:var(--accent); transform:translateY(-2px); background:var(--panel-2); }
+    .sc-card span { font-size:24px; }
+    .sc-card b { font-size:15px; margin-top:4px; }
+    .sc-card small { font-size:12px; color:var(--muted); }
+
+    /* ── onboarding ── */
+    .onb-overlay { position:fixed; inset:0; background:rgba(6,14,32,.9); backdrop-filter:blur(6px); z-index:300; display:flex; align-items:center; justify-content:center; padding:18px; }
+    .onb-overlay[hidden] { display:none; }
+    .onb-card { width:min(540px,96vw); border-radius:20px; padding:30px 30px 18px; box-shadow:var(--shadow); position:relative; }
+    .onb-progress { height:4px; border-radius:3px; background:rgba(255,255,255,.08); overflow:hidden; margin-bottom:22px; }
+    .onb-progress i { display:block; height:100%; width:33%; background:linear-gradient(90deg,var(--accent),var(--accent-2)); border-radius:3px; transition:width .3s; }
+    .onb-emoji { font-size:34px; }
+    .onb-card h2 { font-size:24px; font-weight:700; margin:8px 0 6px; }
+    .onb-q { display:block; font-size:13px; font-weight:600; color:var(--muted); margin:20px 0 10px; text-transform:uppercase; letter-spacing:.06em; }
+    .onb-opts { display:flex; flex-wrap:wrap; gap:9px; }
+    .onb-opt { padding:11px 16px; border-radius:11px; border:1px solid var(--line); background:rgba(255,255,255,.03); color:var(--text); font-size:14px; font-weight:500; cursor:pointer; transition:.15s; }
+    .onb-opt:hover { border-color:var(--accent); }
+    .onb-opt.sel { background:var(--accent-deep); border-color:var(--accent); color:#fff; }
+    .onb-date { width:100%; padding:12px 14px; border-radius:11px; border:1px solid var(--line); background:rgba(255,255,255,.03); color:var(--text); font-size:15px; font-family:var(--mono); color-scheme:dark; }
+    .onb-nodate { width:100%; margin-top:10px; text-align:center; }
+    .onb-conf-row { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:12px 0; border-top:1px solid var(--line); flex-wrap:wrap; }
+    .onb-conf-row:first-child { border-top:none; }
+    .onb-conf-row > span { font-size:14px; }
+    .onb-scale { display:flex; gap:6px; }
+    .onb-scale button { padding:7px 13px; border-radius:9px; border:1px solid var(--line); background:rgba(255,255,255,.03); color:var(--muted); font-size:12.5px; cursor:pointer; transition:.15s; }
+    .onb-scale button:hover { border-color:var(--accent); }
+    .onb-scale button.sel { background:var(--accent-2); border-color:var(--accent-2); color:#06251a; font-weight:700; }
+    .onb-foot { display:flex; justify-content:space-between; align-items:center; margin-top:24px; }
+  </style>
+
+  <script define:vars={{ base, lessonMeta, lessonWeightTotal, behavioralTotal, planLessonOrder, trackNames }}>
+    const store = window.SDE2;
+    const el = (id) => document.getElementById(id);
+
+    /* ════════ ONBOARDING ════════ */
+    const overlay = el('onbOverlay');
+    let onbStep = 1;
+    const draft = { role: '', targetDate: '', confidence: {} };
+
+    function openOnb(prefill) {
+      if (prefill) {
+        draft.role = prefill.role || '';
+        draft.targetDate = prefill.targetDate || '';
+        draft.confidence = Object.assign({}, prefill.confidence || {});
+      }
+      onbStep = 1;
+      overlay.hidden = false;
+      paintOnb();
+    }
+    function paintOnb() {
+      document.querySelectorAll('.onb-step').forEach((s) => s.classList.toggle('hide', +s.dataset.step !== onbStep));
+      el('onbBar').style.width = (onbStep / 3 * 100) + '%';
+      el('onbStepLabel').textContent = `Step ${onbStep} of 3`;
+      el('onbBack').style.visibility = onbStep === 1 ? 'hidden' : 'visible';
+      el('onbNext').textContent = onbStep === 3 ? 'Finish →' : 'Next →';
+      // reflect selections
+      document.querySelectorAll('#onbRole .onb-opt').forEach((b) => b.classList.toggle('sel', b.dataset.v === draft.role));
+      if (draft.targetDate) el('onbDate').value = draft.targetDate;
+      ['dsa', 'system', 'behavioral'].forEach((a) => {
+        document.querySelectorAll(`.onb-scale[data-area="${a}"] button`).forEach((b) => b.classList.toggle('sel', +b.dataset.v === draft.confidence[a]));
+      });
+      validateOnb();
+    }
+    function validateOnb() {
+      let ok = true;
+      if (onbStep === 1) ok = !!draft.role;
+      if (onbStep === 3) ok = ['dsa', 'system', 'behavioral'].every((a) => draft.confidence[a]);
+      el('onbNext').disabled = !ok;
+    }
+    document.querySelectorAll('#onbRole .onb-opt').forEach((b) => b.addEventListener('click', () => { draft.role = b.dataset.v; paintOnb(); }));
+    el('onbDate').addEventListener('change', () => { draft.targetDate = el('onbDate').value; });
+    el('onbNoDate').addEventListener('click', () => { draft.targetDate = ''; onbStep = 3; paintOnb(); });
+    document.querySelectorAll('.onb-scale button').forEach((b) => b.addEventListener('click', () => {
+      const area = b.closest('.onb-scale').dataset.area;
+      draft.confidence[area] = +b.dataset.v; paintOnb();
+    }));
+    el('onbBack').addEventListener('click', () => { if (onbStep > 1) { onbStep--; paintOnb(); } });
+    el('onbNext').addEventListener('click', () => {
+      if (el('onbNext').disabled) return;
+      if (onbStep < 3) { onbStep++; paintOnb(); return; }
+      store.saveProfile({ role: draft.role, targetDate: draft.targetDate, confidence: draft.confidence });
+      overlay.hidden = true;
+      paint();
+    });
+    el('editProfile').addEventListener('click', () => openOnb(store.profile()));
+
+    /* ════════ READINESS RADAR ════════ */
+    const DIMS = [
+      ['coverage', 'Coverage'], ['dsa', 'DSA'], ['recall', 'Recall'],
+      ['mock', 'Mock'], ['behavioral', 'Behavioral'], ['consistency', 'Consistency'],
+    ];
+    function radar(dims) {
+      const cx = 130, cy = 125, R = 88, N = 6;
+      const ang = (i) => (-90 + i * (360 / N)) * Math.PI / 180;
+      const pt = (i, r) => [cx + Math.cos(ang(i)) * r, cy + Math.sin(ang(i)) * r];
+      let g = '';
+      [0.25, 0.5, 0.75, 1].forEach((f) => {
+        const pts = DIMS.map((_, i) => pt(i, R * f).map((n) => n.toFixed(1)).join(',')).join(' ');
+        g += `<polygon points="${pts}" fill="none" stroke="var(--line)" stroke-width="1" opacity="${f === 1 ? 0.55 : 0.28}"/>`;
+      });
+      DIMS.forEach((l, i) => {
+        const [x, y] = pt(i, R);
+        g += `<line x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-width="1" opacity="0.35"/>`;
+        const [lx, ly] = pt(i, R + 18);
+        const anchor = Math.abs(lx - cx) < 2 ? 'middle' : (lx > cx ? 'start' : 'end');
+        g += `<text x="${lx.toFixed(1)}" y="${(ly + 3).toFixed(1)}" text-anchor="${anchor}" font-size="10" fill="var(--muted)" font-family="var(--mono)">${l[1]}</text>`;
+      });
+      const dpts = DIMS.map((l, i) => pt(i, R * (dims[l[0]] / 100)).map((n) => n.toFixed(1)).join(',')).join(' ');
+      g += `<polygon points="${dpts}" fill="rgba(78,222,163,.18)" stroke="var(--accent-2)" stroke-width="2"/>`;
+      DIMS.forEach((l, i) => { const [x, y] = pt(i, R * (dims[l[0]] / 100)); g += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="var(--accent-2)"/>`; });
+      return `<svg viewBox="0 0 260 250" width="100%" style="max-width:300px">${g}</svg>`;
+    }
+
+    const ADVICE = {
+      coverage: ['Read your next lesson — coverage is your lowest area.', 'Keep learning →', base + '/tracks'],
+      dsa: ['Solve today\'s DSA pattern to build fluency.', 'Open DSA Quest →', base + '/game'],
+      recall: ['Clear your due flashcards — recall fades without review.', 'Review cards →', base + '/practice/flashcards'],
+      mock: ['Run a mock question out loud — practice performing, not just knowing.', 'Start a mock →', base + '/practice/mock'],
+      behavioral: ['Build a STAR story — the behavioral round decides offers and pay.', 'Open Story Bank →', base + '/practice/stories'],
+      consistency: ['Do one thing today to keep your streak alive.', 'Pick a task →', base + '/game'],
+    };
+    const rdLabelFor = (s) => s >= 80 ? 'Interview ready 🚀' : s >= 60 ? 'Getting interview-ready'
+      : s >= 40 ? 'Warming up' : s >= 20 ? 'Building foundations' : 'Just getting started';
+    const rdColorFor = (s) => s >= 70 ? 'var(--accent-2)' : s >= 40 ? 'var(--warn)' : 'var(--hot)';
+
+    /* ════════ NEXT LESSON ════════ */
+    function nextLesson(doneAll) {
+      const byId = Object.fromEntries(lessonMeta.map((l) => [l.id, l]));
+      for (const slug of planLessonOrder) { if (byId[slug] && !doneAll[slug]) return byId[slug]; }
+      return lessonMeta.find((l) => !doneAll[l.id]) || null;
+    }
+
+    /* ════════ MAIN PAINT ════════ */
+    function paint() {
+      const profile = store.profile();
+      if (!profile) { openOnb(); return; }
+
+      const doneAll = store.allDone();
+
+      // diagnostic prompt — show until they've taken it
+      el('dgPrompt').classList.toggle('hide', !!profile.diagnostic);
+
+      // greeting
+      const hr = new Date().getHours();
+      const tod = hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
+      el('greeting').textContent = `${tod} — let's get to ${profile.role || 'SDE-2'}.`;
+
+      // countdown (links to company prep)
+      const cd = el('countdown');
+      const co = profile.targetCompany ? profile.targetCompany.name : null;
+      if (profile.targetDate) {
+        const days = Math.ceil((new Date(profile.targetDate) - new Date(new Date().toISOString().slice(0, 10))) / 86400000);
+        const to = co || 'target';
+        cd.textContent = days > 0 ? `🎯 ${days} day${days === 1 ? '' : 's'} to ${to}` : days === 0 ? `🎯 ${co || 'Target'} is today — you've got this` : '🎯 Target date passed';
+        cd.style.display = '';
+      } else if (co) {
+        cd.textContent = `🎯 Target: ${co}`; cd.style.display = '';
+      } else { cd.textContent = '🎯 Pick a target company'; cd.style.display = ''; }
+
+      // ── readiness ──
+      let lessonWeightDone = 0, behavioralDone = 0;
+      lessonMeta.forEach((l) => { if (doneAll[l.id]) { lessonWeightDone += l.w; if (l.track === 'behavioral') behavioralDone++; } });
+      const r = store.readiness({ lessonWeightDone, lessonWeightTotal, dsaSolved: store.solvedCount(), dsaTarget: 90, behavioralDone, behavioralTotal });
+
+      const circ = 364.4;
+      el('rdArc').style.strokeDashoffset = String(circ - circ * r.score / 100);
+      el('rdArc').style.stroke = rdColorFor(r.score);
+      el('rdScore').textContent = r.score;
+      el('rdLabel').textContent = rdLabelFor(r.score);
+      el('rdRadar').innerHTML = radar(r.dims);
+
+      // focus advice = lowest dimension (tie-break by self-rated confidence)
+      let lowKey = DIMS[0][0], lowVal = 101;
+      DIMS.forEach(([k]) => { if (r.dims[k] < lowVal) { lowVal = r.dims[k]; lowKey = k; } });
+      const adv = ADVICE[lowKey];
+      el('rdAdvice').textContent = adv[0];
+      el('rdAction').textContent = adv[1];
+      el('rdAction').href = adv[2];
+
+      // ── today's queue ──
+      const due = store.dueCards().length;
+      const cardsDone = due === 0;
+      el('q-cards-sub').textContent = due > 0 ? `${due} card${due === 1 ? '' : 's'} due now` : 'All caught up ✓';
+
+      const goal = store.dsaGoal(), did = store.solvedToday();
+      const dsaDone = did >= goal;
+      el('q-dsa-sub').textContent = `${Math.min(did, goal)} / ${goal} solved today`;
+
+      const nl = nextLesson(doneAll);
+      const lessonDone = store.dailyTaskDone('lesson');
+      if (nl) {
+        el('q-lesson-title').textContent = `Next: ${nl.title}`;
+        el('q-lesson-sub').textContent = trackNames[nl.track] || nl.track;
+        el('q-lesson').href = `${base}/lessons/${nl.id}`;
+      } else {
+        el('q-lesson-title').textContent = 'All lessons complete 🎉';
+        el('q-lesson-sub').textContent = 'Revisit weak spots or run a mock';
+        el('q-lesson').href = `${base}/tracks`;
+      }
+      const mockDone = store.dailyTaskDone('mock');
+
+      const state = { cards: cardsDone, dsa: dsaDone, lesson: lessonDone, mock: mockDone };
+      let n = 0;
+      ['cards', 'dsa', 'lesson', 'mock'].forEach((k) => {
+        const node = el('q-' + k);
+        node.classList.toggle('done', !!state[k]);
+        if (state[k]) n++;
+      });
+      el('queueCount').textContent = `${n} / 4`;
+      el('queueDone').classList.toggle('hide', n < 4);
+
+      const s = store.streak();
+      el('streakLine').textContent = s.count > 0 ? `Current streak: ${s.count} day${s.count === 1 ? '' : 's'} 🔥` : '';
+    }
+
+    // intent-tracked queue items: mark done on click-through
+    el('q-lesson').addEventListener('click', () => store.markDailyTask('lesson'));
+    el('q-mock').addEventListener('click', () => store.markDailyTask('mock'));
+
+    store.onChange(paint);
+    paint();
+  </script>
+</BaseLayout>

@@ -1,0 +1,273 @@
+---
+title: "Jenkins & pipelines for QA"
+track: qa-cicd
+summary: "Jenkins is still everywhere in enterprise QA interviews — controller/agent architecture, declarative Jenkinsfiles, parameters and triggers, credentials, publishing Allure/HTML reports, parallel stages, Selenium Grid integration, and how it compares to GitHub Actions and GitLab CI."
+order: 3
+est: 24
+difficulty: medium
+priority: deep
+tags: [jenkins, cicd, pipeline, jenkinsfile, allure]
+whyAsked: "Despite newer tools, Jenkins runs the pipelines at a huge share of established enterprises — banks, telcos, healthcare. Many QA roles still ask you to read or write a Jenkinsfile and explain how your suite slots into it."
+followUps:
+  - "Freestyle vs Pipeline job — which and why?"
+  - "How do you store credentials in Jenkins?"
+  - "How do you run tests in parallel in a Jenkinsfile?"
+  - "Jenkins vs GitHub Actions — when would you pick each?"
+resources:
+  - { label: "Jenkins Pipeline docs", url: "https://www.jenkins.io/doc/book/pipeline/" }
+  - { label: "Jenkinsfile syntax", url: "https://www.jenkins.io/doc/book/pipeline/syntax/" }
+  - { label: "Declarative directive reference", url: "https://www.jenkins.io/doc/book/pipeline/syntax/#declarative-directives" }
+  - { label: "Allure Jenkins plugin", url: "https://plugins.jenkins.io/allure-jenkins-plugin/" }
+---
+
+Jenkins is the grandparent of CI — open-source, self-hosted, plugin-driven, and still running the pipelines at a large share of established enterprises. Cloud-native shops reach for GitHub Actions or GitLab CI, but if you're interviewing at a bank, telco, insurer, or any company with on-prem infrastructure, expect Jenkins questions. The skill they test: can you read a Jenkinsfile and explain where your test suite plugs in.
+
+## Architecture: controller and agents
+
+- **Controller** (formerly "master") — the brain. Hosts the web UI, stores job/pipeline config, schedules builds, manages plugins. You should run *no* heavy builds on the controller itself.
+- **Agents** (formerly "slaves"/nodes) — worker machines that actually execute builds. Connected to the controller, labeled by capability (e.g. `linux`, `chrome`, `docker`). A pipeline's `agent` directive picks where each stage runs.
+- **Executors** — slots on an agent; each runs one build at a time. An agent with 4 executors runs 4 builds concurrently.
+
+This controller/agent split is how Jenkins scales out: add agents (or spin them up dynamically as Docker/Kubernetes pods) to run more tests in parallel.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Define <em>what</em> to run in a <code>Jenkinsfile</code> that lives in your repo (Pipeline-as-Code), and let Jenkins decide <em>where</em> (which agent) and <em>when</em> (triggers) to run it. Keeping the pipeline in version control means it's reviewed, diffed, and rolls back like any other code.
+</div>
+
+## Freestyle vs Pipeline jobs
+
+- **Freestyle** — configured by clicking through the web UI: pick SCM, add build steps, post-build actions. Fine for trivial one-off jobs, but the config isn't in version control, doesn't handle complex flow (parallel, stages, conditional logic) well, and can't be code-reviewed.
+- **Pipeline** — defined as code in a `Jenkinsfile`. Supports stages, parallelism, error handling, and lives in the repo. **This is what you should use and what interviews expect.** Two flavors:
+  - **Declarative** — structured, opinionated, easier to read/validate. The recommended default.
+  - **Scripted** — full Groovy, more powerful and flexible but harder to maintain. Use only when declarative can't express something (you can drop into a `script {}` block from declarative anyway).
+
+## Declarative Jenkinsfile — the building blocks
+
+```text
+pipeline { ... }        // top-level wrapper
+  agent                 // where it runs (any / label / docker)
+  environment           // env vars + credentials for the whole pipeline
+  parameters            // build-time inputs (browser, env, suite)
+  triggers              // when to auto-run (cron, SCM poll)
+  options               // timeouts, retention, etc.
+  stages { stage { steps { ... } } }   // the actual work
+  post                  // always/success/failure hooks (reports, notify)
+```
+
+### A full declarative Jenkinsfile for a test suite
+
+This checks out code, builds, runs unit then E2E tests in parallel across browsers via a Selenium Grid, and publishes Allure + HTML reports with Slack notification.
+
+```groovy
+pipeline {
+  agent any
+
+  parameters {
+    choice(name: 'ENV', choices: ['staging', 'prod'], description: 'Target env')
+    choice(name: 'SUITE', choices: ['smoke', 'regression'], description: 'Suite')
+  }
+
+  environment {
+    BASE_URL = "https://${params.ENV}.example.com"
+    // 'qa-login' is a Jenkins credential id (username+password)
+    QA_CREDS = credentials('qa-login')
+  }
+
+  options {
+    timeout(time: 30, unit: 'MINUTES')
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+    disableConcurrentBuilds()
+  }
+
+  triggers {
+    cron('H 2 * * *')            // nightly ~02:00 (H spreads load)
+    // pollSCM('H/5 * * * *')    // or poll repo every 5 min
+  }
+
+  stages {
+    stage('Checkout') {
+      steps { checkout scm }
+    }
+
+    stage('Build & install') {
+      steps { sh 'npm ci' }
+    }
+
+    stage('Unit tests') {
+      steps { sh 'npm run test:unit' }
+      post {
+        always { junit 'reports/unit/*.xml' }
+      }
+    }
+
+    stage('E2E (parallel browsers)') {
+      parallel {
+        stage('chrome') {
+          steps { sh "npx playwright test --project=chromium --grep @${params.SUITE}" }
+        }
+        stage('firefox') {
+          steps { sh "npx playwright test --project=firefox --grep @${params.SUITE}" }
+        }
+        stage('webkit') {
+          steps { sh "npx playwright test --project=webkit --grep @${params.SUITE}" }
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      // Allure plugin reads results and renders a trend report
+      allure includeProperties: false, results: [[path: 'allure-results']]
+      // HTML Publisher plugin for a static report
+      publishHTML(target: [reportDir: 'playwright-report',
+                           reportFiles: 'index.html',
+                           reportName: 'Playwright Report',
+                           keepAll: true])
+      archiveArtifacts artifacts: 'test-results/**', allowEmptyArchive: true
+    }
+    failure {
+      slackSend channel: '#qa-alerts',
+                color: 'danger',
+                message: "Build ${env.BUILD_NUMBER} FAILED: ${env.BUILD_URL}"
+    }
+    success {
+      slackSend channel: '#qa-alerts', color: 'good',
+                message: "Build ${env.BUILD_NUMBER} passed"
+    }
+  }
+}
+```
+
+Note the patterns: `parameters` make the job reusable across env/suite; `credentials('qa-login')` injects secrets without exposing them; the `parallel` block fans out across browsers; `post { always }` publishes reports **even when tests fail** (you always need the evidence); `junit` parses results so Jenkins shows pass/fail trends.
+
+## Scripted basics
+
+Scripted pipelines are Groovy. Same example, condensed:
+
+```groovy
+node('linux') {
+  stage('Checkout') { checkout scm }
+  stage('Test') {
+    try {
+      sh 'npm ci && npx playwright test'
+    } finally {
+      junit 'reports/*.xml'        // runs even on failure
+    }
+  }
+}
+```
+
+Use scripted only when you need loops/conditionals/logic that declarative can't express. In a declarative pipeline you can embed a `script { }` block for those bits and keep the rest structured.
+
+## Parameters, triggers & credentials
+
+- **Parameters** — `choice`, `string`, `booleanParam`, `password` inputs let one pipeline serve many cases (which browser, which env, smoke vs full). Accessed via `params.NAME`.
+- **Triggers**:
+  - `cron('H 2 * * *')` — scheduled (the `H` "hash" spreads load so all jobs don't fire at exactly 02:00).
+  - `pollSCM('H/5 * * * *')` — Jenkins polls the repo for changes (wasteful at scale).
+  - **Webhooks** — the repo pushes an event to Jenkins on commit/PR (efficient, preferred over polling). With **multibranch pipelines**, Jenkins auto-discovers branches/PRs and builds each.
+- **Credentials** — stored in Jenkins' encrypted credential store (secret text, username/password, SSH keys, files), referenced by **id**, never hard-coded. Use `credentials('id')` in `environment`, or `withCredentials([...]) { }` to scope a secret to specific steps. Jenkins masks them in logs.
+
+## Publishing test, Allure & HTML reports
+
+- **JUnit XML** — `junit 'reports/*.xml'` parses standard JUnit/TestNG XML into Jenkins' native pass/fail/trend graphs. Most frameworks can emit this format.
+- **Allure** — the Allure plugin turns `allure-results` into a rich, historical report with flakiness trends and categorized failures. Widely used in QA-heavy orgs.
+- **HTML Publisher** — `publishHTML` attaches any static HTML report (Playwright, Cucumber, coverage) to the build.
+- Always publish in `post { always { ... } }` so reports appear even when the build fails, and `archiveArtifacts` to keep screenshots/videos/traces.
+
+## Parallel & matrix
+
+- **`parallel`** runs stages simultaneously — across browsers, shards, or test groups (as in the example). Each can target a different agent/label.
+- **`matrix`** (declarative) generates parallel combinations from axes — analogous to GitHub Actions' matrix:
+
+```groovy
+matrix {
+  axes {
+    axis { name 'BROWSER'; values 'chrome', 'firefox', 'edge' }
+  }
+  stages {
+    stage('test') { steps { sh "npx playwright test --project=$BROWSER" } }
+  }
+}
+```
+
+## Integrating Selenium Grid / Docker
+
+Common enterprise pattern: Jenkins agents launch a **Selenium Grid** (via docker compose), run RemoteWebDriver tests against the hub, then tear it down.
+
+```groovy
+stage('E2E on Grid') {
+  steps {
+    sh 'docker compose -f grid-compose.yml up -d'   // hub + chrome/firefox nodes
+    sh 'npm test -- --grid-url http://localhost:4444'
+  }
+  post {
+    always { sh 'docker compose -f grid-compose.yml down' }
+  }
+}
+```
+
+You can also run each *stage* inside a Docker container with `agent { docker { image 'mcr.microsoft.com/playwright:v1.50.0-jammy' } }` so the toolchain is pinned and reproducible — the controller/agents need the Docker plugin and a Docker daemon.
+
+## Shared libraries
+
+When many repos repeat the same pipeline logic, extract it into a **Jenkins Shared Library** — versioned Groovy in a separate repo, loaded with `@Library('qa-pipeline-lib')`. Teams expose custom steps (e.g. `runRegression(env: 'staging')`) so each repo's Jenkinsfile stays tiny and pipeline changes happen in one place. Worth mentioning in interviews as the way to keep dozens of pipelines DRY.
+
+## Jenkins vs GitHub Actions vs GitLab CI
+
+```text
+                  Jenkins              GitHub Actions          GitLab CI
+Hosting           self-hosted          GitHub-hosted/self      GitLab-hosted/self
+Config file       Jenkinsfile (Groovy) .github/workflows/*.yml .gitlab-ci.yml (YAML)
+Setup/maintenance you run the server   zero infra (SaaS)       zero infra (SaaS)
+Ecosystem         1800+ plugins        Marketplace actions     built-in stages
+Best for          on-prem, legacy,     GitHub repos, OSS,      teams already on
+                  full control, air-   quick start             GitLab, built-in
+                  gapped enterprises                           DevOps suite
+Reusability       shared libraries     reusable workflows      includes/templates
+```
+
+- **Jenkins** — maximum flexibility and control, runs anywhere (including air-gapped), unmatched plugin ecosystem — but *you* maintain the server, agents, and security patches. Dominant in established enterprises.
+- **GitHub Actions** — no infra to run, tight GitHub integration, huge marketplace, fastest to start. Great default for GitHub-hosted projects.
+- **GitLab CI** — integrated end-to-end DevOps (repo, CI, registry, security scanning) in one product; clean YAML. Strong if you're already on GitLab.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  If you control your infra and need plugins/air-gapping → Jenkins. If your code's on GitHub and you want zero ops → Actions. If you're standardized on GitLab → GitLab CI. As QA, the concepts (stages, parallel, artifacts, gating, credentials) transfer across all three — only the syntax changes.
+</div>
+
+## Interview questions & model answers
+
+**Q1. Explain Jenkins' controller/agent architecture.**
+The controller is the brain — UI, job config, scheduling, plugins — and shouldn't run heavy builds. Agents are worker machines that actually execute builds, labeled by capability and connected to the controller. Each agent has executors (concurrent build slots). To scale parallel test execution, you add agents — often dynamic Docker/Kubernetes agents spun up per build.
+
+**Q2. Freestyle vs Pipeline — which and why?**
+Pipeline, defined as code in a Jenkinsfile in the repo, because it's version-controlled, reviewable, and handles stages, parallelism, and error handling. Freestyle is UI-configured, not in source control, and can't express complex flow — fine only for trivial jobs. Within Pipeline I prefer declarative for readability and drop to scripted/`script{}` only when needed.
+
+**Q3. How do you store and use credentials in Jenkins?**
+In Jenkins' encrypted credentials store, referenced by id — never hard-coded. In a pipeline I use `credentials('id')` in the environment block or `withCredentials([...])` to scope a secret to specific steps. Jenkins masks them in build logs. Scope them to the right folder/job to limit blast radius.
+
+**Q4. How do you run tests in parallel in a Jenkinsfile?**
+A `parallel` block with one nested stage per browser/shard, each optionally on a different agent, then publish a merged report in `post`. Or a declarative `matrix` with an axis (e.g. BROWSER) that auto-generates the parallel combinations. The prerequisite is independent tests with isolated data.
+
+**Q5. How do you publish test reports and ensure they appear on failure?**
+`junit` parses JUnit/TestNG XML into Jenkins' native trend graphs; the Allure plugin renders rich historical reports from `allure-results`; HTML Publisher attaches static reports like Playwright's. I put all of these in `post { always { ... } }` so they publish even when the build is red, and `archiveArtifacts` to retain screenshots/videos/traces — you need the evidence most when it fails.
+
+**Q6. How would you trigger a Jenkins pipeline, and poll vs webhook?**
+Cron for scheduled runs (using `H` to spread load), and webhooks for commit/PR-driven runs — the repo notifies Jenkins on push, which is far more efficient than `pollSCM` constantly checking. Multibranch pipelines auto-discover branches/PRs and build each. I'd default to webhooks + multibranch.
+
+**Q7. Jenkins vs GitHub Actions — when would you pick each?**
+Jenkins when I control the infrastructure, need its plugin ecosystem, or must run on-prem/air-gapped — at the cost of maintaining the server. GitHub Actions when the code's on GitHub and I want zero infrastructure and fast setup. The CI concepts are identical; only the config syntax (Groovy Jenkinsfile vs YAML workflow) differs, so the skill transfers.
+
+## Common mistakes
+
+- **Running builds on the controller** — overloads the brain and is a security risk. Keep builds on agents.
+- **Hard-coding secrets in the Jenkinsfile** — use the credentials store and reference by id.
+- **Configuring everything in Freestyle UI** — not version-controlled, not reviewable, doesn't scale. Use Pipeline-as-Code.
+- **Publishing reports only on success** — put `junit`/`allure`/`publishHTML` in `post { always }` or you lose results exactly when tests fail.
+- **`pollSCM` everywhere** — wasteful polling; prefer webhooks/multibranch.
+- **Copy-pasting the same pipeline into 20 repos** — extract a shared library so changes happen once.
+- **No timeout/`buildDiscarder`** — hung builds and unbounded log retention fill the disk; set `options`.
+- **Plugin sprawl / never updating** — outdated plugins are the top Jenkins security and stability problem; keep them patched.

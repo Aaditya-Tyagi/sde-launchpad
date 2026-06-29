@@ -1,0 +1,183 @@
+---
+title: "Performance testing fundamentals"
+track: qa-performance
+summary: "The complete performance picture: load/stress/spike/soak/volume/scalability test types, the metrics that matter (response time, p90/p95/p99, throughput/TPS, error rate, concurrency, utilization), how to set SLAs/SLOs, the testing process (workload modeling, think time, ramp-up, baselines), where bottlenecks hide, reading results, and client-side perf (Core Web Vitals, Lighthouse)."
+order: 1
+est: 26
+difficulty: medium
+priority: deep
+tags: [performance, load-testing, percentiles, slo, core-web-vitals, bottlenecks]
+whyAsked: "Performance awareness separates senior testers from juniors. Why averages lie, what p95 means, how to model a realistic workload, and how to find the bottleneck are near-guaranteed questions for any SDET who claims performance experience."
+followUps:
+  - "What's the difference between load, stress, spike and soak testing?"
+  - "What does p95 latency mean and why not just use the average?"
+  - "How do you decide how many virtual users to simulate?"
+  - "Throughput is fine but latency is climbing — what's happening?"
+  - "What are Core Web Vitals?"
+resources:
+  - { label: "Google SRE Book — SLOs", url: "https://sre.google/sre-book/service-level-objectives/" }
+  - { label: "web.dev — Core Web Vitals", url: "https://web.dev/articles/vitals" }
+  - { label: "Lighthouse", url: "https://developer.chrome.com/docs/lighthouse/overview" }
+  - { label: "Little's Law", url: "https://en.wikipedia.org/wiki/Little%27s_law" }
+  - { label: "k6 — metrics", url: "https://grafana.com/docs/k6/latest/using-k6/metrics/" }
+---
+
+Functional testing asks "does it work?"; performance testing asks "does it work *well enough* — fast, stable, and at scale — under realistic and adverse load?" It is the discipline of finding the point where a system slows down, falls over, or leaks, *before* your users do.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Performance testing is not "run lots of users and see." It is an experiment: define a <strong>workload</strong> that mirrors production, run it against a <strong>known baseline</strong>, measure the right <strong>metrics</strong>, and compare against a <strong>target (SLO)</strong>. Without a target, you cannot say whether a result is good or bad.
+</div>
+
+## The types of performance test
+
+They differ by the *shape and intent* of the load you apply.
+
+- **Load test** — the bread and butter. Apply the *expected* peak traffic (e.g. Black Friday volume) and verify the system meets its SLOs. Answers: "does it hold up under normal-to-peak load?"
+- **Stress test** — push *beyond* expected load until something breaks. Answers: "where is the ceiling, and *how* does it fail?" You want graceful degradation (queueing, throttling, clear errors), not a crash or data corruption.
+- **Spike test** — a sudden, sharp surge then drop (a flash sale, a tweet going viral). Tests autoscaling reaction time and whether the system recovers after the spike, not just whether it survives it.
+- **Soak / endurance test** — *moderate* load held for a long time (hours to days). Surfaces problems that only appear with time: **memory leaks**, connection-pool exhaustion, disk filling with logs, slow degradation of a cache. A load test that passes in 10 minutes can still die after 6 hours.
+- **Volume test** — large *data* volumes rather than user volume. Does a query that's instant on 10k rows still meet SLO on 50M rows? Tests indexes, pagination, and table growth.
+- **Scalability test** — measure how performance changes as you *add resources* (more pods, bigger DB). Does throughput scale linearly, or does it plateau (a shared bottleneck)? Informs capacity planning.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Load = "can it carry the expected weight?" Stress = "what's the breaking point?" Spike = "can it handle a sudden jolt?" Soak = "does it survive the long haul?" Interviewers love the load-vs-stress and load-vs-soak distinctions — have crisp one-liners ready.
+</div>
+
+## The metrics that matter
+
+You measure two families: **what the user experiences** and **what the system is doing**.
+
+**User-facing (the SLIs):**
+
+- **Response time / latency** — time from request sent to response received. Report it as a *distribution*, never a single number.
+- **Percentiles — p50, p90, p95, p99.** "p95 = 480ms" means 95% of requests were faster than 480ms and 5% were slower. Percentiles describe the *tail* — the unhappy users. Always report a high percentile alongside throughput.
+- **Throughput** — requests (or transactions) completed per unit time. **TPS** (transactions/sec) or RPS (requests/sec). This is the system's capacity.
+- **Error rate** — % of requests that fail (5xx, timeouts, failed assertions). A test that hits target throughput with a 12% error rate is a *failure*, not a pass.
+- **Concurrency / virtual users (VUs)** — how many simulated users are active at once. The input you control to generate load.
+
+**System-side (resource utilization), watched on the servers under test:**
+
+- **CPU** — sustained >80% means CPU-bound.
+- **Memory** — steadily climbing under soak = leak. Watch GC pause time on JVM/.NET apps.
+- **Disk I/O & network** — saturated NIC or disk queue depth caps throughput.
+- **Connection pools** — DB/HTTP pool at max with requests waiting is a classic hidden bottleneck.
+
+### Why averages lie
+
+A mean response time of 200ms can hide that 1 in 20 users waits 3 seconds. The average is dragged toward the bulk; it tells you nothing about the tail where your angriest users live. Worse, latency distributions are usually *right-skewed* (a long slow tail), so the mean sits well below the experience of the slow cohort.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Never accept "average response time" as a pass/fail criterion. Two systems with identical 200ms averages can have wildly different p99s (250ms vs 4s). Always ask for percentiles, and remember p99 means 1 in 100 requests — on a busy page with 50 calls, almost *every* page load hits a p99 on something.
+</div>
+
+## SLAs, SLOs and SLIs
+
+These three are constantly confused — nail the distinction:
+
+- **SLI (Indicator)** — the *measurement*. e.g. "p95 latency of the checkout endpoint," or "% of requests under 300ms."
+- **SLO (Objective)** — the *internal target* for that SLI. e.g. `p95 latency < 300ms` or "99.9% of requests succeed." This is what you test against.
+- **SLA (Agreement)** — the *contractual* promise to a customer, with penalties if breached. e.g. "99.95% monthly uptime or we refund 10%." SLAs are looser than SLOs by design — you set the SLO tighter so you have a buffer before the SLA is at risk.
+
+Your performance pass/fail criteria should be written as SLOs *before* you run the test. `p95 < 500ms, error rate < 1%, at 200 TPS` is a thesis you set out to confirm or refute.
+
+## The performance testing process
+
+1. **Define objectives & SLOs** — what endpoints, what load, what targets. No targets = no test.
+2. **Model the workload** — the most important and most-skipped step. Derive the *traffic mix* from production analytics: which endpoints, in what ratio, with what data variety. Hammering one endpoint with one user isn't a load test; it's a microbenchmark. Realistic mix: 70% browse, 20% search, 8% add-to-cart, 2% checkout.
+3. **Add think time** — real users pause between actions (read the page, type). Inserting pauses (e.g. 3–10s) makes concurrency realistic; without it, 100 VUs generate the load of thousands of real users and you measure the wrong thing.
+4. **Ramp-up, not a wall** — start at low VUs and increase gradually. A cold cache + cold connection pool + cold JIT all hit at once on a sudden full load and produce a misleading early spike. Ramp lets the system warm and lets you see *where* latency starts to bend.
+5. **Establish a baseline** — run against a known-good build first and record the numbers. Every future run is compared to it; that's how you catch a regression ("p95 went from 280ms to 540ms in this release").
+6. **Run, monitor, repeat** — run in a *production-like* environment (same instance sizes, real data volume), watch client AND server metrics together, run multiple times for stability.
+7. **Analyze & report** — correlate the latency curve with resource graphs to locate the bottleneck.
+
+<div class="callout tip">
+  <div class="ct">Little's Law (a back-of-envelope superpower)</div>
+  <strong>Concurrency = Throughput × Response time.</strong> If you want 200 TPS and each request takes 0.5s, you need ~100 concurrent users in flight (200 × 0.5). It also tells you a trap: if latency doubles under load, you need twice the concurrency to hold the same throughput — or throughput collapses. Cite this to size your VU count instead of guessing.
+</div>
+
+## Bottleneck analysis — where they hide
+
+When throughput plateaus or latency climbs, the work is finding *which layer* is the constraint. Usual suspects:
+
+- **Database** — the #1 culprit. Missing indexes (full table scans), N+1 query patterns, lock contention, slow queries under concurrency. Symptom: app CPU is low but latency is high; DB CPU or disk I/O is pegged.
+- **Connection pools** — app threads waiting to borrow a DB or HTTP connection. Symptom: latency climbs sharply at a specific VU count while CPU is *not* saturated — requests are queueing for a pool slot. Fix is often pool sizing, not more hardware.
+- **CPU** — pegged at 100% on the app tier; throughput flat. Could be inefficient serialization, crypto, or regex.
+- **Memory / GC** — climbing heap, long GC pauses causing periodic latency spikes; under soak, an OOM crash.
+- **Network** — saturated bandwidth, or chatty services with high round-trip latency (microservice fan-out).
+- **External dependencies** — a slow third-party API or payment gateway becomes *your* bottleneck. Test with realistic dependency latency.
+- **Thread/worker limits** — a fixed thread pool or single-threaded event loop saturating.
+
+The method: **isolate by layer.** Watch each tier's resource graphs simultaneously. The tier that saturates *first* (or where requests queue) is your bottleneck. Fix it, and the bottleneck *moves* to the next constraint — performance tuning is whack-a-mole by design.
+
+## Reading the results
+
+A healthy load test, as you ramp VUs:
+
+- Throughput rises linearly, then **flattens** — that plateau is your max capacity.
+- Latency stays flat-ish, then climbs at the same point throughput flattens — the **knee of the curve**. That knee is the system's saturation point.
+- Error rate stays near zero until the system is overwhelmed, then climbs.
+
+The interesting number is the load level at the *knee*, compared to your expected peak. If the knee is at 150 TPS and you expect 200 TPS at peak, you have a problem before launch.
+
+### Patterns to recognize in a result set
+
+- **Latency climbs but throughput holds** — requests are queueing somewhere (a pool, a lock); the system is saturated but not yet shedding work.
+- **Throughput drops *under* higher load** — congestion collapse: contention overhead grows faster than useful work (thread thrashing, lock convoys). A healthy system plateaus; a fragile one regresses.
+- **Sawtooth latency** — periodic spikes at a regular interval usually mean garbage-collection pauses or a cache that expires and stampedes.
+- **A step in latency at a precise VU count** — a hard limit was hit (max pool size, max threads, a rate limiter kicking in).
+- **Errors before saturation** — timeouts or 5xx while resources look idle point to a misconfiguration or a downstream dependency failing, not a capacity problem.
+
+<div class="callout warn">
+  <div class="ct">Watch out — the coordinated omission trap</div>
+  Many load tools, when a request is slow, simply *wait* and send fewer requests — so the slow period is under-sampled and your percentiles look better than reality. This is "coordinated omission." Prefer an <strong>open/arrival-rate model</strong> (a fixed request rate regardless of response time) for capacity tests so a slowdown is fully reflected in the numbers, not hidden by a backed-off client.
+</div>
+
+## Client-side performance (front-end)
+
+Server latency is only half the story; the user waits on the *whole page render*. Google's **Core Web Vitals** are the standard, field-measurable metrics (note: these are the 2024+ set):
+
+- **LCP — Largest Contentful Paint.** Loading: time for the largest visible element (hero image/heading) to render. Good is `< 2.5s`.
+- **INP — Interaction to Next Paint.** Responsiveness: how quickly the page responds to taps/clicks/keypresses across the whole visit. Good is `< 200ms`. (INP replaced FID — First Input Delay — as a Core Web Vital in March 2024.)
+- **CLS — Cumulative Layout Shift.** Visual stability: how much content jumps around as it loads. Good is `< 0.1` (it's a unitless score, not time).
+
+**Lighthouse** (in Chrome DevTools or CI) audits a page in a controlled lab environment and scores performance, accessibility, SEO, and best practices, with concrete fixes (defer JS, compress images, eliminate render-blocking CSS). Lab tools (Lighthouse) give reproducible diagnosis; **field data** (real-user monitoring / CrUX) gives the truth about actual users. Use both.
+
+## Interview questions & model answers
+
+**Q1. Difference between load, stress, spike and soak testing?**
+Load applies expected peak traffic to verify SLOs are met. Stress pushes *past* expected load to find the breaking point and observe *how* it fails. Spike applies a sudden surge then drop to test autoscaling and recovery. Soak holds moderate load for hours/days to surface time-dependent issues like memory leaks and pool exhaustion. Same tool, different load profiles and intent.
+
+**Q2. What does p95 latency mean, and why not just report the average?**
+p95 = 95% of requests were faster than this value; 5% were slower. It describes the slow tail — the unhappy users. Averages hide the tail because latency distributions are right-skewed: a 200ms mean can mask a 3s p99. Pass/fail criteria should be percentiles, not means.
+
+**Q3. How do you decide how many virtual users to simulate?**
+Work backward from a target throughput using Little's Law: concurrency = throughput × response time. For 200 TPS at 0.5s/request, ~100 concurrent users. I also add realistic think time so each VU maps to a real user's pacing, and I derive the target throughput and traffic mix from production analytics rather than guessing.
+
+**Q4. Throughput has plateaued and latency is climbing, but app CPU is only 40%. What's going on?**
+Classic signs of a *non-CPU* bottleneck — usually a connection pool or downstream dependency. Requests are queueing for a limited resource (DB connections, a thread pool, or a slow external API) rather than burning CPU. I'd check pool saturation and DB metrics; the fix is often resizing the pool or the DB, not adding app servers.
+
+**Q5. What's the difference between SLI, SLO and SLA?**
+SLI is the measured indicator (p95 latency). SLO is the internal target for it (`p95 < 300ms`) — what I test against. SLA is the contractual promise to customers with penalties (99.95% uptime). SLOs are deliberately tighter than SLAs to leave a safety buffer.
+
+**Q6. Why is think time and ramp-up important?**
+Think time models the pauses real users take, so each VU represents one realistic user instead of a relentless request firehose — without it you'd massively over-load the system and measure something fictional. Ramp-up gradually increases load so caches, pools and JIT warm up, avoiding a misleading cold-start spike and letting you see exactly where the latency curve bends.
+
+**Q7. How do you find a bottleneck?**
+Run a ramping load test while watching every tier's resource graphs simultaneously (app CPU/memory, DB CPU/IO, pool usage, network). The tier that saturates first — or where requests queue — is the bottleneck. Correlate the latency knee with the resource that maxes out. After fixing it, re-test; the bottleneck moves to the next constraint.
+
+**Q8. What are Core Web Vitals?**
+Google's field metrics for front-end UX: LCP (loading — largest element paints, target `< 2.5s`), INP (responsiveness — interaction-to-next-paint, target `< 200ms`, replaced FID in 2024), and CLS (visual stability — layout shift score, target `< 0.1`). Lighthouse measures them in a lab; CrUX/RUM gives real-user field data.
+
+## Common mistakes
+
+- **No SLO defined before testing** — running a test with no target, so no result can be called pass or fail.
+- **Reporting only the average** — hiding the tail that actually hurts users.
+- **No think time** — turning 100 VUs into the load of thousands and measuring fiction.
+- **Hitting one endpoint** — a microbenchmark dressed up as a load test; real traffic is a *mix*.
+- **Testing on a toy environment** — a 1-instance dev box with 1k rows of data tells you nothing about prod with 50M rows.
+- **Ignoring server-side metrics** — you see latency rise but never learn *why* because you didn't watch CPU/memory/pools.
+- **No baseline** — you can't detect a regression if you never recorded "good."
+- **Forgetting client-side** — fast APIs but a 6s page render because of unoptimized JS/images; the user only feels the total.

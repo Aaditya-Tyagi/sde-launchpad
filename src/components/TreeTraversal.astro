@@ -1,0 +1,81 @@
+---
+const id = 'tt_' + Math.random().toString(36).slice(2, 8);
+---
+<div class="viz" data-tt={id}>
+  <div class="viz-title">Tree traversal visualizer</div>
+  <div class="viz-desc">Same tree, four orders. DFS (pre/in/post) is recursion; BFS is a queue. Watch which node is visited and when.</div>
+  <div class="viz-controls" style="margin:0 0 10px">
+    <button class="btn ord btn-primary" data-ord="pre">Preorder</button>
+    <button class="btn ord" data-ord="in">Inorder</button>
+    <button class="btn ord" data-ord="post">Postorder</button>
+    <button class="btn ord" data-ord="bfs">BFS (level)</button>
+  </div>
+  <div class="viz-stage">
+    <svg viewBox="0 0 420 240" width="100%" style="max-height:240px" id={`${id}-svg`}></svg>
+  </div>
+  <div class="viz-controls">
+    <button class="btn" data-act="prev">◀</button>
+    <button class="btn btn-primary" data-act="next">Step ▶</button>
+    <button class="btn" data-act="auto">▶ Auto</button>
+    <button class="btn" data-act="reset">Reset</button>
+    <span class="viz-status" style="margin:0 0 0 8px">Visited: <b id={`${id}-out`}></b></span>
+  </div>
+  <div class="viz-status" id={`${id}-status`}></div>
+</div>
+<script define:vars={{ id }}>
+  (function () {
+    const root = document.querySelector(`[data-tt="${id}"]`); if (!root) return;
+    const svg = document.getElementById(`${id}-svg`);
+    const outEl = document.getElementById(`${id}-out`);
+    const statusEl = document.getElementById(`${id}-status`);
+    // node: id, val, x, y, l, r
+    const N = {
+      1: { v: 4, x: 210, y: 32, l: 2, r: 3 },
+      2: { v: 2, x: 120, y: 100, l: 4, r: 5 },
+      3: { v: 6, x: 300, y: 100, l: 6, r: 7 },
+      4: { v: 1, x: 70, y: 175, l: 0, r: 0 },
+      5: { v: 3, x: 165, y: 175, l: 0, r: 0 },
+      6: { v: 5, x: 255, y: 175, l: 0, r: 0 },
+      7: { v: 7, x: 350, y: 175, l: 0, r: 0 },
+    };
+    const edges = [[1, 2], [1, 3], [2, 4], [2, 5], [3, 6], [3, 7]];
+    function pre(n, o) { if (!n) return; o.push(n); pre(N[n].l, o); pre(N[n].r, o); }
+    function ino(n, o) { if (!n) return; ino(N[n].l, o); o.push(n); ino(N[n].r, o); }
+    function post(n, o) { if (!n) return; post(N[n].l, o); post(N[n].r, o); o.push(n); }
+    function bfs(o) { const q = [1]; while (q.length) { const n = q.shift(); o.push(n); if (N[n].l) q.push(N[n].l); if (N[n].r) q.push(N[n].r); } }
+    const orders = { pre: [], in: [], post: [], bfs: [] };
+    pre(1, orders.pre); ino(1, orders.in); post(1, orders.post); bfs(orders.bfs);
+    const labels = { pre: 'Root → Left → Right', in: 'Left → Root → Right (sorted for a BST!)', post: 'Left → Right → Root', bfs: 'Level by level, using a queue' };
+
+    let mode = 'pre', cur = 0, timer = null;
+    function draw() {
+      const seq = orders[mode];
+      const visited = seq.slice(0, cur);
+      const active = seq[cur - 1];
+      let h = '';
+      edges.forEach(([a, b]) => { h += `<line x1="${N[a].x}" y1="${N[a].y}" x2="${N[b].x}" y2="${N[b].y}" stroke="#2a2f3d" stroke-width="2"/>`; });
+      Object.keys(N).forEach((k) => {
+        const n = N[k]; const isV = visited.includes(+k); const isA = active === +k;
+        const fill = isA ? '#7ee787' : isV ? 'rgba(126,231,135,.18)' : '#1f2330';
+        const stroke = isA ? '#7ee787' : isV ? '#7ee787' : '#2a2f3d';
+        const tc = isA ? '#0b1020' : '#e7eaf0';
+        h += `<circle cx="${n.x}" cy="${n.y}" r="20" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+        h += `<text x="${n.x}" y="${n.y + 5}" text-anchor="middle" font-family="monospace" font-weight="700" font-size="15" fill="${tc}">${n.v}</text>`;
+      });
+      svg.innerHTML = h;
+      outEl.textContent = visited.map((k) => N[k].v).join(' → ');
+      statusEl.innerHTML = `<b>${mode.toUpperCase()}</b>: ${labels[mode]}. Step ${cur}/${seq.length}.`;
+    }
+    function setMode(m) { mode = m; cur = 0; if (timer) { clearInterval(timer); timer = null; } root.querySelectorAll('.ord').forEach((b) => b.classList.toggle('btn-primary', b.dataset.ord === m)); draw(); }
+    root.addEventListener('click', (e) => {
+      const ord = e.target.getAttribute('data-ord'); if (ord) { setMode(ord); return; }
+      const a = e.target.getAttribute('data-act'); if (!a) return;
+      const seq = orders[mode];
+      if (a === 'next') { cur = Math.min(cur + 1, seq.length); draw(); }
+      if (a === 'prev') { cur = Math.max(cur - 1, 0); draw(); }
+      if (a === 'reset') { cur = 0; draw(); }
+      if (a === 'auto') { if (timer) { clearInterval(timer); timer = null; return; } timer = setInterval(() => { if (cur >= seq.length) { clearInterval(timer); timer = null; return; } cur++; draw(); }, 700); }
+    });
+    setMode('pre');
+  })();
+</script>

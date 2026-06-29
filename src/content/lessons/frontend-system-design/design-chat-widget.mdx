@@ -1,0 +1,369 @@
+---
+title: "FSD: Design a Real-Time Chat Widget"
+track: frontend-system-design
+summary: "Design a real-time chat widget — WebSocket architecture, message state, optimistic sending, read receipts, reconnection, and accessibility."
+order: 3
+est: 32
+difficulty: hard
+priority: must
+tags: [frontend-system-design, chat, websocket, real-time, optimistic-ui, reconnection]
+whyAsked: "Chat tests real-time architecture, WebSocket management, optimistic UI, offline handling, and scroll anchoring — a cluster of hard frontend problems in one."
+followUps:
+  - "How do you handle message ordering when the network is unreliable?"
+  - "How do you scroll to the bottom while preserving scroll position for history load?"
+  - "How do you implement read receipts?"
+  - "How would you scale this to support 100 concurrent chat rooms?"
+  - "How do you reconnect WebSocket with exponential backoff?"
+resources:
+  - { label: "WebSocket API — MDN", url: "https://developer.mozilla.org/en-US/docs/Web/API/WebSocket" }
+  - { label: "Scroll anchoring spec", url: "https://drafts.csswg.org/css-scroll-anchoring/" }
+---
+
+## Step 1: Requirements clarification
+
+**Ask the interviewer:**
+- 1:1 chat or group channels?
+- Max number of participants / messages per room?
+- Does chat history need to persist (load older messages by scrolling up)?
+- File/image attachments?
+- Typing indicators?
+- Read receipts?
+
+**For this design:**
+- Group channel chat (up to 50 participants)
+- Persistent history, load older messages on scroll-up
+- Typing indicators
+- Read receipts (seen by N)
+- No file attachments (out of scope)
+
+---
+
+## Step 2: Architecture
+
+```
+Browser                       API Server          Message Broker
+┌──────────────────────────┐  ┌───────────────┐  ┌────────────┐
+│  ChatWidget               │  │  REST API     │  │  Redis     │
+│                           │  │  GET /messages│  │  Pub/Sub   │
+│  useChat() hook           │◀─│  POST /message│  └────────────┘
+│  ↓                        │  │               │         │
+│  WebSocketManager         │◀─│  WebSocket    │◀────────┘
+│  (singleton, reconnect)   │  │  /ws/room/:id │
+│  ↓                        │  └───────────────┘
+│  MessageList (virtualized)│
+│  MessageInput             │
+└──────────────────────────┘
+```
+
+**Transport choice:**
+- **WebSocket** — bidirectional, efficient for high-frequency messages
+- **SSE** — one-way; fine for read-only streams, not chat
+- **Polling** — fallback only (every 3s if WS unavailable)
+
+---
+
+## Step 3: Data model
+
+```ts
+type MessageStatus = 'sending' | 'sent' | 'failed';
+
+interface Message {
+  id: string;                    // server-assigned
+  tempId?: string;               // client-assigned while sending
+  roomId: string;
+  senderId: string;
+  senderName: string;
+  senderAvatarUrl: string;
+  content: string;
+  timestamp: string;             // ISO 8601 from server
+  status: MessageStatus;
+  readBy: string[];              // user IDs who have seen it
+}
+
+// WebSocket event types
+type WsEvent =
+  | { type: 'message'; payload: Message }
+  | { type: 'typing'; payload: { userId: string; isTyping: boolean } }
+  | { type: 'read'; payload: { messageId: string; userId: string } }
+  | { type: 'error'; payload: { code: string; message: string } };
+```
+
+---
+
+## Step 4: WebSocket manager (singleton)
+
+```ts
+class WebSocketManager {
+  private ws: WebSocket | null = null;
+  private url: string;
+  private handlers = new Set<(event: WsEvent) => void>();
+  private reconnectDelay = 1000;
+  private maxReconnectDelay = 30_000;
+  private shouldReconnect = true;
+
+  constructor(url: string) { this.url = url; }
+
+  connect() {
+    this.ws = new WebSocket(this.url);
+
+    this.ws.onopen = () => {
+      this.reconnectDelay = 1000; // reset on successful connect
+    };
+
+    this.ws.onmessage = (e) => {
+      const event: WsEvent = JSON.parse(e.data);
+      this.handlers.forEach(h => h(event));
+    };
+
+    this.ws.onclose = () => {
+      if (this.shouldReconnect) this.scheduleReconnect();
+    };
+  }
+
+  private scheduleReconnect() {
+    setTimeout(() => {
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
+      this.connect();
+    }, this.reconnectDelay);
+  }
+
+  send(event: WsEvent) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(event));
+    }
+  }
+
+  subscribe(handler: (event: WsEvent) => void) {
+    this.handlers.add(handler);
+    return () => this.handlers.delete(handler);
+  }
+
+  disconnect() {
+    this.shouldReconnect = false;
+    this.ws?.close();
+  }
+}
+```
+
+---
+
+## Step 5: useChat hook
+
+```ts
+function useChat(roomId: string, currentUserId: string) {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
+  const [hasMore, setHasMore] = useState(true);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const wsRef = useRef<WebSocketManager | null>(null);
+
+  // --- Load initial history ---
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      const history = await api.getMessages(roomId, { limit: 50 });
+      if (!cancelled) {
+        setMessages(history.items);
+        setHasMore(history.hasMore);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [roomId]);
+
+  // --- WebSocket connection ---
+  useEffect(() => {
+    const manager = new WebSocketManager(`wss://api.example.com/ws/room/${roomId}`);
+    wsRef.current = manager;
+    manager.connect();
+
+    const unsub = manager.subscribe((event) => {
+      switch (event.type) {
+        case 'message':
+          setMessages(prev => {
+            // Replace optimistic message with real one (matched by tempId)
+            const idx = prev.findIndex(m => m.tempId === event.payload.tempId);
+            if (idx !== -1) {
+              const next = [...prev];
+              next[idx] = event.payload;
+              return next;
+            }
+            return [...prev, event.payload];
+          });
+          break;
+        case 'typing':
+          setTypingUsers(prev => {
+            const next = new Set(prev);
+            event.payload.isTyping
+              ? next.add(event.payload.userId)
+              : next.delete(event.payload.userId);
+            return next;
+          });
+          break;
+        case 'read':
+          setMessages(prev => prev.map(m =>
+            m.id === event.payload.messageId
+              ? { ...m, readBy: [...m.readBy, event.payload.userId] }
+              : m
+          ));
+          break;
+      }
+    });
+
+    return () => { unsub(); manager.disconnect(); };
+  }, [roomId]);
+
+  // --- Send message (optimistic) ---
+  const sendMessage = useCallback((content: string) => {
+    const tempId = `temp-${Date.now()}`;
+    const optimistic: Message = {
+      id: tempId,
+      tempId,
+      roomId,
+      senderId: currentUserId,
+      senderName: 'You',
+      senderAvatarUrl: '',
+      content,
+      timestamp: new Date().toISOString(),
+      status: 'sending',
+      readBy: [],
+    };
+    setMessages(prev => [...prev, optimistic]);
+    wsRef.current?.send({ type: 'message', payload: optimistic });
+  }, [roomId, currentUserId]);
+
+  // --- Load older messages ---
+  const loadOlderMessages = useCallback(async () => {
+    if (isLoadingHistory || !hasMore || !messages.length) return;
+    setIsLoadingHistory(true);
+    const oldest = messages[0].timestamp;
+    const older = await api.getMessages(roomId, { before: oldest, limit: 30 });
+    setMessages(prev => [...older.items, ...prev]);
+    setHasMore(older.hasMore);
+    setIsLoadingHistory(false);
+  }, [roomId, messages, hasMore, isLoadingHistory]);
+
+  // --- Typing indicator ---
+  const sendTyping = useDebouncedCallback(
+    (isTyping: boolean) => {
+      wsRef.current?.send({ type: 'typing', payload: { userId: currentUserId, isTyping } });
+    },
+    500
+  );
+
+  return { messages, typingUsers, hasMore, isLoadingHistory, sendMessage, sendTyping, loadOlderMessages };
+}
+```
+
+---
+
+## Step 6: Scroll management
+
+The two hard scroll problems:
+
+**Problem 1: Auto-scroll to bottom** — scroll to bottom on new messages (only if user was already at bottom):
+
+```ts
+function useScrollAnchor(messages: Message[]) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const isAtBottom = useRef(true);
+
+  const checkIfAtBottom = () => {
+    const el = containerRef.current;
+    if (!el) return;
+    isAtBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+  };
+
+  useEffect(() => {
+    if (isAtBottom.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages.length]);
+
+  return { bottomRef, containerRef, onScroll: checkIfAtBottom };
+}
+```
+
+**Problem 2: Preserve position when loading history** — when prepending old messages, the viewport must not jump:
+
+```ts
+// Before inserting older messages, capture the scroll distance from bottom
+const distFromBottom = el.scrollHeight - el.scrollTop;
+
+// After insertion:
+el.scrollTop = el.scrollHeight - distFromBottom;
+```
+
+---
+
+## Step 7: MessageList component
+
+```tsx
+function MessageList({ messages, currentUserId, onScrollTop }: Props) {
+  const { bottomRef, containerRef, onScroll } = useScrollAnchor(messages);
+
+  return (
+    <div
+      ref={containerRef}
+      role="log"
+      aria-label="Chat messages"
+      aria-live="polite"
+      onScroll={(e) => {
+        onScroll();
+        // Load history when scrolled near top
+        if ((e.target as HTMLElement).scrollTop < 100) onScrollTop();
+      }}
+      style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, padding: 16 }}
+    >
+      {messages.map((msg, i) => {
+        const isMine = msg.senderId === currentUserId;
+        const showAvatar = !isMine && (i === 0 || messages[i - 1].senderId !== msg.senderId);
+
+        return (
+          <div key={msg.id} style={{ display: 'flex', justifyContent: isMine ? 'flex-end' : 'flex-start', gap: 8 }}>
+            {showAvatar && <img src={msg.senderAvatarUrl} alt={msg.senderName} style={{ width: 32, height: 32, borderRadius: '50%' }} />}
+            <div
+              aria-label={`${msg.senderName}: ${msg.content}`}
+              style={{
+                maxWidth: '70%',
+                background: isMine ? '#6366f1' : '#1e293b',
+                color: '#f8fafc',
+                padding: '8px 12px',
+                borderRadius: 12,
+                opacity: msg.status === 'sending' ? 0.7 : 1,
+              }}
+            >
+              {!isMine && <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 2 }}>{msg.senderName}</div>}
+              <div>{msg.content}</div>
+              <div style={{ fontSize: 11, color: '#94a3b8', textAlign: 'right', marginTop: 2 }}>
+                {formatTime(msg.timestamp)}
+                {isMine && msg.readBy.length > 0 && ' · Seen'}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+      <div ref={bottomRef} />
+    </div>
+  );
+}
+```
+
+---
+
+## Step 8: Edge cases
+
+| Case | Solution |
+|---|---|
+| WS connection drops | Exponential backoff reconnect (1s → 2s → 4s → max 30s) |
+| Duplicate messages | Deduplicate by `id` in state |
+| Message ordering (out-of-order delivery) | Sort by `timestamp` before render |
+| Send fails | Set `status: 'failed'`, show retry button |
+| Offline send | Queue in `localStorage`, flush on reconnect |
+| Many participants typing | "3 people are typing…" — aggregate typing state |
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "The WebSocket manager is a singleton per room — it handles connect, message dispatch via a subscriber set, and exponential backoff reconnect. Messages are sent optimistically with a `tempId`; when the server echoes the message back (with the same `tempId`), the optimistic entry is replaced in-place. Scroll: I track `isAtBottom` on scroll events and only auto-scroll to bottom when the user was already there. When loading older messages, I snapshot the `scrollHeight - scrollTop` before prepend and restore it after — that keeps the viewport stable. The message list has `role='log'` and `aria-live='polite'` so screen readers announce new messages without interrupting."
+</div>

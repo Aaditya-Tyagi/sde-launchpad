@@ -1,0 +1,232 @@
+---
+title: "Backtracking"
+track: dsa
+summary: "The choose / explore / un-choose template, decision-tree thinking, and pruning — the engine behind subsets, permutations, combinations, and N-Queens."
+order: 11
+est: 32
+difficulty: hard
+priority: deep
+tags: [backtracking, recursion, dfs, pruning]
+whyAsked: "Backtracking tests whether you can model a search as a decision tree, prune dead branches, and write clean recursion — the basis of 'generate all' and constraint problems."
+followUps:
+  - "What's the difference between subsets, combinations, and permutations in the template?"
+  - "How do you avoid duplicate results when the input has duplicates?"
+  - "Why is backtracking exponential, and how does pruning help?"
+  - "How do you backtrack on a grid (word search)?"
+resources:
+  - { label: "NeetCode: Backtracking", url: "https://neetcode.io/practice" }
+---
+
+Backtracking is depth-first search over a **decision tree**: at each step you make a choice, recurse to explore the consequences, then **un-make** the choice to try the next option. It's the engine behind "generate all X", "find every Y", and constraint-satisfaction problems.
+
+## When to reach for it — recognition triggers
+
+- "**Generate all / list every / find all possible**" subsets, combinations, permutations, partitions.
+- "**Constraint satisfaction**" — place items so rules hold (N-Queens, Sudoku).
+- "**Search a grid/board** for a path or word" (word search).
+- The answer is a *set of configurations*, not a single number, and brute force means trying combinations.
+- You can frame it as "at each position, which choices are valid?"
+
+<div class="callout key">
+  <div class="ct">Pattern trigger</div>
+  "Generate all / find every combination / explore every path / place items under constraints" → backtracking. Template is choose → explore → un-choose, with pruning to cut dead branches early.
+</div>
+
+## The universal template
+
+```js
+function backtrack(state, choices) {
+  if (isComplete(state)) { record(state); return; }   // base case: a full solution
+  for (const choice of validChoices(state, choices)) { // prune invalid choices here
+    apply(state, choice);        // CHOOSE
+    backtrack(state, choices);   // EXPLORE
+    undo(state, choice);         // UN-CHOOSE (restore for the next iteration)
+  }
+}
+```
+
+Every problem below is this skeleton — only `isComplete`, `validChoices`, and the choose/undo bodies change.
+
+## Decision-tree thinking
+
+Picture each node as a partial solution and each edge as a choice. Backtracking is a DFS of this tree; **pruning** means cutting a subtree the moment it can't lead to a valid/optimal solution (e.g. the running sum already exceeds the target). Good pruning is the difference between "exponential but fast enough" and "times out."
+
+## Worked examples
+
+### Subsets — include or exclude each element
+
+```js
+// All subsets of distinct nums.  O(n · 2^n) time, O(n) recursion depth
+function subsets(nums) {
+  const res = [], path = [];
+  function backtrack(start) {
+    res.push([...path]);                     // every node is a valid subset
+    for (let i = start; i < nums.length; i++) {
+      path.push(nums[i]);                    // choose
+      backtrack(i + 1);                      // explore (i+1 → no reuse, no reorder)
+      path.pop();                            // un-choose
+    }
+  }
+  backtrack(0);
+  return res;
+}
+```
+
+Idea: `start` prevents revisiting earlier elements, so each subset is generated once. There are 2ⁿ subsets, each costing O(n) to copy.
+**Time** O(n·2ⁿ) · **Space** O(n) depth.
+
+### Permutations — every ordering, with a used set
+
+```js
+// All permutations of distinct nums.  O(n · n!) time
+function permute(nums) {
+  const res = [], path = [], used = new Array(nums.length).fill(false);
+  function backtrack() {
+    if (path.length === nums.length) { res.push([...path]); return; }
+    for (let i = 0; i < nums.length; i++) {
+      if (used[i]) continue;                 // prune: already in this permutation
+      used[i] = true; path.push(nums[i]);    // choose
+      backtrack();                           // explore
+      path.pop(); used[i] = false;           // un-choose
+    }
+  }
+  backtrack();
+  return res;
+}
+```
+
+Idea: unlike subsets, order matters, so we scan from 0 each time and skip already-used elements. There are n! permutations.
+**Time** O(n·n!) · **Space** O(n).
+
+### Combination Sum — reuse allowed, prune by remaining target
+
+```js
+// Candidates may be reused; find combinations summing to target.  No duplicates.
+function combinationSum(candidates, target) {
+  const res = [], path = [];
+  candidates.sort((a, b) => a - b);          // enables the break-prune
+  function backtrack(start, remain) {
+    if (remain === 0) { res.push([...path]); return; }
+    for (let i = start; i < candidates.length; i++) {
+      if (candidates[i] > remain) break;     // prune: sorted, so all later are too big
+      path.push(candidates[i]);              // choose
+      backtrack(i, remain - candidates[i]);  // explore — pass i (not i+1) to allow reuse
+      path.pop();                            // un-choose
+    }
+  }
+  backtrack(0, target);
+  return res;
+}
+```
+
+Idea: passing `i` (not `i+1`) permits reusing a candidate; sorting lets us `break` once a candidate exceeds the remaining target. For the *no-reuse with duplicate inputs* variant (Combination Sum II), pass `i+1` and skip equal siblings with `if (i > start && candidates[i] === candidates[i-1]) continue;`.
+**Time** exponential in target/candidates · **Space** O(target/min).
+
+### Generate Parentheses — prune by counts
+
+Only place `(` while opens remain, and `)` only while it wouldn't exceed opens.
+
+```js
+// All valid combinations of n pairs.  Catalan-number many results.
+function generateParenthesis(n) {
+  const res = [], path = [];
+  function backtrack(open, close) {
+    if (path.length === 2 * n) { res.push(path.join('')); return; }
+    if (open < n) { path.push('('); backtrack(open + 1, close); path.pop(); }
+    if (close < open) { path.push(')'); backtrack(open, close + 1); path.pop(); }
+  }
+  backtrack(0, 0);
+  return res;
+}
+```
+
+Idea: the two `if` guards *are* the pruning — they only ever build valid prefixes, so no validity check at the leaf is needed.
+**Time** O(4ⁿ / √n) (Catalan) · **Space** O(n).
+
+### N-Queens — constraint satisfaction with O(1) attack checks
+
+Place one queen per row; track attacked columns and both diagonals in sets for O(1) validity.
+
+```js
+// Count/return placements of n queens.  O(n!) with pruning
+function solveNQueens(n) {
+  const res = [], board = [];
+  const cols = new Set(), diag = new Set(), anti = new Set();
+  function backtrack(row) {
+    if (row === n) { res.push([...board]); return; }
+    for (let col = 0; col < n; col++) {
+      if (cols.has(col) || diag.has(row - col) || anti.has(row + col)) continue; // prune
+      cols.add(col); diag.add(row - col); anti.add(row + col);                   // choose
+      board.push('.'.repeat(col) + 'Q' + '.'.repeat(n - col - 1));
+      backtrack(row + 1);                                                         // explore
+      board.pop(); cols.delete(col); diag.delete(row - col); anti.delete(row + col); // un-choose
+    }
+  }
+  backtrack(0);
+  return res;
+}
+```
+
+Idea: `row - col` is constant along a "\\" diagonal, `row + col` along a "/" diagonal, so three sets make each placement check O(1). Pruning prunes most of the n! tree.
+**Time** O(n!) worst case · **Space** O(n).
+
+### Word Search — backtracking on a grid
+
+DFS from each cell, marking visited in place and restoring on the way out.
+
+```js
+// O(rows*cols*4^L) where L = word length
+function exist(board, word) {
+  const rows = board.length, cols = board[0].length;
+  function dfs(r, c, i) {
+    if (i === word.length) return true;
+    if (r < 0 || c < 0 || r >= rows || c >= cols || board[r][c] !== word[i]) return false;
+    const tmp = board[r][c]; board[r][c] = '#';   // choose (mark visited)
+    const found = dfs(r+1,c,i+1) || dfs(r-1,c,i+1) || dfs(r,c+1,i+1) || dfs(r,c-1,i+1);
+    board[r][c] = tmp;                              // un-choose (restore)
+    return found;
+  }
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++)
+      if (dfs(r, c, 0)) return true;
+  return false;
+}
+```
+
+Idea: temporarily overwriting the cell prevents reuse within one path; restoring it lets other paths use it.
+**Time** O(R·C·4ᴸ) · **Space** O(L).
+
+## Complexity & why it's exponential
+
+The search tree branches at every decision, so the number of leaves grows multiplicatively: **2ⁿ** subsets, **n!** permutations/N-Queens, Catalan numbers for parentheses. That's inherent — you're enumerating an exponential output. **Pruning** doesn't change the worst case but slashes the *practical* runtime by cutting subtrees that can't yield a valid/optimal answer (sorted-break in combination sum, attack-set checks in N-Queens, count guards in parentheses).
+
+## Edge cases & common bugs
+
+- **Forgetting to un-choose** — the #1 bug; the state leaks into sibling branches and corrupts results.
+- **Copying the path** — push `[...path]`, not `path`; a shared reference gets mutated after you store it.
+- **`start` vs scan-from-0** — combinations/subsets use `start` to avoid reorderings; permutations scan all with a `used` set.
+- **Reuse semantics** — pass `i` to allow reusing an element, `i+1` to forbid it.
+- **Duplicate inputs** — sort, then `if (i > start && a[i] === a[i-1]) continue;` to skip duplicate siblings.
+- **Grid restore** — always restore the marked cell on every return path, including early `false` returns (here, marking happens *after* the boundary check, so a failed entry doesn't need restoring).
+- **Pruning correctness** — only prune branches that *truly* can't succeed; over-aggressive pruning drops valid answers.
+
+## Interview tips & questions
+
+- Interviewers probe: "Draw the decision tree" and "where can you prune?" — articulate both.
+- Distinguish subsets (2ⁿ, any size) vs combinations (fixed size, no order) vs permutations (n!, order matters) crisply.
+- State the complexity honestly as exponential and frame pruning as the practical optimization.
+
+| Problem | Difficulty | Variant |
+|---|---|---|
+| [Subsets](https://leetcode.com/problems/subsets/) | Medium | include/exclude |
+| [Subsets II](https://leetcode.com/problems/subsets-ii/) | Medium | dedup with duplicates |
+| [Permutations](https://leetcode.com/problems/permutations/) | Medium | used set |
+| [Combination Sum](https://leetcode.com/problems/combination-sum/) | Medium | reuse + prune |
+| [Generate Parentheses](https://leetcode.com/problems/generate-parentheses/) | Medium | count-guard pruning |
+| [Word Search](https://leetcode.com/problems/word-search/) | Medium | grid DFS + restore |
+| [N-Queens](https://leetcode.com/problems/n-queens/) | Hard | constraint sets |
+
+<div class="callout tip">
+  <div class="ct">Template</div>
+  <code>backtrack(state): if complete → record; for choice in valid: choose; backtrack; un-choose</code>. Subsets/combinations carry a <code>start</code> index; permutations carry a <code>used</code> set; prune before recursing.
+</div>

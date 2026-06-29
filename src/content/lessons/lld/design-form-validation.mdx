@@ -1,0 +1,254 @@
+---
+title: "LLD: Design a Form Validation Library"
+track: lld
+summary: "Design a composable, schema-based form validation library — validator functions, chaining, async validators, and a React hook integration."
+order: 7
+est: 28
+difficulty: hard
+priority: deep
+tags: [lld, form-validation, schema, composable, typescript, react-hook-form]
+whyAsked: "Form validation tests schema design, composability, TypeScript generics, and async handling — all in a real, immediately understandable domain."
+followUps:
+  - "How do you make validators composable?"
+  - "How do you handle async validation (e.g., check if username is taken)?"
+  - "How would you validate nested objects or arrays of fields?"
+  - "How does your design compare to Zod or Yup?"
+  - "How would you integrate this with React?"
+resources:
+  - { label: "Zod docs", url: "https://zod.dev" }
+  - { label: "react-hook-form docs", url: "https://react-hook-form.com" }
+---
+
+## Step 1: Requirements
+
+- Validate individual fields with composable rules (required, min, max, email, custom)
+- Chain multiple validators on a field
+- Support async validators (check server)
+- Validate entire schemas (objects with multiple fields)
+- Type-safe: TypeScript knows the shape of valid data
+- React hook for form state management
+
+---
+
+## Step 2: Core types
+
+```ts
+type ValidationResult = { ok: true } | { ok: false; message: string };
+type Validator<T> = (value: T) => ValidationResult | Promise<ValidationResult>;
+
+// A field schema is an array of validators
+type FieldSchema<T> = Validator<T>[];
+
+// An object schema maps keys to field schemas
+type ObjectSchema<T> = {
+  [K in keyof T]: FieldSchema<T[K]>;
+};
+
+type ValidationErrors<T> = Partial<Record<keyof T, string>>;
+```
+
+---
+
+## Step 3: Validator builders
+
+```ts
+const ok: ValidationResult = { ok: true };
+const err = (message: string): ValidationResult => ({ ok: false, message });
+
+// Primitive validators
+const required = (message = 'This field is required'): Validator<any> =>
+  (value) => (value !== null && value !== undefined && value !== '') ? ok : err(message);
+
+const minLength = (min: number, message?: string): Validator<string> =>
+  (value) => value.length >= min ? ok : err(message ?? `Minimum ${min} characters`);
+
+const maxLength = (max: number, message?: string): Validator<string> =>
+  (value) => value.length <= max ? ok : err(message ?? `Maximum ${max} characters`);
+
+const email = (message = 'Invalid email address'): Validator<string> =>
+  (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? ok : err(message);
+
+const min = (n: number, message?: string): Validator<number> =>
+  (value) => value >= n ? ok : err(message ?? `Minimum value is ${n}`);
+
+const max = (n: number, message?: string): Validator<number> =>
+  (value) => value <= n ? ok : err(message ?? `Maximum value is ${n}`);
+
+const pattern = (regex: RegExp, message: string): Validator<string> =>
+  (value) => regex.test(value) ? ok : err(message);
+
+// Custom validator
+const custom = <T>(fn: (value: T) => boolean, message: string): Validator<T> =>
+  (value) => fn(value) ? ok : err(message);
+
+// Async validator
+const asyncCustom = <T>(
+  fn: (value: T) => Promise<boolean>,
+  message: string
+): Validator<T> =>
+  async (value) => (await fn(value)) ? ok : err(message);
+```
+
+---
+
+## Step 4: Schema validation engine
+
+```ts
+// Validate a single field (run all validators, stop at first failure)
+async function validateField<T>(
+  value: T,
+  validators: FieldSchema<T>
+): Promise<string | null> {
+  for (const validator of validators) {
+    const result = await validator(value);
+    if (!result.ok) return result.message;
+  }
+  return null;
+}
+
+// Validate all fields in parallel
+async function validateSchema<T extends Record<string, any>>(
+  data: T,
+  schema: ObjectSchema<T>
+): Promise<{ isValid: boolean; errors: ValidationErrors<T> }> {
+  const errorEntries = await Promise.all(
+    (Object.keys(schema) as (keyof T)[]).map(async (key) => {
+      const error = await validateField(data[key], schema[key]);
+      return [key, error] as const;
+    })
+  );
+
+  const errors = Object.fromEntries(
+    errorEntries.filter(([, err]) => err !== null)
+  ) as ValidationErrors<T>;
+
+  return { isValid: Object.keys(errors).length === 0, errors };
+}
+```
+
+---
+
+## Step 5: Fluent chain builder (Zod-style)
+
+```ts
+class FieldBuilder<T> {
+  private validators: FieldSchema<T> = [];
+
+  required(message?: string): this {
+    this.validators.push(required(message) as unknown as Validator<T>);
+    return this;
+  }
+
+  validate(fn: Validator<T>): this {
+    this.validators.push(fn);
+    return this;
+  }
+
+  build(): FieldSchema<T> {
+    return this.validators;
+  }
+}
+
+class StringField extends FieldBuilder<string> {
+  email(message?: string) { this.validators.push(email(message)); return this; }
+  min(n: number, msg?: string) { this.validators.push(minLength(n, msg)); return this; }
+  max(n: number, msg?: string) { this.validators.push(maxLength(n, msg)); return this; }
+  matches(re: RegExp, msg: string) { this.validators.push(pattern(re, msg)); return this; }
+}
+
+// Builder factory
+const field = {
+  string: () => new StringField(),
+  number: () => new FieldBuilder<number>(),
+};
+
+// Schema usage — clean and readable
+const signUpSchema: ObjectSchema<SignUpForm> = {
+  username: field.string()
+    .required()
+    .min(3)
+    .max(20)
+    .matches(/^[a-z0-9_]+$/, 'Only lowercase letters, numbers, and _')
+    .validate(async (value) => {
+      const taken = await api.checkUsername(value);
+      return taken ? err('Username is taken') : ok;
+    })
+    .build(),
+
+  email: field.string().required().email().build(),
+
+  password: field.string()
+    .required()
+    .min(8, 'Password must be at least 8 characters')
+    .validate(custom(
+      v => /[A-Z]/.test(v) && /[0-9]/.test(v),
+      'Password must contain an uppercase letter and a number'
+    ))
+    .build(),
+};
+```
+
+---
+
+## Step 6: React hook integration
+
+```tsx
+function useForm<T extends Record<string, any>>(
+  initialValues: T,
+  schema: ObjectSchema<T>
+) {
+  const [values, setValues] = useState<T>(initialValues);
+  const [errors, setErrors] = useState<ValidationErrors<T>>({});
+  const [touched, setTouched] = useState<Partial<Record<keyof T, boolean>>>({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleChange = (field: keyof T, value: T[keyof T]) => {
+    setValues(v => ({ ...v, [field]: value }));
+  };
+
+  const handleBlur = async (field: keyof T) => {
+    setTouched(t => ({ ...t, [field]: true }));
+    const error = await validateField(values[field], schema[field]);
+    setErrors(e => ({ ...e, [field]: error ?? undefined }));
+  };
+
+  const handleSubmit = async (onSuccess: (data: T) => Promise<void>) => {
+    setIsSubmitting(true);
+    const { isValid, errors: newErrors } = await validateSchema(values, schema);
+    setErrors(newErrors);
+    setTouched(Object.fromEntries(Object.keys(initialValues).map(k => [k, true])));
+    if (isValid) await onSuccess(values);
+    setIsSubmitting(false);
+  };
+
+  return { values, errors, touched, isSubmitting, handleChange, handleBlur, handleSubmit };
+}
+
+// Usage
+function SignUpForm() {
+  const form = useForm({ username: '', email: '', password: '' }, signUpSchema);
+
+  return (
+    <form onSubmit={(e) => {
+      e.preventDefault();
+      form.handleSubmit(async (data) => { await api.signUp(data); });
+    }}>
+      <input
+        value={form.values.username}
+        onChange={e => form.handleChange('username', e.target.value)}
+        onBlur={() => form.handleBlur('username')}
+      />
+      {form.touched.username && form.errors.username && (
+        <span role="alert" style={{ color: 'red' }}>{form.errors.username}</span>
+      )}
+      {/* ... */}
+      <button type="submit" disabled={form.isSubmitting}>Sign Up</button>
+    </form>
+  );
+}
+```
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "The core abstraction is a `Validator<T>` — a function that returns `{ ok: true }` or `{ ok: false, message }` (sync or async). A `FieldSchema` is an array of validators — run in order, stop at first failure. A `FieldBuilder` lets you chain validators fluently. `validateSchema` runs all field validations in parallel with `Promise.all`. The React hook tracks values, errors, touched state, and handles blur-time validation (validate as you leave a field) and submit-time validation (validate all fields). Compared to Zod: same idea — composable validators, schema inference — but Zod adds runtime parsing and TypeScript type inference from the schema, which I'd add with `z.infer<typeof schema>`."
+</div>

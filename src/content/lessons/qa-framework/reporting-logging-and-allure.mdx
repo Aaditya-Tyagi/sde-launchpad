@@ -1,0 +1,251 @@
+---
+title: "Reporting, logging & Allure"
+track: qa-framework
+summary: "Make test results communicate — Allure annotations and trends, Extent Reports, the Playwright HTML report and trace viewer, leveled structured logging, automatic failure evidence, and what a stakeholder-ready report actually shows."
+order: 4
+est: 24
+difficulty: medium
+priority: know
+tags: [reporting, allure, extent, logging, log4j2, trace, observability]
+whyAsked: "A framework that can't communicate results is half-built. Interviewers ask what your reports show, how you log, and how failures capture evidence automatically."
+followUps:
+  - "Why does reporting matter beyond a pass/fail count?"
+  - "What do Allure's @Step and @Severity give you?"
+  - "How do you log well — which levels, what content?"
+  - "How do you capture and attach evidence on failure?"
+  - "How do you surface flaky tests in a report?"
+resources:
+  - { label: "Allure Report", url: "https://allurereport.org/docs/" }
+  - { label: "Extent Reports", url: "https://www.extentreports.com/" }
+  - { label: "Playwright Trace Viewer", url: "https://playwright.dev/docs/trace-viewer" }
+  - { label: "Log4j2", url: "https://logging.apache.org/log4j/2.x/" }
+---
+
+A test suite produces two outputs: a pass/fail signal and **the evidence to act on it**. Beginners optimise only the first. The senior view: a report is the framework's *communication layer* — it has to let a stakeholder understand health at a glance and let an engineer diagnose a failure without rerunning it. Logging and reporting are how automation earns trust.
+
+## Why reporting matters
+
+"12 failed out of 400" is a number, not information. The questions that follow — *which* 12, at *which* step, *why*, against *which* environment, is this *new* or *flaky* — are what a report must answer. Good reporting buys you:
+
+- **Triage speed.** A failing step + screenshot + stack trace means you fix instead of reproduce.
+- **Stakeholder trust.** A product owner or release manager can read health without reading code.
+- **Trend awareness.** History graphs reveal a slowly rotting suite or a creeping flaky rate before they become a crisis.
+- **CI/CD gating.** Reports are the artifact a pipeline publishes and a release decision leans on.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Optimise reports for the reader who is <em>not</em> in your head: an on-call engineer at 2am, or a PM who can't read Java. If they can't act on the report alone, it's not done.
+</div>
+
+## Allure
+
+Allure is the default recommendation for a portfolio framework: language-agnostic, with rich step breakdowns, attachments, severity, categories, and best-in-class **trend/history** graphs. It works by emitting result files during the run, which the Allure CLI turns into a static HTML site.
+
+### Annotations
+
+```java
+import io.qameta.allure.*;
+
+@Epic("Checkout")
+@Feature("Payment")
+public class PaymentTest {
+
+    @Test
+    @Story("Card payment succeeds")
+    @Severity(SeverityLevel.CRITICAL)
+    @Description("A valid card completes checkout and shows confirmation")
+    public void cardPaymentSucceeds() {
+        loginAsShopper();
+        addItemToCart("Sauce Labs Backpack");
+        pay("4111111111111111");
+        confirmOrder();
+    }
+
+    @Step("Log in as a shopper")
+    void loginAsShopper() { /* ... */ }
+
+    @Step("Add {item} to cart")          // {item} is interpolated into the report step
+    void addItemToCart(String item) { /* ... */ }
+}
+```
+
+- **`@Step`** turns a method into a named, nested step in the report — the report reads like a narrative, and a failure points at the exact step. Parameters are interpolated into the step title.
+- **`@Description`** adds human context to a test.
+- **`@Severity`** (`BLOCKER`/`CRITICAL`/`NORMAL`/`MINOR`/`TRIVIAL`) lets readers and CI prioritise — "are any *critical* tests failing?" becomes a one-glance question.
+- **`@Epic`/`@Feature`/`@Story`** build a behaviour hierarchy so results group by business area, not just by class name.
+
+### Attachments
+
+Attach anything relevant to a step or test — screenshots, page source, API request/response, logs:
+
+```java
+@Attachment(value = "screenshot", type = "image/png")
+public byte[] screenshot(WebDriver driver) {
+    return ((TakesScreenshot) driver).getScreenshotAs(OutputType.BYTES);
+}
+
+// or imperatively, anywhere during a test:
+Allure.addAttachment("request.json", "application/json", jsonPayload);
+```
+
+### Categories
+
+Allure **categories** classify failures by rule (regex over error message / status), separating, say, "product defects" from "test infrastructure" or "outdated tests". This stops everyone treating all reds as equal.
+
+```json
+// categories.json
+[
+  { "name": "Infrastructure problems",
+    "matchedStatuses": ["broken"],
+    "messageRegex": ".*Timeout.*|.*Connection refused.*" },
+  { "name": "Product defects",
+    "matchedStatuses": ["failed"] }
+]
+```
+
+### History / trends and CI integration
+
+Allure's standout feature is **history**: feed the previous report's `history/` folder into the next run and you get pass-rate trend lines, duration trends, and a "retries/flaky" view across builds. In CI (GitHub Actions, Jenkins) you run the suite, the Allure CLI generates the report from results plus prior history, and you publish it (GitHub Pages, the Jenkins Allure plugin, or an artifact). The trend graph is what makes degradation visible over time rather than build-by-build.
+
+## Extent Reports
+
+Extent is a Java-centric reporter producing a polished, interactive single HTML file. It's popular in TestNG/Selenium suites where you want a self-contained report without an external CLI.
+
+```java
+ExtentReports extent = new ExtentReports();
+extent.attachReporter(new ExtentSparkReporter("target/extent.html"));
+
+ExtentTest test = extent.createTest("Card payment succeeds");
+test.assignCategory("Checkout").assignAuthor("qa");
+test.log(Status.INFO, "Logging in as shopper");
+test.pass("Order confirmed");
+// on failure:
+test.fail(throwable).addScreenCaptureFromPath("target/shots/fail.png");
+
+extent.flush(); // writes the HTML — call in an @AfterSuite / listener
+```
+
+Allure vs Extent, briefly: **Allure** wins on language-agnosticism and trend/history; **Extent** wins on a zero-CLI, self-contained HTML file and fine-grained per-log styling. Both are fine answers; mention that you'd wire either through a TestNG `ITestListener` so reporting is automatic, not manual.
+
+## Playwright HTML report + trace
+
+Playwright ships reporting and debugging out of the box — no library to bolt on.
+
+```typescript
+// playwright.config.ts
+export default defineConfig({
+  reporter: [['html', { open: 'never' }], ['junit', { outputFile: 'results.xml' }]],
+  use: {
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
+    trace: 'on-first-retry',   // capture a trace when a test retries
+  },
+});
+```
+
+The **HTML report** lists every test with steps, attachments, and embedded video. The **trace viewer** is the killer feature: open `trace.zip` and you get a time-travel debugger — DOM snapshots before/after each action, the network log, console output, and the exact locator each step used. For diagnosing a CI-only failure you can't reproduce locally, a trace is gold. (`junit` output also lets CI parse pass/fail natively.)
+
+## Logging best practices
+
+Use a real logging framework, never `System.out.println`. In Java that's **SLF4J as the API with Log4j2 as the binding**; in Python it's the `logging` module.
+
+### Levels — use them deliberately
+
+- **`ERROR`** — a failure with the exception attached; something is broken.
+- **`WARN`** — recoverable oddity (a retry fired, a fallback was used).
+- **`INFO`** — flow milestones: test start/end, key user actions, the environment.
+- **`DEBUG`** — detail you switch on while chasing a bug (payloads, resolved locators).
+- **`TRACE`** — firehose, rarely on.
+
+CI typically runs at `INFO`; you bump a class to `DEBUG` when investigating. Configuring levels per-package (e.g. `DEBUG` for your framework, `WARN` for Selenium's noise) keeps logs readable.
+
+```xml
+<!-- log4j2.xml -->
+<Configuration status="WARN">
+  <Appenders>
+    <Console name="Console" target="SYSTEM_OUT">
+      <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{1} - %msg%n"/>
+    </Console>
+  </Appenders>
+  <Loggers>
+    <Logger name="org.openqa.selenium" level="warn"/>
+    <Root level="info"><AppenderRef ref="Console"/></Root>
+  </Loggers>
+</Configuration>
+```
+
+```java
+private static final Logger log = LoggerFactory.getLogger(LoginPage.class);
+log.info("Logging in as {}", username);   // parameterised — no string concat cost
+```
+
+### Structured logging
+
+Including the thread name (`%t`) is essential for parallel runs — without it, four threads' logs interleave into noise. Better still, attach a per-test correlation id (via SLF4J's MDC) so you can filter the log to one test. Structured/JSON logs become important once logs ship to a central system (ELK, CloudWatch) where you query by fields rather than grep.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Never log secrets — tokens, passwords, full PII. It's a real security incident waiting in your CI artifacts. Mask sensitive values before they reach a log line.
+</div>
+
+## Screenshots / video / trace on failure
+
+The rule: **capture evidence automatically on failure, never by hand.** Manual screenshots don't exist for the CI failure you can't reproduce.
+
+- **Selenium / TestNG** — an `ITestListener.onTestFailure` grabs the screenshot and attaches it to Allure/Extent (see the framework lesson). Video needs an external recorder or grid feature.
+- **Cucumber** — an `@After` hook checks `scenario.isFailed()` and calls `scenario.attach(...)`.
+- **Playwright** — pure config: `screenshot: 'only-on-failure'`, `video: 'retain-on-failure'`, `trace: 'on-first-retry'`. Nothing to code.
+
+Capture *on failure only* by default — recording video/trace for every passing test bloats artifacts and slows runs.
+
+## What a stakeholder-ready report shows
+
+When asked "what's in your report", enumerate:
+
+1. **Summary** — total / passed / failed / skipped, and pass rate.
+2. **Trend** — pass rate and duration over recent builds (degradation at a glance).
+3. **Per-test detail** — readable name, steps, status, duration.
+4. **Failure evidence** — the failing assertion, stack trace, screenshot/trace.
+5. **Severity / grouping** — by feature or severity so critical failures stand out.
+6. **Environment** — browser, OS, target env, build/commit — so a failure is reproducible.
+7. **Flaky / retry view** — tests that passed only on retry, flagged.
+
+## Flaky-test reporting
+
+Flakiness handled silently is worse than flakiness handled loudly. The reporting discipline: **make retried-then-passed tests visible, don't hide them under a green check.** Allure's retries view shows attempts per test; Playwright marks retried tests "flaky" (passed after a retry) distinctly from "passed". Track a flaky rate over time as a health metric and quarantine chronically flaky tests (tag and exclude from the gate) rather than retrying them into a false green. A suite people trust is one where green truly means green.
+
+## Interview questions & model answers
+
+**1. Why does reporting matter beyond a pass/fail count?**
+Because the count isn't actionable. A report must answer which tests failed, at which step, why, against which environment, and whether it's new or flaky — so an engineer fixes instead of reproduces and a stakeholder reads health without reading code. It's also the artifact CI publishes and release decisions lean on. Reporting is the framework's communication layer; without it, automation doesn't earn trust.
+
+**2. What do Allure's @Step and @Severity give you?**
+`@Step` turns methods into named, nested steps so the report reads as a narrative and a failure points to the exact step, with parameters interpolated into titles. `@Severity` tags tests `BLOCKER`/`CRITICAL`/.../`TRIVIAL` so readers and CI can prioritise — "are any critical tests failing?" becomes a one-glance question and a possible gate condition.
+
+**3. Allure vs Extent — when each?**
+Allure when I want language-agnostic reporting and especially trend/history across builds, integrated in CI as a published site. Extent when I want a self-contained, polished single HTML file in a Java/TestNG suite without an external CLI. Both wire through a TestNG listener so reporting stays automatic. Allure's history/trend graphs are the deciding factor for me on a portfolio project.
+
+**4. How do you log well?**
+Use SLF4J/Log4j2 (or Python `logging`), not println. Levels deliberately: ERROR for failures with the exception, WARN for recoverable oddities, INFO for flow milestones and environment, DEBUG for investigation detail. Run CI at INFO, bump to DEBUG when debugging, and silence noisy third-party packages. Include the thread name for parallel runs, use parameterised messages, and never log secrets.
+
+**5. How do you capture evidence on failure?**
+Automatically, never manually. In Selenium/TestNG an `onTestFailure` listener grabs a screenshot and attaches it to the report; in Cucumber an `@After` hook attaches on `scenario.isFailed()`; in Playwright it's config (`screenshot`/`video`/`trace` on failure or first retry). Capture on failure only by default to avoid artifact bloat, and prefer Playwright's trace for CI-only failures since it's a full time-travel debugger.
+
+**6. How do you surface flaky tests?**
+Make retried-then-passed tests visible rather than hiding them under a green check. Allure's retries view and Playwright's "flaky" status distinguish a clean pass from a pass-after-retry. I track a flaky rate as a health metric over time and quarantine chronically flaky tests — tag and exclude from the gate — instead of retrying them into a false green, so that green keeps meaning green.
+
+## Common mistakes
+
+- Reporting only a pass/fail count with no step detail or failure evidence.
+- Using `System.out.println` instead of a real logging framework with levels.
+- Logging at the wrong level — everything at INFO, or nothing useful at all.
+- Logging secrets, passwords, or full PII into CI-visible artifacts.
+- Manually capturing screenshots instead of automatic on-failure capture.
+- Recording video/trace for every test, bloating artifacts and slowing runs.
+- Hiding flaky tests by retrying them green instead of reporting and quarantining them.
+- Omitting environment/build/commit, so a reported failure can't be reproduced.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  A report is done when an engineer who has never seen the code can open it and explain why a test failed — without rerunning anything.
+</div>

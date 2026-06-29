@@ -1,0 +1,333 @@
+---
+title: "SQL for testers"
+track: qa-programming
+summary: "Query and validate data directly — SELECT/JOIN/GROUP BY, indexes, the classic interview problems (2nd-highest salary, duplicates, nth record), and how testers use SQL for back-end validation and test data."
+order: 3
+est: 24
+difficulty: medium
+priority: must
+tags: [sql, database, validation, joins, indexes]
+whyAsked: "Back-end and data validation is core QA work; nearly every QA interview includes SQL, and several ask you to write a non-trivial query on the spot."
+followUps:
+  - "Difference between WHERE and HAVING?"
+  - "INNER JOIN vs LEFT JOIN — what does each return?"
+  - "Write a query to find the second-highest salary."
+  - "Find users with no orders."
+  - "Why do indexes matter for your test data?"
+resources:
+  - { label: "SQLBolt (interactive)", url: "https://sqlbolt.com/" }
+  - { label: "Mode SQL tutorial", url: "https://mode.com/sql-tutorial/" }
+  - { label: "PostgreSQL docs", url: "https://www.postgresql.org/docs/current/sql.html" }
+  - { label: "use The Index, Luke (indexes)", url: "https://use-the-index-luke.com/" }
+---
+
+You'll constantly verify that an action in the UI or API produced the right state in the database — and set up / clean up test data with SQL. Most QA interviews include a couple of SQL questions, and many ask you to write a non-trivial query live. This lesson takes you from the basics to the classic problems.
+
+We'll use two tables throughout:
+
+```text
+users(id, name, email, status, created_at)
+orders(id, user_id, total, status, created_at)
+```
+
+## The core: SELECT / WHERE / ORDER / LIMIT
+
+```sql
+-- pick columns, filter rows
+SELECT id, email, status
+FROM users
+WHERE status = 'active';
+
+-- combine conditions
+SELECT * FROM orders
+WHERE total > 100 AND status = 'paid';
+
+-- pattern match, ranges, membership, null checks
+SELECT * FROM users WHERE email LIKE '%@gmail.com';
+SELECT * FROM orders WHERE total BETWEEN 50 AND 200;
+SELECT * FROM orders WHERE status IN ('paid', 'shipped');
+SELECT * FROM orders WHERE shipped_at IS NULL;
+
+-- sort and limit (the last 10 orders)
+SELECT * FROM orders
+ORDER BY created_at DESC
+LIMIT 10;
+```
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Anything compared to NULL with `=` yields NULL (not true). Use `IS NULL` / `IS NOT NULL`. This trips people up when checking for missing values during validation.
+</div>
+
+## Aggregates + GROUP BY + HAVING
+
+```sql
+-- aggregate functions
+SELECT COUNT(*), SUM(total), AVG(total), MIN(total), MAX(total)
+FROM orders;
+
+-- one row per group
+SELECT status, COUNT(*) AS n
+FROM orders
+GROUP BY status;
+
+-- filter groups (not rows) with HAVING
+SELECT user_id, COUNT(*) AS order_count
+FROM orders
+GROUP BY user_id
+HAVING COUNT(*) > 5;
+```
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  `WHERE` filters rows **before** grouping; `HAVING` filters groups **after** aggregation. You can't use an aggregate (`COUNT`, `SUM`) in `WHERE` — it belongs in `HAVING`.
+</div>
+
+## JOINs — all the types
+
+A JOIN combines rows from two tables on a matching condition. Picture two overlapping circles, users (L) and orders (R):
+
+```text
+INNER JOIN   →  only the overlap (users that HAVE orders)
+LEFT  JOIN   →  all of L + matching R (all users; NULLs where no order)
+RIGHT JOIN   →  all of R + matching L (all orders; NULLs where no user)
+FULL  JOIN   →  everything from both, NULLs where no match
+CROSS JOIN   →  every L paired with every R (cartesian product)
+```
+
+```sql
+-- INNER: only matching rows in both tables
+SELECT u.email, o.total
+FROM users u
+JOIN orders o ON o.user_id = u.id;
+
+-- LEFT: all users, even those with NO orders (order columns are NULL)
+SELECT u.email, o.total
+FROM users u
+LEFT JOIN orders o ON o.user_id = u.id;
+```
+
+### Worked example — find users with no orders
+
+A LEFT JOIN keeps every user; rows with no matching order have NULL order columns. Filter for those:
+
+```sql
+SELECT u.id, u.email
+FROM users u
+LEFT JOIN orders o ON o.user_id = u.id
+WHERE o.id IS NULL;        -- no matching order existed
+```
+
+Equivalent with a subquery (also very common):
+
+```sql
+SELECT id, email FROM users
+WHERE id NOT IN (SELECT user_id FROM orders WHERE user_id IS NOT NULL);
+```
+
+## Subqueries
+
+A query inside a query. Use for "compare against an aggregate" or "exists/not-exists" logic.
+
+```sql
+-- orders larger than the average order
+SELECT * FROM orders
+WHERE total > (SELECT AVG(total) FROM orders);
+
+-- users who have placed at least one order (correlated EXISTS)
+SELECT u.* FROM users u
+WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id);
+```
+
+## DDL / DML / TCL overview
+
+SQL splits into command families — name them confidently in interviews.
+
+| Family | Meaning | Commands |
+|---|---|---|
+| **DDL** | Data Definition (structure) | `CREATE`, `ALTER`, `DROP`, `TRUNCATE` |
+| **DML** | Data Manipulation (rows) | `SELECT`, `INSERT`, `UPDATE`, `DELETE` |
+| **DCL** | Data Control (permissions) | `GRANT`, `REVOKE` |
+| **TCL** | Transaction Control | `COMMIT`, `ROLLBACK`, `SAVEPOINT` |
+
+```sql
+-- DDL
+CREATE TABLE flags (id INT PRIMARY KEY, name VARCHAR(50), enabled BOOLEAN);
+
+-- DML
+INSERT INTO flags (id, name, enabled) VALUES (1, 'new_checkout', true);
+UPDATE flags SET enabled = false WHERE name = 'new_checkout';
+DELETE FROM flags WHERE id = 1;
+
+-- TCL — wrap test-data changes so you can roll back
+BEGIN;
+INSERT INTO users (id, name, email) VALUES (999, 'temp', 't@x.com');
+-- run test ...
+ROLLBACK;   -- undo the test data, leave DB clean
+```
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  `DELETE` removes rows (can filter with WHERE, can roll back) and `TRUNCATE` wipes the whole table fast (DDL, usually can't roll back). For targeted test cleanup use `DELETE ... WHERE`; for a full reset of a staging table, `TRUNCATE`.
+</div>
+
+## Indexes — and why they matter for test data
+
+An index is a lookup structure (usually a B-tree) that lets the DB find rows without scanning the whole table — like a book's index instead of reading every page.
+
+- A query filtering on an **indexed** column (e.g. `WHERE email = ?`) is fast; on an unindexed column it does a full table scan.
+- As your test dataset grows, unindexed validation queries get slow and your suite drags.
+- Primary keys are indexed automatically; foreign keys often are not — joins on them can be slow without an index.
+- Indexes speed up reads but slow down writes (each INSERT/UPDATE maintains them), so don't index everything.
+
+```sql
+CREATE INDEX idx_orders_user_id ON orders(user_id);
+EXPLAIN SELECT * FROM orders WHERE user_id = 42;  -- check if the index is used
+```
+
+Knowing this lets you answer "your test query is slow — why?" with "probably a full table scan on an unindexed column; I'd add an index or check the EXPLAIN plan."
+
+## How testers actually use SQL
+
+- **Back-end validation:** after a UI/API action, query the DB to confirm the row exists with the right values — UI green isn't proof the data persisted correctly.
+- **Test-data setup:** `INSERT` precise rows so a test starts from a known state instead of clicking through the UI.
+- **Cleanup / isolation:** `DELETE` or `ROLLBACK` the data a test created so runs are repeatable and don't depend on leftovers.
+- **Debugging:** when a test fails, query the DB to see the *actual* stored state vs what the UI showed.
+
+```sql
+-- verify an order was created after a UI/API checkout
+SELECT * FROM orders
+WHERE user_id = 42
+ORDER BY created_at DESC
+LIMIT 1;
+```
+
+## SQL vs NoSQL (quick note)
+
+- **SQL (relational):** fixed schema, tables + rows, strong consistency, powerful JOINs and transactions. Best when data is structured and relationships matter (orders, users, payments). Examples: PostgreSQL, MySQL.
+- **NoSQL:** flexible/schemaless, scales horizontally, weaker cross-document joins. Document (MongoDB), key-value (Redis), wide-column (Cassandra). Best for high volume, evolving/unstructured data.
+- As a tester you'll mostly validate SQL DBs, but you may query MongoDB with its own syntax (`db.orders.find({...})`). The validation mindset is identical — confirm the stored state matches expectations.
+
+## Classic SQL interview problems (with solutions)
+
+**1. Find duplicate emails**
+
+```sql
+SELECT email, COUNT(*) AS n
+FROM users
+GROUP BY email
+HAVING COUNT(*) > 1;
+```
+
+**2. Second-highest salary** (table `employees(id, salary)`)
+
+```sql
+-- robust to ties and missing values; returns NULL if none
+SELECT MAX(salary) AS second_highest
+FROM employees
+WHERE salary < (SELECT MAX(salary) FROM employees);
+```
+
+```sql
+-- alternative with a window function
+SELECT DISTINCT salary FROM (
+  SELECT salary, DENSE_RANK() OVER (ORDER BY salary DESC) AS rnk
+  FROM employees
+) t
+WHERE rnk = 2;
+```
+
+**3. Nth-highest salary** (here, 3rd) — change the offset:
+
+```sql
+SELECT DISTINCT salary FROM (
+  SELECT salary, DENSE_RANK() OVER (ORDER BY salary DESC) AS rnk
+  FROM employees
+) t
+WHERE rnk = 3;
+```
+
+**4. Delete duplicate rows, keep one** (keep the lowest id per email)
+
+```sql
+DELETE FROM users
+WHERE id NOT IN (
+  SELECT min_id FROM (
+    SELECT MIN(id) AS min_id FROM users GROUP BY email
+  ) keep
+);
+```
+
+**5. Highest-paid employee per department** (`employees(id, name, salary, dept_id)`)
+
+```sql
+SELECT name, salary, dept_id FROM (
+  SELECT name, salary, dept_id,
+         RANK() OVER (PARTITION BY dept_id ORDER BY salary DESC) AS rnk
+  FROM employees
+) t
+WHERE rnk = 1;
+```
+
+**6. Users who placed orders on consecutive... no — count orders per user, including zero**
+
+```sql
+SELECT u.id, u.email, COUNT(o.id) AS order_count
+FROM users u
+LEFT JOIN orders o ON o.user_id = u.id
+GROUP BY u.id, u.email
+ORDER BY order_count DESC;
+```
+
+**7. Top 3 orders by total** (with ties handled)
+
+```sql
+SELECT * FROM orders
+ORDER BY total DESC
+LIMIT 3;     -- use FETCH FIRST 3 ROWS WITH TIES in some DBs to include ties
+```
+
+**8. Find the department with the most employees**
+
+```sql
+SELECT dept_id, COUNT(*) AS headcount
+FROM employees
+GROUP BY dept_id
+ORDER BY headcount DESC
+LIMIT 1;
+```
+
+## Interview questions & model answers
+
+**Q: WHERE vs HAVING?**
+A: `WHERE` filters individual rows before grouping and can't use aggregates. `HAVING` filters groups after `GROUP BY` and is where aggregate conditions like `COUNT(*) > 5` go.
+
+**Q: INNER JOIN vs LEFT JOIN?**
+A: INNER returns only rows with a match in both tables. LEFT returns every row from the left table plus matches from the right, filling NULLs where there's no match — which is how you find "users with no orders" by adding `WHERE o.id IS NULL`.
+
+**Q: How would you find users with no orders?**
+A: LEFT JOIN orders onto users and keep rows where the order id is NULL, or use `WHERE id NOT IN (SELECT user_id FROM orders)`. The LEFT JOIN + IS NULL form is usually preferred and handles NULLs more safely.
+
+**Q: Write the second-highest salary.**
+A: `SELECT MAX(salary) FROM employees WHERE salary < (SELECT MAX(salary) FROM employees);` — or a `DENSE_RANK()` window filtered to rank 2, which generalizes to the Nth highest.
+
+**Q: How do indexes help, and what's the downside?**
+A: An index lets the DB locate rows without a full table scan, so filtered queries and joins on big test datasets stay fast. The tradeoff is slower writes and extra storage, since every INSERT/UPDATE maintains the index — so you index the columns you filter/join on, not everything.
+
+**Q: How do you keep tests isolated at the data layer?**
+A: Set up known data with INSERTs (or fixtures), and clean up afterward with targeted DELETEs or by wrapping the test in a transaction and rolling back. That way no test depends on another's leftovers and runs are repeatable.
+
+**Q: DELETE vs TRUNCATE?**
+A: DELETE is DML, removes selected rows (supports WHERE), and can be rolled back; TRUNCATE is DDL, wipes the entire table quickly, and usually can't be rolled back. I use DELETE for targeted cleanup, TRUNCATE for a full reset of a staging table.
+
+**Q: When would you reach for SQL during testing rather than the UI?**
+A: To verify back-end state after an action (the UI can look right while the DB is wrong), to seed precise test data fast, to clean up for isolation, and to debug failures by inspecting the actual stored values.
+
+## Common mistakes
+
+- **Using `=` with NULL** instead of `IS NULL` — comparisons to NULL return NULL, so rows silently drop.
+- **Putting an aggregate in `WHERE`** — `WHERE COUNT(*) > 5` is invalid; it goes in `HAVING`.
+- **Forgetting the join condition** — a missing `ON` produces a cartesian explosion (every row paired with every row).
+- **Assuming `IN (subquery)` is NULL-safe** — `NOT IN` with a NULL in the subquery returns no rows; prefer LEFT JOIN / IS NULL or `NOT EXISTS`.
+- **Running cleanup `DELETE`/`UPDATE` without `WHERE`** — wipes or mutates the whole table. Always scope test-data changes.
+- **Not checking the query plan** — when a validation query is slow, run `EXPLAIN` rather than guessing; it's usually a missing index causing a full scan.

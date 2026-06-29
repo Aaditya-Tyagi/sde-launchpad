@@ -1,0 +1,298 @@
+---
+title: "FSD: Design a Social News Feed"
+track: frontend-system-design
+summary: "Design the frontend of a social news feed — infinite scroll, virtualization, optimistic likes, real-time updates, and performance at scale."
+order: 2
+est: 30
+difficulty: hard
+priority: must
+tags: [frontend-system-design, news-feed, infinite-scroll, virtualization, optimistic-updates, tanstack-query]
+whyAsked: "News feed is the canonical frontend system design question — it covers every core topic: pagination, virtualization, real-time, optimistic UI, and performance."
+followUps:
+  - "How do you handle the N+1 problem when fetching author avatars?"
+  - "How does cursor pagination differ from offset pagination?"
+  - "How do you implement optimistic likes with rollback?"
+  - "How would you add real-time new-post notifications?"
+  - "How do you virtualize a feed with variable-height items?"
+resources:
+  - { label: "TanStack Query: useInfiniteQuery", url: "https://tanstack.com/query/latest/docs/react/reference/useInfiniteQuery" }
+  - { label: "react-window: VariableSizeList", url: "https://react-window.now.sh/#/examples/list/variable-size" }
+---
+
+## Step 1: Requirements clarification
+
+**Ask the interviewer:**
+- What is the feed source? (Friends' posts? Global trending? Algorithmic mix?)
+- Do we need real-time new-post notification ("3 new posts" banner)?
+- What media types? (Text, image, video — video is a separate problem)
+- Do we need offline support?
+- Target platform: web, mobile web, or native?
+
+**For this design:**
+- Personalized feed (friends + algorithm)
+- Text + image posts; video = out of scope
+- Infinite scroll downward
+- Like / comment counts, viewer-has-liked state
+- Real-time "new posts available" banner (no auto-refresh)
+- Web app; mobile-first responsive
+
+---
+
+## Step 2: High-level architecture
+
+```
+Browser                                 Servers
+┌───────────────────────────────┐       ┌──────────────────────┐
+│  Next.js (SSR first page)     │──────▶│  GET /feed           │
+│                               │       │  POST /posts/:id/like│
+│  TanStack Query               │◀─────▶│  WebSocket /ws/feed  │
+│  (caching, background refetch)│       │  (new-post events)   │
+│                               │       └──────────────────────┘
+│  react-window VariableSizeList│
+│  (virtual scroll)             │
+└───────────────────────────────┘
+```
+
+**Rendering strategy:** SSR the first page for LCP/SEO, hydrate, then client-side infinite scroll from there.
+
+---
+
+## Step 3: Data model & API
+
+```ts
+interface Post {
+  id: string;
+  author: { id: string; name: string; avatarUrl: string; handle: string };
+  content: string;
+  imageUrls: string[];        // up to 4
+  likeCount: number;
+  commentCount: number;
+  shareCount: number;
+  viewerHasLiked: boolean;
+  createdAt: string;          // ISO 8601
+}
+
+interface FeedPage {
+  items: Post[];
+  nextCursor: string | null;  // null = no more pages
+  totalNew: number;           // for "N new posts" banner
+}
+```
+
+```
+GET /api/feed?cursor=<cursor>&limit=20
+→ FeedPage
+
+POST /api/posts/:id/like    (body: { liked: boolean })
+→ { likeCount: number; viewerHasLiked: boolean }
+```
+
+**Cursor vs offset pagination:**
+- Offset: `LIMIT 20 OFFSET 40` — **duplicates appear** when new posts are inserted
+- Cursor: `WHERE created_at < :cursor` — **stable** even as new posts arrive; cursor is the `createdAt` of last item
+
+---
+
+## Step 4: State management
+
+```ts
+// Server state — TanStack Query infinite query
+const {
+  data,
+  fetchNextPage,
+  hasNextPage,
+  isFetchingNextPage,
+} = useInfiniteQuery({
+  queryKey: ['feed'],
+  queryFn: ({ pageParam }) => fetchFeed(pageParam),
+  getNextPageParam: (lastPage) => lastPage.nextCursor,
+  staleTime: 30_000,        // re-fetch in bg after 30s
+  gcTime: 5 * 60 * 1000,   // keep in cache 5 min
+});
+
+// Flatten pages into a single post array
+const posts = data?.pages.flatMap(page => page.items) ?? [];
+```
+
+**Optimistic like:**
+```ts
+const likeMutation = useMutation({
+  mutationFn: ({ postId, liked }: { postId: string; liked: boolean }) =>
+    api.likePost(postId, liked),
+
+  onMutate: async ({ postId, liked }) => {
+    // Cancel in-flight refetches that would overwrite our optimistic update
+    await queryClient.cancelQueries({ queryKey: ['feed'] });
+
+    // Snapshot before mutation
+    const previous = queryClient.getQueryData(['feed']);
+
+    // Apply optimistic update
+    queryClient.setQueryData(['feed'], (old: InfiniteData<FeedPage>) => ({
+      ...old,
+      pages: old.pages.map(page => ({
+        ...page,
+        items: page.items.map(p =>
+          p.id === postId
+            ? { ...p, viewerHasLiked: liked, likeCount: p.likeCount + (liked ? 1 : -1) }
+            : p
+        ),
+      })),
+    }));
+
+    return { previous };
+  },
+
+  onError: (_err, _vars, context) => {
+    // Roll back on failure
+    queryClient.setQueryData(['feed'], context!.previous);
+  },
+
+  onSettled: () => {
+    queryClient.invalidateQueries({ queryKey: ['feed'] });
+  },
+});
+```
+
+---
+
+## Step 5: Virtualization
+
+Without virtualization, 500 posts = 500 DOM nodes = slow scroll, memory pressure.
+
+```tsx
+import { VariableSizeList } from 'react-window';
+import AutoSizer from 'react-virtualized-auto-sizer';
+import InfiniteLoader from 'react-window-infinite-loader';
+
+function Feed() {
+  const { posts, fetchNextPage, hasNextPage, isFetchingNextPage } = useFeed();
+  const itemCount = hasNextPage ? posts.length + 1 : posts.length;
+  const itemHeights = useRef<Map<number, number>>(new Map());
+  const listRef = useRef<VariableSizeList>(null);
+
+  const getItemSize = (index: number) =>
+    itemHeights.current.get(index) ?? 300; // estimated height
+
+  const setItemHeight = (index: number, height: number) => {
+    if (itemHeights.current.get(index) !== height) {
+      itemHeights.current.set(index, height);
+      listRef.current?.resetAfterIndex(index);
+    }
+  };
+
+  const isItemLoaded = (index: number) => !hasNextPage || index < posts.length;
+
+  return (
+    <AutoSizer>
+      {({ height, width }) => (
+        <InfiniteLoader
+          isItemLoaded={isItemLoaded}
+          itemCount={itemCount}
+          loadMoreItems={isFetchingNextPage ? () => {} : fetchNextPage}
+          threshold={3}  // load more when 3 items from end
+        >
+          {({ onItemsRendered, ref }) => (
+            <VariableSizeList
+              ref={mergeRefs(ref, listRef)}
+              height={height}
+              width={width}
+              itemCount={itemCount}
+              itemSize={getItemSize}
+              onItemsRendered={onItemsRendered}
+              overscanCount={2}
+            >
+              {({ index, style }) => (
+                <div style={style}>
+                  {isItemLoaded(index) ? (
+                    <PostCard
+                      post={posts[index]}
+                      onHeightChange={(h) => setItemHeight(index, h)}
+                    />
+                  ) : (
+                    <PostSkeleton />
+                  )}
+                </div>
+              )}
+            </VariableSizeList>
+          )}
+        </InfiniteLoader>
+      )}
+    </AutoSizer>
+  );
+}
+```
+
+**Variable height handling:** Each `PostCard` calls a `ResizeObserver` on mount/content change and reports its height up via `onHeightChange`, which calls `list.resetAfterIndex()` to recompute positions.
+
+---
+
+## Step 6: Real-time "new posts" banner
+
+```ts
+function useNewPostsNotification() {
+  const [newCount, setNewCount] = useState(0);
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    const ws = new WebSocket('wss://api.example.com/ws/feed');
+    ws.onmessage = (event) => {
+      const { type, count } = JSON.parse(event.data);
+      if (type === 'new_posts') {
+        setNewCount(count);
+      }
+    };
+    return () => ws.close();
+  }, []);
+
+  const loadNew = () => {
+    setNewCount(0);
+    queryClient.invalidateQueries({ queryKey: ['feed'] });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  return { newCount, loadNew };
+}
+
+// In Feed:
+{newCount > 0 && (
+  <button
+    onClick={loadNew}
+    style={{ position: 'sticky', top: 60, zIndex: 10 }}
+  >
+    ↑ {newCount} new posts
+  </button>
+)}
+```
+
+**Alternative:** SSE (one-way stream) instead of WebSocket — sufficient for read-only notifications.
+
+---
+
+## Step 7: Performance checklist
+
+| Concern | Solution |
+|---|---|
+| Long list DOM size | `react-window` VariableSizeList |
+| Image performance | `loading="lazy"`, `srcset`, WebP, aspect-ratio on container |
+| First paint | SSR first page, inline critical CSS |
+| Scroll jank | `will-change: transform` on list items, no layout thrash |
+| API over-fetching | 30s staleTime, background refetch only |
+| Optimistic perceived speed | Instant like update, rollback on error |
+| Code splitting | Dynamic import for CommentModal (heavy) |
+| Bundle size | Tree-shake lodash, import only what's needed from react-window |
+
+---
+
+## Step 8: Accessibility
+
+- `<main>` wrapping the feed; `<article>` per post
+- Like button: `aria-pressed={post.viewerHasLiked}` + `aria-label="Like post by {author}"`
+- New-posts banner: `role="status"` with `aria-live="polite"`
+- Image alt text from server (uploaded by user)
+- Skip-to-content link at top
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "I'd SSR the first page for LCP, then hydrate with TanStack Query's `useInfiniteQuery` for cursor-based pagination. Cursor not offset — offset gives duplicates on a live feed. For virtualization I'd use `react-window VariableSizeList` with `InfiniteLoader` — measure real heights with `ResizeObserver` and call `resetAfterIndex`. Optimistic likes update the cache immediately via `onMutate`, snapshot for rollback, settle with `invalidateQueries`. Real-time new-post banner via WebSocket — not auto-scrolling, user clicks to load new content. Like button gets `aria-pressed` for screen readers."
+</div>

@@ -1,0 +1,180 @@
+---
+title: "Immutability, WeakRefs & Memory Management"
+track: javascript
+summary: "Shallow vs deep clone, Object.freeze, structuredClone, WeakMap/WeakSet for memory-safe caching, and how the garbage collector works."
+order: 14
+est: 20
+difficulty: hard
+priority: deep
+tags: [immutability, weakmap, weakset, weakref, garbage-collection, clone, memory]
+whyAsked: "Memory management and immutability are SDE-2 signals — they show you think about the runtime, not just the API. WeakMap questions appear surprisingly often in senior screens."
+followUps:
+  - "What's the difference between a shallow and deep clone?"
+  - "When would you use WeakMap instead of Map?"
+  - "Why can't you iterate a WeakMap?"
+  - "What does Object.freeze do, and does it deep-freeze?"
+  - "How does the garbage collector decide what to collect?"
+resources:
+  - { label: "MDN: WeakMap", url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WeakMap" }
+  - { label: "MDN: structuredClone", url: "https://developer.mozilla.org/en-US/docs/Web/API/structuredClone" }
+---
+import JsPlayground from '../../../components/JsPlayground.astro';
+
+## Shallow vs deep clone
+
+A **shallow clone** copies the top-level properties but nested objects remain shared references:
+
+<JsPlayground code={`const original = { name: 'Alex', address: { city: 'NY' } };
+
+// Shallow clone methods
+const spread  = { ...original };
+const assign  = Object.assign({}, original);
+
+spread.name = 'Sam';        // ok — primitive, doesn't affect original
+spread.address.city = 'LA'; // BAD — shared reference!
+
+console.log(original.name);         // 'Alex' — primitive was copied
+console.log(original.address.city); // 'LA' — nested object was shared!`} height={190} />
+
+A **deep clone** recursively copies every level:
+
+```js
+// structuredClone — the modern standard (supported in Node 17+, all modern browsers)
+const deep = structuredClone(original);
+deep.address.city = 'LA';
+console.log(original.address.city); // 'NY' — untouched ✓
+
+// structuredClone handles: nested objects, arrays, Date, Map, Set, ArrayBuffer
+// Does NOT support: functions, DOM nodes, class instances with methods, symbols
+
+// For functions/class instances — JSON roundtrip (lossy: undefined, Date → string)
+const jsonClone = JSON.parse(JSON.stringify(obj));
+
+// For complex class instances — manual deep clone or libraries (lodash.cloneDeep)
+```
+
+## Object.freeze
+
+`Object.freeze` makes an object's properties non-writable and non-configurable — but only **one level deep**:
+
+```js
+const config = Object.freeze({
+  env: 'production',
+  db: { host: 'localhost', port: 5432 }
+});
+
+config.env = 'dev';        // silently fails (throws in strict mode)
+config.db.port = 9999;     // works! — freeze is shallow
+
+console.log(config.env);    // 'production' ✓
+console.log(config.db.port);// 9999 — nested object was not frozen
+
+// Deep freeze — recursive
+function deepFreeze(obj) {
+  Object.freeze(obj);
+  Object.keys(obj).forEach(key => {
+    if (typeof obj[key] === 'object' && obj[key] !== null && !Object.isFrozen(obj[key])) {
+      deepFreeze(obj[key]);
+    }
+  });
+  return obj;
+}
+```
+
+## WeakMap — memory-safe associative cache
+
+`Map` holds **strong references** to its keys — as long as the Map exists, the key objects can't be garbage collected, even if nothing else references them.
+
+`WeakMap` holds **weak references** to keys — if the key object has no other references, the GC can collect it and the WeakMap entry is automatically removed. Keys must be objects (not primitives).
+
+```js
+// Use case: caching computed data associated with DOM nodes or objects
+const cache = new WeakMap();
+
+function getExpensiveMetrics(element) {
+  if (cache.has(element)) return cache.get(element);
+  const result = computeExpensiveMetrics(element);
+  cache.set(element, result);
+  return result;
+}
+
+// When `element` is removed from the DOM and no longer referenced elsewhere,
+// the GC can collect it AND the WeakMap entry — no memory leak.
+// With a regular Map, element would be kept alive as long as cache existed.
+```
+
+`WeakMap` is **not iterable** — you can't loop over it or get its size. This is intentional: the GC can remove entries at any time, so iteration would be non-deterministic.
+
+Real uses: private class data, memoization tied to object lifecycle, metadata storage.
+
+```js
+// Private data pattern (before private class fields existed)
+const _private = new WeakMap();
+
+class Circle {
+  constructor(radius) {
+    _private.set(this, { radius });
+  }
+  get area() {
+    return Math.PI * _private.get(this).radius ** 2;
+  }
+}
+// _private.get(circle) only accessible to code with a reference to _private
+```
+
+## WeakSet
+
+`WeakSet` is `Set` with weak references — useful for tracking "has this object been processed" without preventing GC:
+
+```js
+const processed = new WeakSet();
+
+function processOnce(obj) {
+  if (processed.has(obj)) return; // already done
+  doProcessing(obj);
+  processed.add(obj);
+  // When obj is GC'd, the WeakSet entry disappears automatically
+}
+```
+
+## WeakRef — explicit weak references
+
+`WeakRef` lets you hold a weak reference to an object and check if it's still alive:
+
+```js
+class ExpensiveResource {
+  compute() { return 'heavy result'; }
+}
+
+let resource = new ExpensiveResource();
+const ref = new WeakRef(resource);
+
+// Later...
+resource = null; // remove strong reference
+
+// GC may or may not have collected it yet
+const obj = ref.deref();
+if (obj) {
+  obj.compute(); // still alive
+} else {
+  // obj was collected — recreate if needed
+}
+```
+
+Use `WeakRef` sparingly. It's for caches where staleness is acceptable, not as a general reference mechanism.
+
+## Garbage collection basics
+
+JavaScript uses **mark-and-sweep** GC. The GC starts from **roots** (global variables, call stack, registers) and marks everything reachable. Anything unmarked is garbage and gets collected.
+
+Common memory leak patterns to recognize:
+1. **Forgotten event listeners** — listeners on `window`/`document` that reference component state keep the component alive after unmounting. Always clean up in `useEffect` return function.
+2. **Closures holding large references** — a closure captures the entire outer scope, including large objects.
+3. **Detached DOM nodes** — a JS reference to a removed DOM node keeps the node (and its whole subtree) in memory.
+4. **Timers** — `setInterval` without `clearInterval` keeps its callback (and everything it closes over) alive forever.
+5. **Global caches without eviction** — a plain `Map` or `{}` used as a cache without size limits grows unbounded.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Shallow clone (spread/Object.assign) copies top-level props but nested objects remain shared — mutations propagate. `structuredClone` does a spec-compliant deep clone. `Object.freeze` is shallow — it protects top-level properties only. `WeakMap` uses weak object keys: when a key has no other strong references, the GC collects it and the entry disappears — this prevents leaks in caches tied to object lifetimes. Unlike `Map`, WeakMap is not iterable because GC timing is non-deterministic. Common memory leaks: forgotten event listeners, non-cleared intervals, and global Maps without eviction."
+</div>

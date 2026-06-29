@@ -1,0 +1,262 @@
+---
+title: "Advanced Appium & mobile frameworks"
+track: qa-mobile
+summary: "Build a real mobile automation framework — Page Object Model, cross-platform Android+iOS design with shared tests, parallel execution, cloud farms, robust context switching, network throttling, state setup, ADB/xcrun, CI, flakiness fixes, and alternatives (Espresso, XCUITest, Maestro, Detox)."
+order: 3
+est: 24
+difficulty: hard
+priority: know
+tags: [mobile, appium, framework, pom, parallel, ci, cloud, espresso, maestro, detox]
+whyAsked: "Senior mobile/SDET roles want framework design, not just scripts — cross-platform structure, parallelism, flakiness control and tooling judgment separate juniors from SDE-2s."
+followUps:
+  - "How do you share tests across Android and iOS?"
+  - "How do you run mobile tests in parallel across devices?"
+  - "Why are mobile tests flaky and how do you fix it?"
+  - "Appium vs Espresso/XCUITest vs Maestro vs Detox — when each?"
+resources:
+  - { label: "Appium parallel tests", url: "https://appium.io/docs/en/latest/guides/parallel-tests/" }
+  - { label: "ADB", url: "https://developer.android.com/tools/adb" }
+  - { label: "Maestro", url: "https://maestro.mobile.dev/" }
+  - { label: "Detox", url: "https://wix.github.io/Detox/" }
+  - { label: "Espresso", url: "https://developer.android.com/training/testing/espresso" }
+---
+
+Writing one Appium script is easy. Building a framework that runs the **same tests on Android and iOS, in parallel, across a device cloud, in CI, without flaking** is the senior skill. This lesson covers that, plus the modern alternatives you should be able to compare.
+
+## Page Object Model for mobile
+
+POM applies to mobile exactly as on web: each screen is a class exposing **actions**, not raw locators. Locators stay private; tests read like user behaviour.
+
+```java
+public class LoginScreen {
+    private final AppiumDriver driver;
+    private final WebDriverWait wait;
+
+    public LoginScreen(AppiumDriver driver) {
+        this.driver = driver;
+        this.wait = new WebDriverWait(driver, Duration.ofSeconds(15));
+    }
+
+    private final By username = AppiumBy.accessibilityId("username_field");
+    private final By password = AppiumBy.accessibilityId("password_field");
+    private final By submit   = AppiumBy.accessibilityId("login_button");
+
+    public HomeScreen loginAs(String user, String pass) {
+        wait.until(ExpectedConditions.visibilityOfElementLocated(username)).sendKeys(user);
+        driver.findElement(password).sendKeys(pass);
+        driver.findElement(submit).click();
+        return new HomeScreen(driver);     // fluent: return the next screen
+    }
+}
+```
+
+Keep waits inside the page objects so tests have no timing logic. A page action returns the next page object, giving a fluent, readable flow.
+
+## Cross-platform framework: one test, two platforms
+
+The goal: write a test once and run it against Android and iOS. The trick is to **abstract the platform behind the page object** while sharing the test and locator *keys*.
+
+A clean pattern is **interface + per-platform implementation**:
+
+```java
+public interface LoginScreen {                 // contract
+    HomeScreen loginAs(String user, String pass);
+}
+
+public class AndroidLoginScreen implements LoginScreen { /* UiAutomator2 locators */ }
+public class IosLoginScreen     implements LoginScreen { /* XCUITest locators   */ }
+
+// A factory picks the implementation from the active platform capability
+public class ScreenFactory {
+    public static LoginScreen login(AppiumDriver d, Platform p) {
+        return p == Platform.ANDROID ? new AndroidLoginScreen(d) : new IosLoginScreen(d);
+    }
+}
+```
+
+```java
+@Test
+public void userCanLogIn() {                   // ONE shared test
+    LoginScreen login = ScreenFactory.login(driver, platform);
+    HomeScreen home = login.loginAs("demo_user", "Secret123!");
+    Assert.assertTrue(home.isLoaded());
+}
+```
+
+If devs add **accessibility ids that match across platforms**, you often don't even need two implementations — one page object works for both. That's the strongest argument for getting accessibility ids into the app. Read the platform from a capability/config so the same suite targets either OS by switching one parameter.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Cross-platform reuse lives in the test layer; platform differences are pushed down into the page objects (and ideally erased by shared accessibility ids). Tests should never branch on "if Android."
+</div>
+
+## Parallel execution across devices
+
+Sequential mobile suites are painfully slow. Run in parallel by giving each thread its **own Appium session pointed at its own device**, with per-session ports to avoid clashes.
+
+- **One Appium server, many sessions** — Appium 2 handles concurrent sessions; each `AndroidDriver`/`IOSDriver` is independent. Allocate a unique `udid`, `systemPort` (Android UiAutomator2) and `wdaLocalPort`/`mjpegServerPort` (iOS) per session or they collide.
+- **TestNG/JUnit parallelism** — run methods/classes in parallel threads, each constructing its own driver from a thread-local config (use `ThreadLocal<AppiumDriver>` so a session never leaks across threads).
+- **Cloud farms** — easiest path to wide parallelism: you just request N device sessions and the farm fans out.
+
+```xml
+<!-- TestNG: parallel by tests, each <test> targets a device -->
+<suite name="mobile" parallel="tests" thread-count="4">
+  <test name="pixel7"><parameter name="udid" value="emulator-5554"/> ... </test>
+  <test name="iphone15"><parameter name="udid" value="00008..."/> ... </test>
+</suite>
+```
+
+<div class="callout warn">
+  <div class="ct">Watch out: port and session collisions</div>
+  The classic parallel bug is two Android sessions sharing the default <code>systemPort</code> (8200) — they fight and flake. Always assign a unique <code>systemPort</code>/<code>wdaLocalPort</code> per session, and store the driver in a <code>ThreadLocal</code> so threads can't stomp each other's session.
+</div>
+
+## Integrating with cloud device farms
+
+Point your driver at the farm's hub URL and pass vendor capabilities (auth + device selection). The test code is otherwise unchanged.
+
+```java
+// BrowserStack-style: URL carries credentials, caps select the device
+MutableCapabilities caps = new UiAutomator2Options()
+    .setDeviceName("Samsung Galaxy S23")
+    .setPlatformVersion("13.0")
+    .amend("bstack:options", Map.of("projectName", "checkout", "buildName", "ci-142"));
+driver = new AndroidDriver(new URL("https://USER:KEY@hub.browserstack.com/wd/hub"), caps);
+```
+
+Farms add value beyond breadth: video recording, network profiles, geolocation, device logs and parallel quotas. Sauce Labs and LambdaTest follow the same pattern with their own option namespaces.
+
+## Robust context switching (hybrid apps)
+
+WebView contexts appear asynchronously — switching blindly is a top flake source. Wait for the context, then switch.
+
+```java
+public void switchToWebView() {
+    new WebDriverWait(driver, Duration.ofSeconds(20)).until(d -> {
+        Set<String> ctx = ((SupportsContextSwitching) d).getContextHandles();
+        return ctx.stream().anyMatch(c -> c.contains("WEBVIEW"));
+    });
+    String web = ((SupportsContextSwitching) driver).getContextHandles().stream()
+        .filter(c -> c.contains("WEBVIEW")).findFirst().orElseThrow();
+    ((SupportsContextSwitching) driver).context(web);
+}
+```
+
+On Android, ensure WebView debugging is enabled in the build and a compatible ChromeDriver is available (Appium 2 can auto-download per WebView version). Always `context("NATIVE_APP")` back when done.
+
+## Performance / network throttling
+
+- **Android** — `adb shell` network and CPU controls, or Charles/mitmproxy for shaping; cloud farms expose named profiles (3G/4G/offline).
+- **iOS** — the simulator's Network Link Conditioner; real devices via the Developer settings or farm profiles.
+- Combine with `mobile: getPerformanceData` (Android: cpu, memory, battery, network) to assert resource budgets, and capture launch time and frame stats for performance gates.
+
+## App data / state setup
+
+Fast, reliable tests set state directly instead of clicking through it:
+
+- **Deep links** — launch straight to a screen: Android `adb shell am start -W -a android.intent.action.VIEW -d "myapp://cart"`.
+- **Seed via API** — create the user/cart through backend APIs before the UI test, then assert in the app.
+- **App data** — `adb shell pm clear com.example` to reset; push files with `adb push`; preset shared prefs / launch arguments.
+- **noReset/fullReset** — control whether state carries between sessions deliberately.
+
+## ADB / xcrun — the tester's toolbox
+
+```bash
+# ----- ADB (Android) -----
+adb devices                              # list connected devices/emulators
+adb install -r app.apk                   # install / reinstall
+adb uninstall com.example.app
+adb shell pm clear com.example.app       # wipe app data (clean state)
+adb shell am start -n com.example/.Main  # launch an activity
+adb shell input text "hello"             # type
+adb shell input keyevent KEYCODE_BACK    # press back
+adb logcat                               # live device logs (crash triage)
+adb shell screencap -p /sdcard/s.png && adb pull /sdcard/s.png
+adb shell svc wifi disable               # toggle radios for network tests
+adb emu gsm call 5551234                 # simulate incoming call (emulator)
+```
+
+```bash
+# ----- xcrun simctl (iOS Simulator) -----
+xcrun simctl list devices                # available simulators
+xcrun simctl boot "iPhone 15"
+xcrun simctl install booted MyApp.app
+xcrun simctl launch booted com.example.MyApp
+xcrun simctl io booted screenshot s.png
+xcrun simctl openurl booted "myapp://cart"   # deep link
+xcrun simctl spawn booted log stream         # device logs
+```
+
+These solve real test problems: `pm clear` for clean state, `logcat`/`log stream` for crash triage, `openurl`/`am start` deep links to skip navigation, radio toggles for network tests.
+
+## CI integration
+
+- **Pipeline shape** — checkout, install Appium + drivers, boot emulator/connect device (or use a cloud hub), build the app, start the Appium server, run the suite, publish reports + screenshots/video, tear down.
+- **CI emulators** — GitHub Actions / GitLab via `reactivecircus/android-emulator-runner` (Android) or macOS runners with `simctl` (iOS); or skip local devices entirely and target a cloud farm from CI.
+- **Reporting** — Allure or JUnit XML with on-failure screenshots and device logs attached so failures are diagnosable without re-running.
+- **Gating** — block merges on the suite; run the broad cloud matrix nightly and a fast smoke per PR to balance speed and coverage.
+
+## Flakiness on mobile — causes and fixes
+
+Mobile is flakier than web. Know the causes and the fix for each:
+
+- **Implicit timing / animations** → explicit waits on state, disable animations (`adb shell settings put global window_animation_scale 0`).
+- **`Thread.sleep`** → remove it; wait for conditions.
+- **State leakage between tests** → reset app data (`pm clear`), seed via API, isolate sessions.
+- **Port/session collisions in parallel** → unique `systemPort`/`wdaLocalPort`, `ThreadLocal` driver.
+- **Context-switch races (hybrid)** → wait for the WEBVIEW context before switching.
+- **Permission/system dialogs** → `autoGrantPermissions`/`autoAcceptAlerts`, or handle them explicitly.
+- **Slow/real-device variability** → generous but bounded waits; retry-on-failure ONLY for known-infra flakes, never to mask product bugs.
+- **Network variance** → control the network with profiles; assert on retry behaviour rather than wall-clock timing.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Retries hide flakiness; they don't fix it. Add a single retry for genuine infra noise, but every retried test is a bug to investigate. A suite that "passes on the second try" is not green.
+</div>
+
+## Alternatives — and when to choose them
+
+| Tool | Platform | Language | Strengths | Trade-offs |
+|---|---|---|---|---|
+| **Appium** | Android + iOS (+web) | Java/JS/Py/C#/Ruby | Cross-platform, one API, language-agnostic, huge ecosystem | Slower; client/server setup; more moving parts |
+| **Espresso** | Android only | Kotlin/Java | In-process, very fast, auto-sync with UI thread, stable | Android-only; dev-owned; needs app source |
+| **XCUITest** | iOS only | Swift/Obj-C | Native, fast, Apple-supported | iOS-only; dev-owned; needs Xcode/source |
+| **Maestro** | Android + iOS | YAML flows | Dead-simple, built-in waits, low flakiness, fast to author | Less programmatic power for complex logic |
+| **Detox** | Android + iOS (React Native) | JS | Gray-box, syncs with app idle state → very stable for RN | RN-focused; requires app instrumentation |
+
+**How to choose:** cross-platform suite owned by QA/SDET in any language → **Appium**. Dev team owning fast in-repo tests → **Espresso** (Android) / **XCUITest** (iOS). Want simple, low-flake end-to-end flows fast → **Maestro**. A **React Native** app wanting rock-solid gray-box tests → **Detox**. Many shops combine them: native tests for unit/component speed, Appium or Maestro for cross-platform E2E.
+
+## Interview questions & model answers
+
+**Q1. How do you design a framework that runs the same tests on Android and iOS?**
+Put the test logic and assertions in a shared layer, and hide platform differences in page objects behind an interface, chosen by a factory from the active platform capability. Tests never branch on platform. If developers add matching accessibility ids across both apps, one page object often serves both platforms, eliminating the per-platform implementations entirely.
+
+**Q2. How do you run mobile tests in parallel?**
+Give each thread its own Appium session targeting its own device, with unique ports — `systemPort` for Android UiAutomator2, `wdaLocalPort`/`mjpegServerPort` for iOS — and store the driver in a `ThreadLocal` so sessions never cross threads. Drive parallelism with TestNG/JUnit thread config locally, or just request N device sessions from a cloud farm. The classic bug is two sessions sharing a default port and flaking.
+
+**Q3. Why are mobile tests flakier than web, and how do you stabilize them?**
+Animations, async UI loads, system/permission dialogs, real-device variability, network jitter and parallel session collisions all add nondeterminism. Fixes: explicit waits on state (never `Thread.sleep`), disable animations, reset state per test (`pm clear` or API seeding), unique ports + `ThreadLocal` drivers, wait for the WebView context before switching, auto-handle permission dialogs, and control the network. Use at most one retry for true infra noise — never to mask product bugs.
+
+**Q4. How do you set up app state quickly and reliably?**
+Avoid clicking through setup. Use deep links (`adb shell am start ... -d "myapp://cart"` / `simctl openurl`) to jump to a screen, seed data via backend APIs before the UI test, and reset with `pm clear`. Control `noReset`/`fullReset` deliberately. This makes tests faster and far less flaky than UI-driven setup.
+
+**Q5. Which ADB commands do you actually use as a tester?**
+`adb devices` to see targets, `adb install -r` / `pm clear` for install and clean state, `am start` and deep-link intents to navigate, `input text`/`keyevent` for input, `logcat` for crash triage, `screencap`+`pull` for evidence, and radio/network toggles plus `emu gsm call` for network and interrupt testing. On iOS the `xcrun simctl` equivalents cover boot/install/launch/openurl/log/screenshot.
+
+**Q6. How do you handle context switching robustly in hybrid apps?**
+Never switch blindly. Wait until a `WEBVIEW_*` context appears in the context handles, then switch into it, do the web steps with CSS locators, and switch back to `NATIVE_APP`. Ensure WebView debugging is enabled and a compatible ChromeDriver is available on Android. Blind switching before the WebView has loaded is a top flake source.
+
+**Q7. Appium vs Espresso/XCUITest vs Maestro vs Detox — when do you pick each?**
+Appium for a cross-platform suite owned by QA in any language. Espresso (Android) and XCUITest (iOS) when the dev team owns fast, in-process tests in the app repo. Maestro when you want simple, low-flake end-to-end flows authored quickly in YAML. Detox for React Native apps wanting stable gray-box tests that sync with app idle state. They're complementary — native tools for speed, Appium/Maestro for cross-platform E2E.
+
+## Common mistakes
+
+- **Locators in tests instead of page objects** — duplication and brittle suites; keep locators private in POM.
+- **Branching on platform in tests** — push differences into page objects (or erase them with shared accessibility ids).
+- **Shared ports in parallel runs** — sessions collide; assign unique `systemPort`/`wdaLocalPort` and use `ThreadLocal` drivers.
+- **Blind context switching** — switch before the WebView exists and the test flakes; wait for the context first.
+- **Driving setup through the UI** — slow and flaky; use deep links and API seeding instead.
+- **Leaking state between tests** — no `pm clear`/reset means order-dependent failures.
+- **Masking flakiness with blanket retries** — retries hide real product bugs; investigate every retried test.
+- **Leaving animations on** — animation timing causes intermittent failures; disable them in CI.
+- **Treating Appium as the only option** — not knowing Espresso/XCUITest/Maestro/Detox signals shallow mobile experience.

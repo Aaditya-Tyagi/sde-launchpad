@@ -1,0 +1,250 @@
+---
+title: "LLD: Design a Toast / Notification System"
+track: lld
+summary: "Design a global toast system — imperative API, auto-dismiss, stacking, progress bar, and the singleton pattern in React via context."
+order: 6
+est: 25
+difficulty: medium
+priority: must
+tags: [lld, toast, notification, context, singleton, imperative-api, react]
+whyAsked: "Toast design tests imperative API design, context/provider patterns, timer management, and component lifecycle — all in one realistic system."
+followUps:
+  - "How do you call showToast() from outside a component (e.g., from an API interceptor)?"
+  - "How do you prevent duplicate toasts?"
+  - "How would you add undo functionality to a toast?"
+  - "How do you handle accessibility for toasts?"
+  - "What's the difference between using context vs a global module for the toast store?"
+resources:
+  - { label: "WAI-ARIA: Alert pattern", url: "https://www.w3.org/WAI/ARIA/apg/patterns/alert/" }
+---
+
+## Step 1: Requirements
+
+- `toast.success()`, `toast.error()`, `toast.info()` — imperative API
+- Auto-dismiss after N seconds (configurable)
+- Max N toasts visible, queue older ones
+- Manual dismiss (X button)
+- Progress bar showing remaining time
+- Pause timer on hover
+- Accessible: `role="alert"` for errors, `role="status"` for info
+
+---
+
+## Step 2: Data model
+
+```ts
+type ToastType = 'success' | 'error' | 'info' | 'warning';
+
+interface Toast {
+  id: string;
+  message: string;
+  type: ToastType;
+  duration: number;     // ms, 0 = never auto-dismiss
+  createdAt: number;
+}
+
+interface ToastStore {
+  toasts: Toast[];
+  add: (toast: Omit<Toast, 'id' | 'createdAt'>) => string;
+  remove: (id: string) => void;
+  clear: () => void;
+}
+```
+
+---
+
+## Step 3: The store — Zustand (or a simple module singleton)
+
+```ts
+import { create } from 'zustand';
+
+const useToastStore = create<ToastStore>((set) => ({
+  toasts: [],
+
+  add({ message, type, duration = 4000 }) {
+    const id = Math.random().toString(36).slice(2);
+    set(state => ({
+      toasts: [...state.toasts, { id, message, type, duration, createdAt: Date.now() }]
+        .slice(-5), // keep max 5 toasts
+    }));
+    return id;
+  },
+
+  remove(id) {
+    set(state => ({ toasts: state.toasts.filter(t => t.id !== id) }));
+  },
+
+  clear() { set({ toasts: [] }); },
+}));
+
+// Imperative API — callable anywhere (outside React)
+export const toast = {
+  success: (message: string, opts = {}) =>
+    useToastStore.getState().add({ message, type: 'success', ...opts }),
+  error: (message: string, opts = {}) =>
+    useToastStore.getState().add({ message, type: 'error', duration: 6000, ...opts }),
+  info: (message: string, opts = {}) =>
+    useToastStore.getState().add({ message, type: 'info', ...opts }),
+  warning: (message: string, opts = {}) =>
+    useToastStore.getState().add({ message, type: 'warning', ...opts }),
+  dismiss: (id: string) => useToastStore.getState().remove(id),
+};
+```
+
+---
+
+## Step 4: Individual toast with auto-dismiss + progress
+
+```tsx
+const typeConfig = {
+  success: { icon: '✓', color: '#16a34a', role: 'status' as const },
+  error:   { icon: '✕', color: '#dc2626', role: 'alert' as const },
+  info:    { icon: 'ℹ', color: '#2563eb', role: 'status' as const },
+  warning: { icon: '⚠', color: '#d97706', role: 'status' as const },
+};
+
+function ToastItem({ toast: t, onDismiss }: { toast: Toast; onDismiss: () => void }) {
+  const [progress, setProgress] = useState(100);
+  const [isPaused, setIsPaused] = useState(false);
+  const startTime = useRef(Date.now());
+  const elapsed = useRef(0);
+  const rafRef = useRef<number>();
+
+  useEffect(() => {
+    if (!t.duration || isPaused) return;
+
+    const tick = () => {
+      elapsed.current = Date.now() - startTime.current;
+      const pct = Math.max(0, 100 - (elapsed.current / t.duration) * 100);
+      setProgress(pct);
+      if (pct <= 0) { onDismiss(); return; }
+      rafRef.current = requestAnimationFrame(tick);
+    };
+
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [t.duration, isPaused, onDismiss]);
+
+  const handlePause = () => {
+    setIsPaused(true);
+    elapsed.current = Date.now() - startTime.current; // save elapsed
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+  };
+
+  const handleResume = () => {
+    startTime.current = Date.now() - elapsed.current; // adjust start so elapsed is preserved
+    setIsPaused(false);
+  };
+
+  const config = typeConfig[t.type];
+
+  return (
+    <div
+      role={config.role}
+      aria-live={t.type === 'error' ? 'assertive' : 'polite'}
+      onMouseEnter={handlePause}
+      onMouseLeave={handleResume}
+      style={{
+        display: 'flex', flexDirection: 'column',
+        background: '#1e293b', color: '#f8fafc',
+        borderRadius: 10, overflow: 'hidden',
+        minWidth: 300, boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
+        borderLeft: `4px solid ${config.color}`,
+      }}
+    >
+      {/* Content */}
+      <div style={{ display: 'flex', gap: 10, padding: '12px 14px', alignItems: 'flex-start' }}>
+        <span style={{ color: config.color, fontWeight: 700, fontSize: 16 }}>{config.icon}</span>
+        <span style={{ flex: 1, fontSize: 14 }}>{t.message}</span>
+        <button
+          onClick={onDismiss}
+          aria-label="Dismiss notification"
+          style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 16 }}
+        >×</button>
+      </div>
+      {/* Progress bar */}
+      {t.duration > 0 && (
+        <div style={{ height: 3, background: 'rgba(255,255,255,0.1)' }}>
+          <div style={{
+            height: '100%', background: config.color, width: `${progress}%`,
+            transition: 'width 0.1s linear',
+          }} />
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+---
+
+## Step 5: Toast container — the global portal
+
+```tsx
+function ToastContainer() {
+  const { toasts, remove } = useToastStore();
+
+  return createPortal(
+    <div
+      aria-label="Notifications"
+      style={{
+        position: 'fixed', bottom: 20, right: 20,
+        display: 'flex', flexDirection: 'column-reverse', gap: 10,
+        zIndex: 9999,
+        pointerEvents: 'none',  // container is click-through
+      }}
+    >
+      {toasts.map(t => (
+        <div key={t.id} style={{ pointerEvents: 'all' }}>
+          <ToastItem toast={t} onDismiss={() => remove(t.id)} />
+        </div>
+      ))}
+    </div>,
+    document.body
+  );
+}
+
+// Mount once in your app root:
+// <ToastContainer />
+
+// Use anywhere — even outside React:
+// import { toast } from './toast';
+// toast.success('Saved successfully');
+// toast.error('Upload failed', { duration: 8000 });
+```
+
+---
+
+## Edge cases to discuss
+
+**Duplicate suppression:**
+```ts
+add({ message, type, duration }) {
+  // Prevent duplicate messages of the same type
+  const isDuplicate = get().toasts.some(t => t.message === message && t.type === type);
+  if (isDuplicate) return '';
+  // ...
+}
+```
+
+**Undo toast:**
+```ts
+toast.success('Item deleted', {
+  duration: 5000,
+  action: { label: 'Undo', onClick: () => restoreItem(item) }
+});
+```
+
+**Calling from API interceptors (outside React):**
+```ts
+// axios interceptor
+axios.interceptors.response.use(null, (error) => {
+  toast.error(error.message); // Zustand store works outside React
+  return Promise.reject(error);
+});
+```
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "The toast store lives in Zustand — accessible both from React components and from outside React (API interceptors, event handlers). The `toast.success()` API is an imperative wrapper around `store.getState().add()`. Each toast item runs a `requestAnimationFrame` loop for the progress bar and supports pause-on-hover by saving elapsed time and adjusting the start time on resume. `ToastContainer` renders in a portal at `document.body` with `pointerEvents: none` on the container (so it doesn't block clicks) and `all` on each toast item."
+</div>

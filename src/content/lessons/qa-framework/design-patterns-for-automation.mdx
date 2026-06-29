@@ -1,0 +1,235 @@
+---
+title: "Design patterns for automation"
+track: qa-framework
+summary: "The design patterns interviewers actually ask about in an automation context — Page Object, Factory, Singleton (and its parallel pitfalls), Builder, Strategy, Facade, Fluent interface, Decorator, Dependency Injection — plus SOLID applied to test code, each with a concrete example."
+order: 5
+est: 30
+difficulty: hard
+priority: deep
+tags: [design-patterns, solid, factory, builder, strategy, singleton, di]
+whyAsked: "Senior automation interviews probe whether you can reason about test-code design like product code. Naming a pattern AND its tradeoff in an automation context is what separates SDET from script-writer."
+followUps:
+  - "Which patterns have you used in your framework and why?"
+  - "Why is Singleton dangerous in parallel test execution?"
+  - "How does the Builder pattern help test data?"
+  - "What does the Strategy pattern solve in automation?"
+  - "How do SOLID principles apply to test code?"
+resources:
+  - { label: "Refactoring Guru — patterns", url: "https://refactoring.guru/design-patterns" }
+  - { label: "SOLID principles", url: "https://en.wikipedia.org/wiki/SOLID" }
+  - { label: "Selenium EventFiringDecorator", url: "https://www.selenium.dev/documentation/webdriver/drivers/options/" }
+---
+
+Design patterns come up in automation interviews because **test code is production code** — it has to be maintainable, extensible, and readable, and patterns are the shared vocabulary for that. The trick is to discuss each pattern *in an automation context* with its tradeoff, not recite the Gang of Four definition. Below, each pattern is tied to where it actually shows up in a framework.
+
+## Page Object (recap as a pattern)
+
+The Page Object is itself a design pattern — an application of **encapsulation** to UI screens. Each page hides its locators and exposes user-level actions, so tests depend on behaviour, not the DOM. (Full treatment in the POM lesson.) State it as: "Page Object encapsulates a screen's structure behind an intention-revealing interface, so a UI change is localised to one class."
+
+```java
+public class LoginPage extends BasePage {
+    private final By username = By.id("user-name");
+    public InventoryPage loginAs(String u, String p) { /* ... */ }
+}
+```
+
+## Factory — driver / browser factory
+
+**Problem:** tests shouldn't know *how* to construct a Chrome vs Firefox vs remote driver. **Factory** centralises object creation behind one method, so callers ask for "a driver" by name and get the right configured instance.
+
+```java
+public final class DriverFactory {
+    public static WebDriver create(String browser) {
+        return switch (browser.toLowerCase()) {
+            case "chrome"  -> new ChromeDriver(chromeOptions());
+            case "firefox" -> new FirefoxDriver(firefoxOptions());
+            case "remote"  -> new RemoteWebDriver(gridUrl(), chromeOptions());
+            default -> throw new IllegalArgumentException("Unknown browser: " + browser);
+        };
+    }
+}
+```
+
+**Why it matters in automation:** adding a new browser is one new `case` in one place, not edits across every test; the construction (options, capabilities, grid URL) lives once. This is the single most-used creational pattern in frameworks.
+
+## Singleton — config / driver, and its pitfalls
+
+**Singleton** ensures one shared instance. It's a natural fit for **config** that's loaded once and read everywhere:
+
+```java
+public final class Config {
+    private static final Config INSTANCE = new Config();
+    private final Properties props = load();
+    private Config() {}
+    public static Config get() { return INSTANCE; }
+    public String baseUrl() { return props.getProperty("base.url"); }
+}
+```
+
+Config-as-Singleton is fine because it's immutable, read-only shared state.
+
+**The pitfall interviewers want you to catch: a Singleton *WebDriver* breaks parallel execution.** If every thread fetches the same single driver, parallel tests stomp on one browser — interleaved clicks, stale elements, nondeterministic failures. The correct construct for the driver is **`ThreadLocal`** (one instance *per thread*), which is the parallel-safe cousin of a Singleton. So: Singleton for immutable config, ThreadLocal for the driver — never a global mutable Singleton driver.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  "Use a Singleton for the WebDriver" is a trap answer. Singleton = one instance for the whole JVM, which is exactly what you must NOT have under parallelism. The right tool is <code>ThreadLocal&lt;WebDriver&gt;</code> — per-thread, not global.
+</div>
+
+## Builder — test data / request builder
+
+**Problem:** constructing a test object with many optional fields leads to telescoping constructors or a mess of setters; tests become noisy and unreadable. **Builder** assembles a complex object step by step with a fluent, readable API and sensible defaults.
+
+```java
+User user = User.builder()
+        .username("ada")
+        .email("ada@example.com")
+        .role(Role.ADMIN)         // only override what the test cares about
+        .build();                  // other fields get defaults
+```
+
+```java
+// also ideal for API request payloads
+Request req = RequestBuilder.post("/orders")
+        .header("Authorization", "Bearer " + token)
+        .body(orderJson)
+        .build();
+```
+
+**Why it matters in automation:** tests state only the data that's relevant to *that* test; defaults fill the rest, so a new field doesn't break every test. Builders make test data self-documenting and are heavily used in API testing for request construction.
+
+## Strategy — swappable algorithms / behaviours
+
+**Strategy** lets you select an interchangeable behaviour at runtime behind a common interface. In automation it shines for **swappable policies**: locator strategy, environment-specific behaviour, or payment/auth methods in a flow.
+
+```java
+interface LoginStrategy { void login(WebDriver d, User u); }
+
+class UiLogin  implements LoginStrategy { public void login(WebDriver d, User u){ /* fill form */ } }
+class ApiLogin implements LoginStrategy { public void login(WebDriver d, User u){ /* set session cookie via API */ } }
+
+class TestSetup {
+    private final LoginStrategy login;          // injected
+    TestSetup(LoginStrategy login){ this.login = login; }
+    void prepare(WebDriver d, User u){ login.login(d, u); }   // doesn't care which
+}
+```
+
+**Why it matters:** a common real use is logging in via API (fast) for setup but via UI (under test) for the actual login test — same interface, swapped strategy. New behaviour = new class, no edits to callers (Open/Closed in action).
+
+## Facade — a simple front over a complex subsystem
+
+**Facade** provides one clean entry point that hides a tangle of subsystems. In a framework, a `TestContext` / `ActionsFacade` can expose high-level operations while hiding driver, waits, and several pages underneath.
+
+```java
+public class ShopFacade {                   // one friendly API over many pages
+    private final WebDriver driver;
+    public ShopFacade(WebDriver driver){ this.driver = driver; }
+
+    public void buyItem(User u, String item) {     // hides login + browse + cart + checkout
+        InventoryPage inv = new LoginPage(driver).open().loginAs(u.user, u.pass);
+        inv.add(item);
+        inv.header.openCart().checkout().enterDetails(u).confirm();
+    }
+}
+```
+
+**Why it matters:** common multi-page journeys become one call, keeping high-level tests and step definitions terse. Note the line with POM: the Facade *orchestrates* pages; pages still own their own locators.
+
+## Fluent interface — chainable, readable flows
+
+A **Fluent interface** returns objects (often `this` or the next object) so calls chain into a sentence. POM action methods returning the next page is exactly this, and so are Builders and assertion libraries (AssertJ, Playwright `expect`).
+
+```java
+new LoginPage(driver)
+    .open()
+    .loginAs("standard_user", "secret_sauce")   // returns InventoryPage
+    .add("Sauce Labs Backpack")                 // returns InventoryPage
+    .header.openCart()                          // returns CartPage
+    .checkout();                                // returns CheckoutPage
+```
+
+**Why it matters:** readability and compile-time safety — each step's return type only exposes valid next actions.
+
+## Decorator — event-firing WebDriver
+
+**Decorator** wraps an object to add behaviour without changing it. Selenium's own **`EventFiringDecorator`** wraps a `WebDriver` to fire events (before/after click, navigate, findElement) — perfect for cross-cutting logging or screenshots on every action.
+
+```java
+WebDriver raw = new ChromeDriver();
+WebDriver driver = new EventFiringDecorator<>(new WebDriverListener() {
+    @Override public void beforeClick(WebElement el) {
+        log.info("Clicking {}", el);
+    }
+}).decorate(raw);
+// `driver` behaves like a normal WebDriver, but now logs every click
+```
+
+**Why it matters:** you add logging/metrics/screenshots uniformly to every interaction without touching a single page object — the decorator transparently wraps the same interface.
+
+## Dependency Injection — provide collaborators, don't construct them
+
+**DI** means an object receives its dependencies (driver, config, context) from outside instead of `new`-ing them internally. It's the backbone of clean, parallel-safe shared state — most visibly in Cucumber via PicoContainer, where each step class declares a shared context in its constructor and the container injects one instance per scenario.
+
+```java
+public class CheckoutSteps {
+    private final TestContext ctx;
+    public CheckoutSteps(TestContext ctx) {   // injected, not constructed here
+        this.ctx = ctx;
+    }
+}
+```
+
+**Why it matters:** DI replaces fragile static globals for shared state, makes collaborators swappable (great with Strategy), and keeps tests isolated and parallel-safe.
+
+## SOLID principles applied to test code
+
+Test code deserves the same design principles as product code.
+
+- **S — Single Responsibility.** A page object models one screen; a test verifies one behaviour; a util does one thing. A page that navigates *and* asserts *and* reads config violates this.
+- **O — Open/Closed.** Open for extension, closed for modification — add a new browser via a new Factory `case`, a new behaviour via a new Strategy class, without editing existing code or tests.
+- **L — Liskov Substitution.** Any subclass of `BasePage` must be usable wherever `BasePage` is expected; an `ApiLogin` strategy must honour the `LoginStrategy` contract so callers don't special-case it.
+- **I — Interface Segregation.** Keep interfaces focused. A page exposing a fat grab-bag of unrelated methods forces tests to depend on things they don't use; split by responsibility (component objects help here).
+- **D — Dependency Inversion.** Depend on abstractions, not concretions — tests depend on a `LoginStrategy` interface or an injected context, not on a concrete `ChromeDriver` they constructed.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  The patterns aren't independent — Factory builds the driver, Decorator wraps it, ThreadLocal isolates it per thread, DI hands it to steps, Strategy swaps behaviours, Builder shapes the data, Page Objects use it, and Fluent interfaces chain it. A good framework is these working together, each justified by a SOLID principle.
+</div>
+
+## Interview questions & model answers
+
+**1. Which patterns are in your framework and why?**
+Page Object for screen encapsulation; Factory for driver creation; ThreadLocal (parallel-safe Singleton variant) for the driver; Singleton for immutable config; Builder for test data and API requests; Strategy for swappable login (UI vs API); Decorator (EventFiringDecorator) for logging every action; Fluent interfaces for readable flows; and DI (PicoContainer) for sharing state across steps. Each solves a concrete maintainability problem, not pattern-for-pattern's-sake.
+
+**2. Why is Singleton dangerous in parallel execution?**
+A Singleton is one instance for the whole JVM. If the WebDriver is a Singleton, every parallel thread drives the same browser — interleaved actions, stale elements, nondeterministic failures. The parallel-safe construct is `ThreadLocal<WebDriver>`: one instance per thread, removed in teardown. Singleton is fine only for immutable, read-only shared state like config — never for the mutable driver.
+
+**3. How does Builder help with test data?**
+It replaces telescoping constructors and setter soup with a fluent assembler that has sensible defaults, so a test specifies only the fields it cares about and the rest default in. That makes test data readable and self-documenting, and means adding a new field doesn't break every existing test. It's also the standard way to build API request payloads.
+
+**4. What does Strategy solve in automation?**
+Swappable behaviour behind one interface chosen at runtime. The classic case is login: an `ApiLogin` strategy for fast setup and a `UiLogin` strategy when login itself is under test, both implementing `LoginStrategy`, so callers don't change. Adding a new behaviour is a new class, not an edit to callers — Open/Closed in practice.
+
+**5. Where would you use the Decorator pattern?**
+To add cross-cutting behaviour to WebDriver without touching page objects — Selenium's `EventFiringDecorator` wraps the driver to fire before/after events on click, navigate, findElement, so I can log every interaction or screenshot on each action uniformly. The decorated object still implements `WebDriver`, so nothing downstream changes.
+
+**6. What's the difference between Factory and Builder?**
+Factory decides *which* object to create and hides construction behind one call (give me a "chrome" driver). Builder assembles *one complex* object step by step with optional fields and defaults (a user with these three fields set). Factory is about choosing/encapsulating creation of a type; Builder is about readable, flexible configuration of a single instance.
+
+**7. How do SOLID principles apply to test code?**
+Single Responsibility — a page models one screen, a test checks one behaviour. Open/Closed — extend via new Factory cases or Strategy classes, don't edit existing code. Liskov — subclasses/strategies honour their base contract so callers don't special-case them. Interface Segregation — keep page/interfaces focused, split fat pages into components. Dependency Inversion — depend on injected abstractions (a strategy, a context), not concrete drivers you new up. Same discipline as product code, because test code is production code.
+
+## Common mistakes
+
+- Reciting GoF definitions instead of tying each pattern to an automation use and tradeoff.
+- Proposing a Singleton WebDriver and missing the parallel-execution failure.
+- Over-engineering — forcing patterns where a plain method would do (pattern soup).
+- Confusing Factory (choose/create a type) with Builder (configure one instance).
+- Treating test code as exempt from SOLID, then producing fat, coupled page objects.
+- Sharing state via static globals instead of Dependency Injection.
+- Putting assertions in pages, breaking Single Responsibility and reuse.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Don't lead with the pattern name — lead with the problem ("tests shouldn't know how to build a driver"), then name the pattern that solves it ("so I use a Factory"). That ordering is what reads as senior.
+</div>

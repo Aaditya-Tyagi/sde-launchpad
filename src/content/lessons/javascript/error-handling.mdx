@@ -1,0 +1,215 @@
+---
+title: "Error Handling Patterns"
+track: javascript
+summary: "Error types, try/catch/finally semantics, async error propagation, custom error classes, and the patterns that prevent silent failures."
+order: 12
+est: 18
+difficulty: medium
+priority: must
+tags: [errors, try-catch, async-errors, custom-errors, error-propagation]
+whyAsked: "Error handling is where juniors differ from seniors — juniors catch errors, seniors design for them. Interviewers look for understanding of async error propagation and the ability to design resilient systems."
+followUps:
+  - "How does error handling differ between .catch() and try/catch with await?"
+  - "What does finally do if both the try block and a return inside catch both execute?"
+  - "How do you handle errors in Promise.all when some fail and some succeed?"
+  - "Why might you create a custom Error class?"
+  - "What is an unhandled promise rejection?"
+resources:
+  - { label: "javascript.info: Error handling", url: "https://javascript.info/try-catch" }
+  - { label: "MDN: Error types", url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error" }
+---
+import JsPlayground from '../../../components/JsPlayground.astro';
+
+## The Error object hierarchy
+
+JavaScript has several built-in error types — all extend `Error`:
+
+```
+Error
+├── SyntaxError     — code couldn't be parsed
+├── ReferenceError  — accessing an undeclared variable
+├── TypeError       — wrong type for operation (null.property)
+├── RangeError      — value outside valid range (new Array(-1))
+├── URIError        — bad URI encoding/decoding
+└── EvalError       — (legacy, rarely seen)
+```
+
+Every `Error` has `name`, `message`, and `stack`. `stack` is non-standard but universally implemented.
+
+## try / catch / finally semantics
+
+<JsPlayground code={`function divide(a, b) {
+  if (b === 0) throw new RangeError("Cannot divide by zero");
+  return a / b;
+}
+
+try {
+  console.log(divide(10, 2));  // 5
+  console.log(divide(10, 0));  // throws RangeError
+  console.log("this never runs");
+} catch (err) {
+  console.log(err.name + ":", err.message);
+} finally {
+  console.log("finally always runs — cleanup here");
+}
+
+// Rethrowing — catch what you can handle, rethrow the rest
+try {
+  JSON.parse("{bad json");
+} catch (err) {
+  if (err instanceof SyntaxError) {
+    console.log("bad JSON:", err.message);
+  } else {
+    throw err; // rethrow unexpected errors
+  }
+}`} height={270} />
+
+`finally` always runs — even if the `try` block returns, or `catch` throws. Use it for cleanup (closing connections, hiding spinners). If `finally` has a `return`, it overrides any earlier `return`.
+
+## Async error propagation
+
+The key insight: `async/await` unifies error handling between sync and async code — `await` converts rejections into thrown exceptions.
+
+<JsPlayground code={`// Promise chain — errors skip .then until .catch
+Promise.reject(new Error("boom"))
+  .then(v => { console.log("skipped:", v); return v; })
+  .then(v => { console.log("also skipped"); })
+  .catch(err => console.log("caught:", err.message))
+  .finally(() => console.log("cleanup runs"));`} height={150} />
+
+```js
+// async/await — identical semantics, cleaner syntax
+async function fetchData(url) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    return await res.json();
+  } catch (err) {
+    // NetworkError from fetch, HTTP errors we threw, JSON parse errors — all caught here
+    console.error('fetch failed:', err);
+    throw err; // re-throw so caller knows it failed
+  }
+}
+```
+
+<div class="callout warn">
+  <div class="ct">The missing await trap</div>
+
+  ```js
+  async function bad() {
+    try {
+      return fetch('/api/data'); // ← missing await!
+    } catch (err) {
+      // This catch will NEVER trigger — the rejection happens after return
+    }
+  }
+  ```
+
+  Without `await`, the `try/catch` wraps only the synchronous call to `fetch()`, not the async operation. The rejection propagates outside the function entirely. Always `await` inside `try`.
+</div>
+
+## Handling parallel async work
+
+```js
+// Promise.all — one failure fails everything (fail-fast)
+try {
+  const [user, posts] = await Promise.all([fetchUser(id), fetchPosts(id)]);
+} catch (err) {
+  // if either fails, we land here — we don't know which one failed
+}
+
+// Promise.allSettled — never rejects; you inspect each result
+const results = await Promise.allSettled([fetchUser(id), fetchPosts(id)]);
+for (const result of results) {
+  if (result.status === 'fulfilled') process(result.value);
+  else log(result.reason); // per-item error, doesn't abort the others
+}
+```
+
+## Custom Error classes
+
+Extend `Error` to add domain-specific context and enable `instanceof` checks:
+
+```ts
+class AppError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+    public readonly statusCode: number = 500,
+  ) {
+    super(message);
+    this.name = this.constructor.name; // 'AppError'
+    // Fix prototype chain in TypeScript when targeting ES5
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+class ValidationError extends AppError {
+  constructor(message: string, public readonly field: string) {
+    super(message, 'VALIDATION_ERROR', 400);
+  }
+}
+
+class NotFoundError extends AppError {
+  constructor(resource: string) {
+    super(`${resource} not found`, 'NOT_FOUND', 404);
+  }
+}
+
+// In a handler:
+try {
+  await processRequest(data);
+} catch (err) {
+  if (err instanceof ValidationError) {
+    res.status(400).json({ error: err.message, field: err.field });
+  } else if (err instanceof NotFoundError) {
+    res.status(404).json({ error: err.message });
+  } else {
+    res.status(500).json({ error: 'Internal server error' });
+    logger.error(err); // log the unexpected one
+  }
+}
+```
+
+## Unhandled rejections
+
+A rejected promise with no `.catch()` (or `try/catch`) is an **unhandled rejection**. In browsers it fires `window.unhandledrejection`; in Node.js it fires `process.on('unhandledRejection')` and will terminate the process in newer versions.
+
+```js
+// Global safety net (last resort — still fix the root cause)
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled rejection at:', promise, 'reason:', reason);
+  process.exit(1);
+});
+```
+
+## The Result pattern (TypeScript)
+
+In TypeScript, some teams prefer a discriminated union return type over throw, making errors part of the function's type contract:
+
+```ts
+type Result<T, E = Error> =
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+
+async function safeParseUser(id: string): Promise<Result<User>> {
+  try {
+    const user = await db.findUser(id);
+    return { ok: true, value: user };
+  } catch (err) {
+    return { ok: false, error: err as Error };
+  }
+}
+
+const result = await safeParseUser(id);
+if (result.ok) {
+  render(result.value);  // TypeScript knows value is User
+} else {
+  showError(result.error.message);
+}
+```
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "`try/catch/finally` catches thrown values; `finally` always runs for cleanup. In async code, `await` converts rejections to thrown exceptions — but only if you actually `await` inside the `try`. `Promise.allSettled` is the right choice when you want each result independently regardless of failures. I create custom error subclasses to add typed context and enable `instanceof` discrimination in handlers. Unhandled rejections crash Node processes in modern versions, so every promise chain needs a `.catch` or an encompassing `try/catch`."
+</div>

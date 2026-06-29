@@ -1,0 +1,91 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { PROGRAMS } from '../data/curriculum';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+---
+<BaseLayout title="Choose your path · Interview Launchpad" program="home">
+  <div class="wrap chooser-wrap">
+    <div class="chooser-hero">
+      <span class="chooser-kicker">Interview Launchpad</span>
+      <h1>Choose your path</h1>
+      <p class="sub">Two complete, self-paced launchpads. Pick the one that matches the role you're going for — progress for each path is saved separately on this device.</p>
+      <a class="resume-chip hide" id="resumeChip" href={`${base}/`}></a>
+    </div>
+
+    <div class="chooser-grid">
+      {PROGRAMS.map((p) => (
+        <a class="path-card" href={`${base}${p.home}`} data-program={p.id} style={`--card-accent: var(${p.accent})`}>
+          <div class="path-top">
+            <span class="path-logo">{p.icon}</span>
+            <span class="path-badge" data-prog-badge={p.id}></span>
+          </div>
+          <h2>{p.name}</h2>
+          <div class="path-tag">{p.tagline}</div>
+          <p class="path-blurb">{p.blurb}</p>
+          <ul class="path-hl">
+            {p.highlights.map((h) => <li>{h}</li>)}
+          </ul>
+          <span class="path-cta">Enter {p.id === 'qa' ? 'QA' : 'SDE-2'} launchpad →</span>
+        </a>
+      ))}
+    </div>
+
+    <p class="chooser-foot muted">Switch paths anytime from the top of either launchpad. Everything works offline and stays in your browser.</p>
+  </div>
+
+  <style is:global>
+    .chooser-wrap { max-width: 1000px; padding-top: 40px; padding-bottom: 60px; }
+    .chooser-hero { text-align: center; max-width: 680px; margin: 0 auto 36px; }
+    .chooser-kicker { font-family: var(--mono); font-size: 12.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); }
+    .chooser-hero h1 { font-size: 40px; letter-spacing: -1px; margin: 10px 0 8px; }
+    .chooser-hero .sub { font-size: 16px; }
+    .resume-chip { display: inline-flex; align-items: center; gap: 8px; margin-top: 16px; padding: 8px 15px; border-radius: 999px; font-size: 13px; font-family: var(--mono); color: var(--text); background: var(--panel-2); border: 1px solid var(--line); text-decoration: none; transition: .15s; }
+    .resume-chip:hover { border-color: var(--accent); text-decoration: none; }
+
+    .chooser-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+    @media (max-width: 760px) { .chooser-grid { grid-template-columns: 1fr; } .chooser-hero h1 { font-size: 32px; } }
+
+    .path-card {
+      display: flex; flex-direction: column; padding: 26px 24px 24px;
+      border: 1px solid var(--line); border-radius: 18px; background: var(--panel);
+      color: var(--text); text-decoration: none; transition: .18s; position: relative; overflow: hidden;
+    }
+    .path-card::before { content: ''; position: absolute; inset: 0 0 auto 0; height: 4px; background: var(--card-accent); opacity: .9; }
+    .path-card:hover { transform: translateY(-4px); border-color: var(--card-accent); box-shadow: var(--shadow); text-decoration: none; }
+    .path-top { display: flex; justify-content: space-between; align-items: center; }
+    .path-logo { font-size: 34px; }
+    .path-badge { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+    .path-card h2 { font-size: 23px; margin: 16px 0 4px; letter-spacing: -.4px; }
+    .path-tag { font-size: 13px; color: var(--card-accent); font-weight: 600; }
+    .path-blurb { font-size: 14px; color: var(--muted); margin: 12px 0 14px; line-height: 1.6; }
+    .path-hl { list-style: none; margin: 0 0 20px; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+    .path-hl li { font-size: 13.5px; padding-left: 22px; position: relative; }
+    .path-hl li::before { content: '✓'; position: absolute; left: 0; color: var(--card-accent); font-weight: 800; }
+    .path-cta { margin-top: auto; font-family: var(--mono); font-size: 13.5px; font-weight: 700; color: var(--card-accent); }
+    .chooser-foot { text-align: center; margin-top: 30px; font-size: 13px; }
+  </style>
+
+  <script is:inline define:vars={{ base }}>
+    const store = window.SDE2;
+    try {
+      const done = store.allDone();
+      const counts = { qa: 0, sde2: 0 };
+      Object.keys(done).forEach((id) => { if (done[id]) { (id.startsWith('qa-') ? counts.qa++ : counts.sde2++); } });
+      document.querySelectorAll('[data-prog-badge]').forEach((el) => {
+        const p = el.dataset.progBadge;
+        const n = counts[p] || 0;
+        el.textContent = n > 0 ? `${n} done` : 'Not started';
+      });
+      const last = localStorage.getItem('launchpad:lastPath');
+      if (last === 'qa' || last === 'sde2') {
+        const chip = document.getElementById('resumeChip');
+        chip.textContent = last === 'qa' ? '↻ Resume QA · Automation' : '↻ Resume SDE-2';
+        chip.href = base + (last === 'qa' ? '/qa' : '/sde2');
+        chip.classList.remove('hide');
+      }
+    } catch (e) {}
+    document.querySelectorAll('[data-program]').forEach((a) => {
+      a.addEventListener('click', () => { try { localStorage.setItem('launchpad:lastPath', a.dataset.program); } catch (e) {} });
+    });
+  </script>
+</BaseLayout>

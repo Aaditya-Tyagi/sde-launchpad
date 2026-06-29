@@ -1,0 +1,181 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { getCollection } from 'astro:content';
+import { TRACKS, PLAN } from '../data/curriculum';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const programTracks = TRACKS.filter((t) => t.program === 'sde2');
+const programTrackIds = new Set(programTracks.map((t) => t.id));
+const lessons = (await getCollection('lessons')).filter((l) => !l.data.draft && programTrackIds.has(l.data.track));
+const countFor = (tid: string) => lessons.filter((l) => l.data.track === tid).length;
+const totalLessons = lessons.length;
+
+const planTaskIds: string[] = [];
+PLAN.forEach((w) => w.items.forEach((it, i) => { if (!it.lesson) planTaskIds.push(`task:${w.id}:${i}`); }));
+const lessonIds = lessons.map((l) => l.id);
+---
+<BaseLayout title="Study Plan · SDE-2 Launchpad" active="plan" program="sde2">
+  <div class="wrap" style="padding-top:28px">
+    <h1>Your study plan</h1>
+    <p class="sub">The full curriculum and the recommended week-by-week path. Check items off as you go — clicking a linked item opens the full lesson. Everything saves automatically in this browser.</p>
+
+    <!-- top dashboard -->
+    <div class="panel" style="margin-top:18px;display:flex;gap:22px;flex-wrap:wrap;align-items:center">
+      <div class="ring">
+        <svg width="96" height="96">
+          <circle cx="48" cy="48" r="42" stroke="#2a2f3d" stroke-width="8" fill="none"></circle>
+          <circle id="ringFill" cx="48" cy="48" r="42" stroke="#6ea8fe" stroke-width="8" fill="none" stroke-linecap="round" stroke-dasharray="263.9" stroke-dashoffset="263.9"></circle>
+        </svg>
+        <div class="pct" id="pctText">0%</div>
+      </div>
+      <div style="flex:1;min-width:220px">
+        <b id="doneCount" style="font-size:18px">0 / 0 done</b><br />
+        <span class="muted" id="encourage">Start with Quick Wins — it closes your known gaps in days.</span>
+        <div class="bar" style="margin-top:10px;max-width:320px"><i id="lvlBar"></i></div>
+        <span class="muted" style="font-size:12px" id="lvlText">Level 1</span>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <a class="btn btn-primary" href={`${base}/tracks`}>Browse all topics →</a>
+        <a class="btn" href={`${base}/game`}>🎮 DSA Quest</a>
+        <button class="btn" id="backupToggle">⤓ Backup / Restore</button>
+      </div>
+    </div>
+
+    <!-- backup panel -->
+    <div class="panel hide" id="backupPanel" style="margin-top:14px">
+      <h3 style="color:var(--accent);font-size:14px;margin-bottom:10px">Backup &amp; restore — move your progress between machines</h3>
+      <div class="row">
+        <button class="btn btn-primary" id="exportBtn">⬇ Export JSON backup</button>
+        <label class="btn" style="cursor:pointer">⬆ Import backup<input type="file" id="importFile" accept="application/json,.json" hidden /></label>
+        <button class="btn" id="resetBtn" style="margin-left:auto">Reset all progress</button>
+      </div>
+      <p class="muted" style="font-size:12.5px;margin-top:10px">Everything lives in this browser's localStorage. Export a JSON file to keep a permanent copy or move to another device.</p>
+    </div>
+
+    <!-- track cards -->
+    <h2 style="margin-top:34px">Learning tracks</h2>
+    <div class="grid cols-3" style="margin-top:14px">
+      {programTracks.map((t) => (
+        <a class="tcard" href={`${base}/tracks/${t.id}`}>
+          <div class="ticon">{t.icon}</div>
+          <h3>{t.name}</h3>
+          <p>{t.blurb}</p>
+          <div class="row" style="margin-top:12px;justify-content:space-between">
+            <span class="muted" style="font-size:12px">{countFor(t.id)} lessons</span>
+            <span class="muted" style="font-size:12px" data-track-prog={t.id}>0%</span>
+          </div>
+          <div class="bar" style="margin-top:6px"><i data-track-bar={t.id}></i></div>
+        </a>
+      ))}
+    </div>
+
+    <!-- 10-week plan -->
+    <h2 style="margin-top:38px">The week-by-week plan</h2>
+    <p class="sub">A recommended path. Check items off as you go — clicking a linked item opens the full lesson.</p>
+    <div style="margin-top:16px">
+      {PLAN.map((w) => (
+        <div class="panel" style="margin-bottom:12px;padding:0;overflow:hidden">
+          <div class="wk-head" data-wk={w.id} style="display:flex;align-items:center;gap:12px;padding:16px 18px;cursor:pointer">
+            <span class="badge" style="background:rgba(110,168,254,.15);color:var(--accent)">{w.title.split('—')[0].trim()}</span>
+            <div style="flex:1">
+              <b>{w.title.split('—')[1]?.trim()}</b>
+              <div class="muted" style="font-size:12.5px">{w.focus}</div>
+            </div>
+            <span class="muted" style="font-size:12px" data-wk-prog={w.id}></span>
+            <span class="chev" data-chev={w.id}>▶</span>
+          </div>
+          <div class="wk-body hide" data-wk-body={w.id} style="padding:0 18px 14px">
+            <div class="callout tip" style="margin:4px 0 12px"><div class="ct">Goal</div>{w.goal}</div>
+            {w.items.map((it, i) => {
+              const tid = it.lesson ? it.lesson : `task:${w.id}:${i}`;
+              return (
+                <label class="plan-item" data-id={tid} style="display:flex;gap:10px;align-items:flex-start;padding:9px 2px;border-top:1px solid var(--line)">
+                  <input type="checkbox" data-check={tid} />
+                  <span style="flex:1">
+                    {it.lesson ? <a href={`${base}/lessons/${it.lesson}`}>{it.text}</a> : it.text}
+                    {it.lesson && <span class="tag" style="margin-left:8px">lesson</span>}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+
+  <script define:vars={{ lessonIds, planTaskIds, trackIds: programTracks.map((t) => t.id), trackCounts: Object.fromEntries(programTracks.map((t) => [t.id, countFor(t.id)])), lessonsByTrack: Object.fromEntries(programTracks.map((t) => [t.id, lessons.filter((l) => l.data.track === t.id).map((l) => l.id)])), totalLessons }}>
+    const store = window.SDE2;
+    const allIds = lessonIds.concat(planTaskIds);
+
+    function paint() {
+      const doneAll = store.allDone();
+      const done = allIds.filter((id) => doneAll[id]).length;
+      const total = allIds.length;
+      const pct = total ? Math.round((done / total) * 100) : 0;
+      const circ = 263.9;
+      document.getElementById('ringFill').style.strokeDashoffset = String(circ - (circ * pct) / 100);
+      document.getElementById('pctText').textContent = pct + '%';
+      document.getElementById('doneCount').textContent = `${done} / ${total} done`;
+      const enc = document.getElementById('encourage');
+      enc.textContent = pct === 0 ? 'Start with Quick Wins — it closes your known gaps in days.'
+        : pct < 30 ? 'Good start. Keep the daily rhythm going.'
+        : pct < 70 ? "You're past the hump — consolidate and start mocks."
+        : pct < 100 ? 'Strong. Tighten weak spots and apply aggressively.'
+        : 'Curriculum complete. Go get the offer. 🚀';
+
+      const lp = store.levelProgress();
+      document.getElementById('lvlBar').style.width = lp.pct + '%';
+      document.getElementById('lvlText').textContent = `Level ${lp.lvl} · ${lp.xp} XP`;
+
+      trackIds.forEach((tid) => {
+        const ids = lessonsByTrack[tid] || [];
+        const d = ids.filter((id) => doneAll[id]).length;
+        const p = ids.length ? Math.round((d / ids.length) * 100) : 0;
+        const lbl = document.querySelector(`[data-track-prog="${tid}"]`);
+        const bar = document.querySelector(`[data-track-bar="${tid}"]`);
+        if (lbl) lbl.textContent = p + '%';
+        if (bar) bar.style.width = p + '%';
+      });
+
+      document.querySelectorAll('[data-check]').forEach((el) => { el.checked = !!doneAll[el.dataset.check]; });
+      document.querySelectorAll('[data-wk-prog]').forEach((el) => {
+        const body = document.querySelector(`[data-wk-body="${el.dataset.wkProg}"]`);
+        const boxes = [...body.querySelectorAll('[data-check]')];
+        const d = boxes.filter((b) => b.checked).length;
+        el.textContent = `${d}/${boxes.length}`;
+      });
+    }
+
+    document.querySelectorAll('[data-check]').forEach((el) => {
+      el.addEventListener('change', () => { store.setDone(el.dataset.check, el.checked); paint(); });
+    });
+    document.querySelectorAll('[data-wk]').forEach((h) => {
+      h.addEventListener('click', (e) => {
+        if (e.target.closest('a')) return;
+        const id = h.dataset.wk;
+        document.querySelector(`[data-wk-body="${id}"]`).classList.toggle('hide');
+        const chev = document.querySelector(`[data-chev="${id}"]`);
+        chev.style.transform = chev.style.transform ? '' : 'rotate(90deg)';
+      });
+    });
+    document.getElementById('backupToggle').addEventListener('click', () => document.getElementById('backupPanel').classList.toggle('hide'));
+    document.getElementById('exportBtn').addEventListener('click', () => {
+      const blob = new Blob([JSON.stringify(store.exportAll(), null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `sde2-launchpad-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+    });
+    document.getElementById('importFile').addEventListener('change', (e) => {
+      const f = e.target.files[0]; if (!f) return;
+      const r = new FileReader();
+      r.onload = () => { try { store.importAll(JSON.parse(r.result)); paint(); alert('Backup restored.'); } catch (err) { alert('Import failed: ' + err.message); } };
+      r.readAsText(f); e.target.value = '';
+    });
+    document.getElementById('resetBtn').addEventListener('click', () => { if (confirm('Erase ALL progress on this device? Export a backup first if unsure.')) { store.resetAll(); paint(); } });
+
+    store.onChange(paint);
+    paint();
+  </script>
+</BaseLayout>

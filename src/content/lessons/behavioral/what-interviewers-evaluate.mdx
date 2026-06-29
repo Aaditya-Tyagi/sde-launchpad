@@ -1,0 +1,114 @@
+---
+title: "What interviewers actually evaluate"
+track: behavioral
+summary: "Decode the behavioral round — the signals they grade, the red flags that sink candidates, and how leveling works."
+order: 6
+est: 20
+difficulty: easy
+priority: know
+tags: [behavioral, signals, leveling, red-flags]
+whyAsked: "If you know what the interviewer is grading, you can deliberately show it. Most candidates answer the literal question and miss the signal being scored."
+followUps:
+  - "What level do you think you're at?"
+  - "Do you have any questions for me?"
+resources:
+  - { label: "Tech Interview Handbook: behavioral", url: "https://www.techinterviewhandbook.org/behavioral-interview/" }
+  - { label: "StaffEng (engineering levels)", url: "https://staffeng.com/" }
+---
+
+The behavioral round is not a chat — it's a structured evaluation against a rubric. The interviewer is listening for specific *signals* and writing down evidence for and against each. If you understand the rubric, you stop answering the literal question and start providing the evidence they need to give you a "hire." This lesson decodes that rubric.
+
+## The signals they grade
+
+Most behavioral rubrics, whatever the company calls them, are grading some version of these. Each answer you give should deliberately demonstrate one or more:
+
+| Signal | What it looks like in your answer |
+|---|---|
+| **Collaboration** | You work *with* people, credit them, handle friction without drama. |
+| **Ownership** | You take responsibility end-to-end, including the unglamorous and the failures. |
+| **Impact** | Your work changed something measurable for users, the team, or the business. |
+| **Judgment** | You weigh tradeoffs and make defensible decisions under uncertainty. |
+| **Growth mindset** | You learn from feedback and failure; you've changed how you work. |
+| **Communication** | You're clear, concise, and structured; you read the room. |
+| **Conflict handling** | You disagree productively and preserve relationships. |
+| **Bias for action** | You move under ambiguity instead of freezing or waiting for permission. |
+
+The interviewer maps your stories onto these. A great story that demonstrates *none* of them clearly (e.g. a cool technical hack with no collaboration, judgment, or impact framing) gives weak signal. Frame every story so the signal is unmissable.
+
+## Red flags that sink candidates
+
+These are the things that produce a "no hire" even when the underlying work was good. Avoid them deliberately:
+
+- **Blaming others.** "The PM gave bad requirements," "QA missed it," "my manager made a dumb call." Ownership is the most-watched signal; deflection torpedoes it. Own your part even when others were also at fault.
+- **Vagueness.** No names, no numbers, no specific decisions. Reads as fabricated or forgettable. "We improved performance a lot" says nothing gradeable.
+- **No metrics / no impact.** If nothing measurably changed, why does the story matter? Use a concrete proxy if you lack hard numbers (see the STAR lesson).
+- **No self-awareness.** A "failure" story with no real failure, or no lesson learned. Inability to critique your past self caps your level.
+- **"We" with no "I".** The interviewer can't tell what *you* did, so they can't give *you* credit. The single most common way strong engineers under-score.
+- **Trash-talking past employers/teammates.** Signals you'll do the same about *them* later. Always frame moves and conflicts professionally.
+- **Steamrolling in conflict stories.** "I was right and they eventually agreed." Reads as poor collaboration, not strength.
+- **Rambling / no structure.** Five-minute meandering answers signal you can't communicate or prioritize — both graded skills.
+- **Rehearsed and brittle.** A memorized monologue that falls apart the moment they ask a follow-up. Know the beats, not the script.
+
+## How leveling works — the same question at three levels
+
+Interviewers don't just grade pass/fail — they calibrate your *level*. The clearest way to see it: the same question, answered at SDE-1, SDE-2, and Senior. The story can be similar; the **scope, autonomy, and reflection** differ.
+
+**Question: "Tell me about a time you improved something on your team."**
+
+- **SDE-1 (junior) answer:** "My tech lead noticed our tests were flaky, so they asked me to fix the top three. I fixed them and the suite got more stable." *Signal:* executes a well-defined task handed to them. Limited scope, no initiative, no measurement.
+
+- **SDE-2 answer:** "Our flaky tests were costing the team time, so I took it on myself. I instrumented CI to find the worst offenders, fixed them, and added a quarantine-with-retry mechanism. First-run CI pass rate went from ~70% to ~95%, saving the team an estimated few hours a week." *Signal:* spotted the problem unprompted, owned it end-to-end, measured the impact, made a design decision (quarantine). This is the SDE-2 bar: independent ownership of a meaningful, well-defined problem with measurable impact.
+
+- **Senior answer:** "Flaky CI was eroding trust in the whole pipeline. I fixed the immediate offenders, but the deeper issue was we had no ownership model for test health. I proposed and drove a policy — tests flaky beyond a threshold auto-quarantine and page the owning team — and got three teams to adopt it. Six months later CI flakiness was a non-issue org-wide, and I'd changed how the org thinks about test ownership, not just fixed the tests." *Signal:* sees the systemic root cause, influences beyond their own team, drives lasting organizational change, thinks in terms of leverage. This is the Senior/Staff bar: impact through others and through systems, not just personal output.
+
+**The progression:** *task → problem → system.* SDE-1 executes assigned tasks. SDE-2 owns whole problems independently and measures impact. Senior changes systems and influences other people and teams. To signal SDE-2 (not SDE-1), make sure your stories show **you decided what to do**, not just **you did what you were told** — and that you can name the impact.
+
+## What pushes you up a level (and what pulls you down)
+
+- **Up:** initiative (you saw it, not someone else), independent decisions with stated tradeoffs, measurable impact, influence on others, reflection that shows growth.
+- **Down:** waiting to be told, "we" with no "I", no numbers, no tradeoffs, no lesson, scope that's smaller than the level you're targeting.
+
+If you're interviewing for SDE-2, audit each story: does it show independent ownership of a *whole problem* with measurable impact? If it only shows competent execution of an assigned task, it's an SDE-1 story — reframe it around the decisions you made, or pick a better one.
+
+## A second leveling example — conflict
+
+Leveling shows up in *every* theme, not just impact. Same conflict prompt, three levels:
+
+**Question: "Tell me about a time you disagreed with a teammate on a technical decision."**
+
+- **SDE-1:** "A senior engineer wanted to use a different library than me. I explained my reasoning, but they had more experience so I went with theirs and it worked out." *Signal:* defers to seniority; limited conviction or independent judgment. Fine for junior, thin for SDE-2.
+
+- **SDE-2:** "A teammate and I disagreed on whether to build sync or async. I thought async, they thought the complexity wasn't worth it. Rather than argue from opinion, I pulled the latency data from our existing flow to show where sync would bottleneck under load. We talked it through, landed on async for the hot path and sync elsewhere, and the hybrid was better than either of our original positions." *Signal:* brings data, seeks the best answer over winning, reaches a synthesis. Solid SDE-2 conflict signal.
+
+- **Senior:** "Two engineers on my team were deadlocked on sync vs async and it was stalling the project. I stepped in not to pick a side but to reframe the decision around what we actually needed — I got us to write down the latency and complexity constraints, then the right answer was obvious to everyone. The bigger fix was that we had no lightweight way to resolve these, so I introduced a short design-doc-plus-review norm that's headed off a lot of these since." *Signal:* unblocks *others*, depersonalizes conflict, and improves the *process* so it recurs less. Senior leverage.
+
+Across both examples the pattern repeats: junior defers or executes, SDE-2 owns the decision with data, senior changes the system and lifts others.
+
+## How the round is scored after you leave
+
+Understanding the mechanics helps you optimize. Most interviewers, right after your session, write a structured debrief: a recommendation (strong hire / hire / lean hire / no hire), a proposed level, and *bullet-point evidence* for each signal — direct quotes and specifics from your stories. In a panel debrief, those notes get compared and a leveling decision is made collectively. The implication for you: give them **quotable evidence**. Concrete lines like "first-run CI pass rate went from 70% to 95%" survive into the debrief verbatim; "we made things a lot better" evaporates. You are, in effect, writing your own debrief notes through the specifics you choose to say.
+
+## Questions you should ask the interviewer
+
+The "any questions for me?" close is graded too — it signals genuine interest, seniority, and judgment. Have 2-3 real ones ready per interviewer, tailored to their role. Strong options:
+
+- **To engineers:** "What does the on-call rotation actually look like?" / "What's the most painful part of the codebase right now?" / "How do design decisions get made — RFC, consensus, tech lead?" / "What's a project you're proud of shipping here?"
+- **To the hiring manager:** "How do you measure success for someone in this role in the first six months?" / "What does growth from this level to the next look like here?" / "What's the biggest challenge facing the team this year?"
+- **About culture/process:** "How does the team balance shipping speed with code quality?" / "How are disagreements typically resolved?" / "What does the path from this level to senior look like?"
+
+Avoid: questions answered on the careers page, comp/benefits at this stage (save for the recruiter), or nothing at all — "no, I'm good" reads as disengaged. Asking a sharp, specific question is a cheap way to leave a strong final impression.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  For every story, ask "what's the signal here?" — collaboration, ownership, judgment, impact? If you can't name it, the interviewer can't grade it. Frame the story so the signal is impossible to miss.
+</div>
+
+<div class="callout warn">
+  <div class="ct">The trap</div>
+  Telling an SDE-1 story in an SDE-2 loop. "My lead asked me to do X and I did it well" demonstrates execution, not ownership. Reframe around the decision *you* made and the impact *you* measured — or it caps your level.
+</div>
+
+<div class="callout key">
+  <div class="ct">This week</div>
+  Audit your stories against the signal table and the leveling ladder. For each, name the signal it shows and confirm it's pitched at the level you're targeting. Prepare 2-3 sharp questions per interviewer type for the close.
+</div>

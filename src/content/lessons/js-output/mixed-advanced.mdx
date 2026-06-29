@@ -1,0 +1,354 @@
+---
+title: "Output Questions: Mixed & Advanced"
+track: js-output
+summary: "Predict the output — generators, class edge cases, Array methods, Object tricks, Symbol, and multi-concept combinations."
+order: 6
+est: 30
+difficulty: hard
+priority: deep
+tags: [generators, class, array-methods, object, symbol, regex, mixed]
+whyAsked: "Senior-level screens mix concepts together. These questions require reasoning across multiple JS systems simultaneously."
+followUps:
+  - "What does Array.from do with a {length} object?"
+  - "How does Symbol.toPrimitive affect coercion?"
+  - "Can you override valueOf and toString on a class?"
+  - "What happens when a generator throws?"
+resources:
+  - { label: "javascript.info: Advanced topics", url: "https://javascript.info/js" }
+---
+import JsPlayground from '../../../components/JsPlayground.astro';
+
+---
+
+## Q1 — Array method chaining output
+
+<JsPlayground code={`const nums = [1, 2, 3, 4, 5];
+
+const result = nums
+  .filter(n => n % 2 !== 0)   // keep odds
+  .map(n => n * n)             // square them
+  .reduce((acc, n) => acc + n, 0); // sum
+
+console.log(result); // ?
+
+console.log([1, [2, [3, [4]]]].flat());        // ?
+console.log([1, [2, [3, [4]]]].flat(Infinity)); // ?`} height={195} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+35
+[1, 2, [3, [4]]]
+[1, 2, 3, 4]
+```
+- Odds: `[1, 3, 5]`. Squared: `[1, 9, 25]`. Sum: `35`.
+- `.flat()` — default depth is `1`: flattens one level only.
+- `.flat(Infinity)` — recursively flattens all levels.
+</details>
+
+---
+
+## Q2 — Array.from edge cases
+
+<JsPlayground code={`console.log(Array.from('hello'));         // ?
+console.log(Array.from({ length: 3 }, (_, i) => i * 2)); // ?
+console.log(Array.from(new Set([1, 2, 2, 3]))); // ?
+console.log([...new Map([['a', 1], ['b', 2]])]); // ?`} height={155} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+['h', 'e', 'l', 'l', 'o']
+[0, 2, 4]
+[1, 2, 3]
+[['a', 1], ['b', 2]]
+```
+- `Array.from(string)` iterates characters.
+- `{length: 3}` is an array-like; the mapping function gets `(value, index)`.
+- `Set` removes duplicates; `Array.from` converts it.
+- Spreading a `Map` gives `[key, value]` pairs.
+</details>
+
+---
+
+## Q3 — Object.keys/values/entries order
+
+<JsPlayground code={`const obj = {
+  b: 2,
+  a: 1,
+  1: 'num',
+  c: 3,
+  0: 'zero',
+};
+
+console.log(Object.keys(obj));    // ?
+console.log(Object.values(obj));  // ?`} height={145} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+['0', '1', 'b', 'a', 'c']
+['zero', 'num', 2, 1, 3]
+```
+Object key ordering: **integer-like keys first** (ascending numeric), then string keys in **insertion order**. `'0'` and `'1'` come before `'b'`, `'a'`, `'c'`. This is a spec-guaranteed order since ES2015.
+</details>
+
+---
+
+## Q4 — Symbol as object key
+
+<JsPlayground code={`const id = Symbol('id');
+const obj = {
+  name: 'Alice',
+  [id]: 123,
+};
+
+console.log(obj.name);             // ?
+console.log(obj[id]);              // ?
+console.log(Object.keys(obj));     // ?
+console.log(JSON.stringify(obj));  // ?`} height={160} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+"Alice"
+123
+["name"]
+'{"name":"Alice"}'
+```
+Symbol keys are **hidden** from `Object.keys`, `for...in`, and `JSON.stringify`. They only show up in `Object.getOwnPropertySymbols()` or `Reflect.ownKeys()`. This makes them useful for private metadata on objects without risking accidental enumeration or serialization.
+</details>
+
+---
+
+## Q5 — class private fields
+
+<JsPlayground code={`class BankAccount {
+  #balance = 0;  // private field
+
+  deposit(amount) { this.#balance += amount; }
+  get balance() { return this.#balance; }
+}
+
+const acc = new BankAccount();
+acc.deposit(100);
+acc.deposit(50);
+
+console.log(acc.balance);   // ?
+console.log(acc.#balance);  // ?`} height={175} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+150
+SyntaxError: Private field '#balance' must be declared in an enclosing class
+```
+Private class fields (`#`) are truly private — accessing them from outside the class is a **SyntaxError** (caught at parse time, not a runtime error). They don't appear in `Object.keys` or via any reflection API.
+</details>
+
+---
+
+## Q6 — generator yield and return
+
+<JsPlayground code={`function* gen() {
+  yield 1;
+  yield 2;
+  return 3;
+  yield 4;  // unreachable
+}
+
+const g = gen();
+console.log(g.next()); // ?
+console.log(g.next()); // ?
+console.log(g.next()); // ?
+console.log(g.next()); // ?`} height={185} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+{ value: 1, done: false }
+{ value: 2, done: false }
+{ value: 3, done: true }
+{ value: undefined, done: true }
+```
+`yield` produces `{ value, done: false }`. `return` produces `{ value, done: true }`. Once `done: true`, all subsequent `next()` calls return `{ value: undefined, done: true }`. `yield 4` is unreachable code.
+</details>
+
+---
+
+## Q7 — Promise.race and Promise.any
+
+<JsPlayground code={`const p1 = new Promise(r => setTimeout(() => r('slow'), 200));
+const p2 = new Promise(r => setTimeout(() => r('fast'), 50));
+const p3 = Promise.reject('error');
+
+Promise.race([p1, p2, p3]).then(v => console.log('race:', v)).catch(e => console.log('race err:', e));
+Promise.any([p3, p1, p2]).then(v => console.log('any:', v)).catch(e => console.log('any err:', e));`} height={170} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+race err: error
+any: fast
+```
+- `Promise.race` resolves/rejects with the **first settled** (either fulfilled or rejected). `p3` rejects immediately → `race err: error`.
+- `Promise.any` resolves with the **first fulfilled** (ignores rejections). `p3` is rejected, then `p2` fulfills first at 50ms → `any: fast`.
+</details>
+
+---
+
+## Q8 — Symbol.toPrimitive
+
+<JsPlayground code={`const obj = {
+  [Symbol.toPrimitive](hint) {
+    if (hint === 'number') return 42;
+    if (hint === 'string') return 'hello';
+    return true;  // 'default' hint
+  }
+};
+
+console.log(+obj);        // ?
+console.log(\`\${obj}\`);    // ?
+console.log(obj + '');    // ?
+console.log(obj == true); // ?`} height={175} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+42
+"hello"
+"true"
+true
+```
+`[Symbol.toPrimitive](hint)` overrides default type coercion. `+obj` needs number → hint `'number'` → `42`. Template literal needs string → hint `'string'` → `'hello'`. `obj + ''` — `+` with a string uses hint `'default'` → `true`, then `true + '' = 'true'`. `obj == true` → both use `'default'` → `true == true` → `true`.
+</details>
+
+---
+
+## Q9 — Object.assign and spread differences
+
+<JsPlayground code={`const target = { a: 1, b: 2 };
+const source = { b: 3, c: 4 };
+
+const result1 = Object.assign(target, source);
+console.log(target === result1); // ?
+console.log(target);             // ?
+
+const obj = { a: 1, b: 2 };
+const result2 = { ...obj, ...{ b: 3, c: 4 } };
+console.log(obj);    // ?
+console.log(result2); // ?`} height={195} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+true
+{ a: 1, b: 3, c: 4 }
+{ a: 1, b: 2 }
+{ a: 1, b: 3, c: 4 }
+```
+`Object.assign` **mutates the target** and returns it — `target === result1` is `true`. Spread creates a **new object** — `obj` is untouched. Both produce the same merged result (later keys win), but `Object.assign` is destructive.
+</details>
+
+---
+
+## Q10 — class getter/setter
+
+<JsPlayground code={`class Temperature {
+  #celsius;
+
+  constructor(c) { this.#celsius = c; }
+
+  get fahrenheit() {
+    return this.#celsius * 9/5 + 32;
+  }
+
+  set fahrenheit(f) {
+    this.#celsius = (f - 32) * 5/9;
+  }
+}
+
+const t = new Temperature(0);
+console.log(t.fahrenheit);    // ?
+
+t.fahrenheit = 212;
+console.log(t.fahrenheit);    // ?
+// console.log(t.#celsius);   // ?`} height={210} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+32
+212
+```
+Getters and setters are called with property access syntax, not `()`. `t.fahrenheit` triggers the getter. `t.fahrenheit = 212` triggers the setter, converting to Celsius internally. The private `#celsius` would throw `SyntaxError` if accessed from outside.
+</details>
+
+---
+
+## Q11 — for...in vs for...of
+
+<JsPlayground code={`const arr = [10, 20, 30];
+arr.custom = 'extra';
+
+for (const k in arr) {
+  process.stdout ? process.stdout.write(k + ' ') : null;
+}
+console.log('(for..in)');
+
+for (const v of arr) {
+  process.stdout ? process.stdout.write(v + ' ') : null;
+}
+console.log('(for..of)');`} height={175} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+0 1 2 custom (for..in)
+10 20 30 (for..of)
+```
+`for...in` iterates **all enumerable property keys** (including inherited ones and added properties like `custom`). `for...of` uses the **iterator protocol** — for arrays this iterates **values** only, ignoring non-numeric properties. Never use `for...in` on arrays.
+</details>
+
+---
+
+## Q12 — the multi-concept boss question
+
+<JsPlayground code={`const arr = [1, 2, 3];
+
+const doubled = arr.map(async (n) => n * 2);
+
+console.log(doubled);          // ?
+console.log(doubled[0]);       // ?
+
+Promise.all(doubled).then(v => console.log(v)); // ?
+
+console.log('sync done');`} height={175} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+[Promise, Promise, Promise]
+Promise { <pending> }
+sync done
+[2, 4, 6]
+```
+`async` functions always return a Promise, even when the body is synchronous. `arr.map(async …)` produces an array of Promises, not values. To get the values, you must `await Promise.all(doubled)`. `'sync done'` runs immediately; the `Promise.all` resolution logs after the current task + microtask queue drains.
+</details>
+
+<div class="callout key">
+  <div class="ct">Senior-level reminder</div>
+  When multiple concepts overlap in one question, decompose them: <em>what is the type of each value?</em> → <em>what does this operator do to these types?</em> → <em>what queue does this async work go on?</em> Answer each sub-question in order. Don't guess — trace.
+</div>

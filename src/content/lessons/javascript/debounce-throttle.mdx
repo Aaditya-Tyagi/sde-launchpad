@@ -1,0 +1,148 @@
+---
+title: "Debounce & Throttle — implement from scratch"
+track: javascript
+summary: "Two patterns every frontend engineer must be able to implement cold: what they do, when each fits, and the code."
+order: 7
+est: 20
+difficulty: medium
+priority: must
+tags: [debounce, throttle, performance, closures, timers]
+whyAsked: "Implementing debounce is one of the top-5 most common JS coding questions. It tests closures, timers, and practical knowledge in one small function. Throttle usually follows as a variant."
+followUps:
+  - "What's the difference between debounce and throttle?"
+  - "How do you implement a leading-edge debounce (fire immediately, then wait)?"
+  - "How would you add a cancel method to your debounce?"
+  - "Where in a real app would you use each?"
+  - "How does lodash's debounce differ from a naive implementation?"
+resources:
+  - { label: "CSS-Tricks: Debouncing and Throttling", url: "https://css-tricks.com/debouncing-throttling-explained-examples/" }
+---
+import JsPlayground from '../../../components/JsPlayground.astro';
+
+**Debounce** delays execution until a pause in events — fire only after the user *stops* triggering events for X ms. **Throttle** limits rate — fire at most once every X ms regardless of how fast events arrive.
+
+A mnemonic: debounce = **elevator door** (keeps reopening as people walk in; only closes after no one enters for a moment). Throttle = **shooting a machine gun** (fires at a fixed rate no matter how fast you pull the trigger).
+
+## Debounce — implementation
+
+The key insight: every call clears the previous timer and starts a fresh one. Only when the timer actually fires does the wrapped function run.
+
+<JsPlayground code={`function debounce(fn, ms) {
+  let timerId;
+  return function (...args) {
+    clearTimeout(timerId);                 // reset on every call
+    timerId = setTimeout(() => {
+      fn.apply(this, args);               // call with correct this + args
+    }, ms);
+  };
+}
+
+// Demo: only logs once after calls stop for 300ms
+const log = debounce((v) => console.log('debounced:', v), 300);
+log('a'); log('b'); log('c');            // only 'c' fires after 300ms
+setTimeout(() => log('d'), 400);         // 'd' fires separately`} height={220} />
+
+Real uses: search-box input (wait for user to stop typing before fetching), window resize handler, form auto-save.
+
+## Debounce with leading edge
+
+Sometimes you want to fire **immediately** on the first call, then silence until the burst ends:
+
+```js
+function debounce(fn, ms, { leading = false } = {}) {
+  let timerId;
+  let hasLeadFired = false;
+
+  return function (...args) {
+    if (leading && !timerId) {
+      fn.apply(this, args);     // fire immediately on first call
+      hasLeadFired = true;
+    }
+    clearTimeout(timerId);
+    timerId = setTimeout(() => {
+      timerId = null;
+      hasLeadFired = false;
+      if (!leading) fn.apply(this, args);
+    }, ms);
+  };
+}
+```
+
+## Debounce with cancel
+
+A `.cancel()` method is often asked for as a follow-up:
+
+```js
+function debounce(fn, ms) {
+  let timerId;
+  function debounced(...args) {
+    clearTimeout(timerId);
+    timerId = setTimeout(() => fn.apply(this, args), ms);
+  }
+  debounced.cancel = () => clearTimeout(timerId);
+  return debounced;
+}
+```
+
+## Throttle — implementation
+
+Record **when** the function last ran. On each call, check if enough time has passed; if yes, run it and update the timestamp.
+
+<JsPlayground code={`function throttle(fn, ms) {
+  let lastTime = 0;
+  return function (...args) {
+    const now = Date.now();
+    if (now - lastTime >= ms) {
+      lastTime = now;
+      fn.apply(this, args);
+    }
+  };
+}
+
+// Demo: even if called 10 times rapidly, only fires ~once per 200ms
+const log = throttle((v) => console.log('throttled at', Date.now() % 10000), 200);
+for (let i = 0; i < 5; i++) log(i);   // only first call fires
+setTimeout(() => log('later'), 250);   // fires — 250ms has passed`} height={230} />
+
+Real uses: scroll event handlers, mouse-move tracking, game input loops, rate-limiting API calls.
+
+## Throttle with trailing call (timer variant)
+
+The timestamp approach drops trailing calls. If you want the **last** call in a burst to always fire, combine a timestamp with a timer:
+
+```js
+function throttle(fn, ms) {
+  let lastTime = 0;
+  let timerId;
+  return function (...args) {
+    const now = Date.now();
+    const remaining = ms - (now - lastTime);
+    clearTimeout(timerId);
+    if (remaining <= 0) {
+      lastTime = now;
+      fn.apply(this, args);
+    } else {
+      timerId = setTimeout(() => {
+        lastTime = Date.now();
+        fn.apply(this, args);
+      }, remaining);
+    }
+  };
+}
+```
+
+## When to reach for each
+
+| Situation | Use |
+|---|---|
+| Search box — fetch after user stops typing | **Debounce** |
+| Window resize — recalculate layout | **Debounce** |
+| Scroll position tracking | **Throttle** |
+| Mouse-move tooltip | **Throttle** |
+| Button that must not double-fire | **Debounce** (leading) |
+| Game loop / animation frame rate cap | **Throttle** |
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Debounce delays execution until events stop — each call resets a timer; only when the timer fires does the function run. Throttle limits frequency — it checks if enough time has passed since the last call. Both are closures over a timer or timestamp. I use debounce for search inputs and form auto-save, throttle for scroll and mouse-move handlers."
+</div>

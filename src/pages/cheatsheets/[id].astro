@@ -1,0 +1,102 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { CHEATSHEETS } from '../../data/cheatsheets';
+
+export function getStaticPaths() {
+  return CHEATSHEETS.map((c) => ({ params: { id: c.id }, props: { sheet: c } }));
+}
+const { sheet } = Astro.props;
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+---
+<BaseLayout title={`${sheet.title} cheat sheet · SDE-2 Launchpad`} active="cheatsheets">
+  <div class="wrap" style="padding-top:28px;max-width:820px">
+    <div class="cs-top no-print">
+      <a href={`${base}/cheatsheets`} class="cs-back">← All cheat sheets</a>
+      <button class="btn btn-primary" id="csPrint">🖨 Print / Save PDF</button>
+    </div>
+
+    <div class="sheet" id="sheet">
+      <div class="cs-head">
+        <span class="cs-head-ico">{sheet.icon}</span>
+        <div>
+          <h1 style="margin:0">{sheet.title}</h1>
+          <p class="cs-sub">{sheet.blurb}</p>
+        </div>
+      </div>
+
+      <div class="cs-cols">
+        {sheet.sections.map((s) => (
+          <section class="cs-section">
+            <h2 class="cs-sh">{s.h}</h2>
+            {s.note && <p class="cs-note">{s.note}</p>}
+            {s.kv && (
+              <table class="cs-table cs-kv"><tbody>
+                {s.kv.map((row) => <tr><th>{row[0]}</th><td set:html={row[1]} /></tr>)}
+              </tbody></table>
+            )}
+            {s.table && (
+              <table class="cs-table">
+                <thead><tr>{s.table.cols.map((c) => <th>{c}</th>)}</tr></thead>
+                <tbody>{s.table.rows.map((r) => <tr>{r.map((cell) => <td>{cell}</td>)}</tr>)}</tbody>
+              </table>
+            )}
+            {s.list && <ul class="cs-list">{s.list.map((i) => <li>{i}</li>)}</ul>}
+            {s.code && <pre class="cs-code"><code>{s.code.src}</code></pre>}
+          </section>
+        ))}
+      </div>
+
+      <div class="cs-foot">SDE-2 Launchpad · {sheet.title} cheat sheet</div>
+    </div>
+  </div>
+
+  <style is:global>
+    .cs-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; gap:12px; }
+    .cs-back { font-size:13.5px; color:var(--muted); text-decoration:none; }
+    .cs-back:hover { color:var(--text); }
+
+    .cs-head { display:flex; gap:14px; align-items:center; margin-bottom:18px; }
+    .cs-head-ico { font-size:36px; }
+    .cs-sub { color:var(--muted); font-size:14px; margin-top:3px; }
+
+    .cs-cols { columns:2; column-gap:18px; }
+    @media (max-width:680px){ .cs-cols { columns:1; } }
+    .cs-section { break-inside:avoid; -webkit-column-break-inside:avoid; border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin-bottom:16px; background:var(--panel); display:inline-block; width:100%; box-sizing:border-box; }
+    .cs-sh { font-size:14px; font-weight:700; color:var(--accent); margin:0 0 8px; letter-spacing:-.2px; }
+    .cs-note { font-size:12px; color:var(--muted); font-style:italic; margin:0 0 8px; line-height:1.45; }
+
+    .cs-table { width:100%; border-collapse:collapse; font-size:12.5px; }
+    .cs-table th, .cs-table td { text-align:left; padding:5px 8px; border:1px solid var(--line); vertical-align:top; line-height:1.4; }
+    .cs-table thead th { background:var(--panel-3); color:var(--text); font-weight:700; }
+    .cs-kv th { width:42%; color:var(--text); font-weight:600; background:rgba(255,255,255,.02); }
+    .cs-kv td { color:var(--muted); }
+
+    .cs-list { margin:0; padding-left:18px; }
+    .cs-list li { font-size:12.8px; line-height:1.55; margin-bottom:5px; }
+
+    .cs-code { background:#0b0e16; border:1px solid var(--line); border-radius:8px; padding:11px 12px; margin:0; overflow-x:auto; }
+    .cs-code code { font-family:var(--mono); font-size:12px; line-height:1.5; color:var(--text); white-space:pre; }
+
+    .cs-foot { margin-top:6px; font-size:11px; color:var(--faint); font-family:var(--mono); text-align:center; }
+
+    /* ── print ── */
+    @media print {
+      .topnav, footer.site, .cmdk-overlay, .no-print { display:none !important; }
+      body, main { background:#fff !important; }
+      .wrap { padding:0 !important; max-width:100% !important; }
+      .sheet, .sheet * { color:#111 !important; }
+      .cs-sh { color:#1a1a6e !important; }
+      .cs-section { border:1px solid #ccc !important; background:#fff !important; box-shadow:none; }
+      .cs-table th, .cs-table td { border:1px solid #bbb !important; }
+      .cs-table thead th, .cs-kv th { background:#f0f0f0 !important; }
+      .cs-code { background:#f5f5f5 !important; border:1px solid #ddd !important; }
+      .cs-code code { color:#111 !important; }
+      .cs-sub, .cs-note, .cs-foot { color:#555 !important; }
+      @page { margin:1.2cm; }
+    }
+  </style>
+
+  <script>
+    document.getElementById('csPrint')?.addEventListener('click', () => window.print());
+  </script>
+</BaseLayout>

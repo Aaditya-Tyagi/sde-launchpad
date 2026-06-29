@@ -1,0 +1,245 @@
+---
+title: "The behavioral question bank"
+track: behavioral
+summary: "40+ common behavioral questions by theme, each with what it's really testing and a strong answer skeleton."
+order: 5
+est: 28
+difficulty: medium
+priority: must
+tags: [behavioral, questions, star, preparation]
+whyAsked: "Behavioral rounds recycle the same questions. Knowing what each one is really probing — and having a story ready — turns the round from a minefield into a layup."
+followUps:
+  - "Can you give me another example?"
+  - "What would you do differently?"
+  - "How did the other person react?"
+resources:
+  - { label: "Tech Interview Handbook: behavioral", url: "https://www.techinterviewhandbook.org/behavioral-interview/" }
+  - { label: "Amazon Leadership Principles", url: "https://www.amazon.jobs/content/en/our-workplace/leadership-principles" }
+---
+
+Behavioral questions are not infinite — they cluster into about a dozen themes, and the same prompts recur across companies. This bank lists 40+ of the most common, grouped by theme. For each: **what it's really testing**, and either a strong sample answer or a concrete skeleton to map your own story onto.
+
+Don't memorize answers verbatim. Use this to (1) make sure every theme is covered by one of your 6-8 prepared stories, and (2) understand the *signal* behind each question so you emphasize the right beat. Pair this with the STAR lesson for structure.
+
+## How to use this bank
+
+For each question, ask yourself: *which of my stories answers this, and what's my one-line opener?* If a theme has no story behind it, that's your gap — go mine one. The goal is that any question here triggers an instant "I'll use my X story" reflex.
+
+## Conflict & disagreement
+
+**1. Tell me about a time you disagreed with a teammate.**
+*Testing:* collaboration, judgment, ego control. They want to see you disagree *and* preserve the relationship.
+*Skeleton:* State the disagreement neutrally → explain you sought to understand their view first → brought data or a shared goal → reached a decision together → good outcome. Avoid "I was right."
+
+**2. Tell me about a time you disagreed with your manager.**
+*Testing:* backbone without insubordination. Can you push up respectfully?
+*Sample:* "My manager wanted to ship the feature without a feature flag to hit the date. I was uneasy about an un-reversible rollout, so I laid out the rollback risk and proposed flagging it, which added half a day. I framed it as protecting the date *and* the launch. He agreed, we flagged it, and when we found a bug post-launch we turned it off in seconds instead of doing an emergency rollback."
+
+**3. Tell me about a time you had a conflict with a PM or stakeholder.**
+*Testing:* cross-functional collaboration, translating engineering concerns into business terms.
+*Skeleton:* PM pushed scope/timeline → you reframed in terms of risk/cost the PM cared about → found a middle path (cut scope, phased delivery) → relationship intact.
+
+**4. How do you handle disagreement when you can't reach consensus?**
+*Testing:* disagree-and-commit maturity. (See the dedicated question below.)
+
+**5. Tell me about a time you received critical feedback in a code review or design review.**
+*Testing:* ego, growth mindset. Did you get defensive or get better?
+*Skeleton:* The critique → your initial reaction (honest) → how you engaged with it → what you changed → how it improved the work.
+
+## Failure & mistakes
+
+**6. Tell me about a time you failed.**
+*Testing:* honesty, self-awareness, growth. A real failure beats a humble-brag.
+*Sample:* "I shipped a migration without a dry run on production-sized data. It worked in staging but timed out on the real table and locked it for several minutes during business hours. I owned it immediately in the incident channel, rolled back, and re-ran it batched overnight. Afterward I added a 'test on prod-scale data' step to our migration checklist — which caught a similar issue two months later."
+
+**7. Tell me about a bug you caused in production.**
+*Testing:* ownership, incident handling, learning. The trap is blaming the process or someone else.
+*Skeleton:* What broke → how you found out → how you mitigated *fast* → root cause → the systemic fix so it can't recur. Emphasize the fast mitigation and the prevention.
+
+**8. Tell me about a decision you got wrong.**
+*Testing:* judgment and reflection. Show you can evaluate your own past choices.
+*Skeleton:* The decision and your reasoning *at the time* → what you learned later → what you'd weigh differently now. Don't pretend it was obvious in hindsight.
+
+**9. Tell me about a project that didn't go as planned.**
+*Testing:* adaptability, ownership under adversity.
+*Skeleton:* The plan → what went sideways → how you adjusted → outcome (even if mixed) → lesson.
+
+**10. What's the biggest mistake you've made in your career?**
+*Testing:* whether you can be vulnerable and still come across as competent.
+*Tip:* Pick something real but not disqualifying (not "I committed fraud"). The recovery and lesson are the point.
+
+## Ownership & initiative
+
+**11. Tell me about something you owned end to end.**
+*Testing:* scope, autonomy, follow-through — core SDE-2 signal.
+*Skeleton:* You owned X (design → build → ship → operate) → key decisions you made alone → result → ongoing ownership (you still maintain/improve it).
+
+**12. Tell me about a time you went beyond your job description.**
+*Testing:* ownership, initiative. They want someone who fixes problems they "weren't assigned."
+*Sample:* "Our flaky test suite was costing every engineer ~30 min a day in re-runs. Nobody owned it. I spent a Friday categorizing the top flaky tests, fixed the worst offenders, and added retry-with-quarantine for the rest. CI pass rate went from ~70% to ~95% on first run. It wasn't my project — it was just slowing everyone down."
+
+**13. Tell me about a time you saw a problem and fixed it without being asked.**
+*Testing:* bias for action, ownership.
+*Skeleton:* Spotted the problem → quantified the cost → took initiative → result. Same shape as #12.
+
+**14. Tell me about a time you took on something outside your comfort zone.**
+*Testing:* growth, willingness to stretch.
+*Skeleton:* Unfamiliar area → how you ramped → outcome → what you can now do that you couldn't before.
+
+## Ambiguity & learning fast
+
+**15. Tell me about a time you had to make a decision with incomplete information.**
+*Testing:* judgment under uncertainty, bias for action.
+*Skeleton:* The ambiguity → how you reduced it (gathered what data you could, made it reversible) → the call you made → outcome → how you'd validate. Emphasize that you didn't freeze.
+
+**16. Tell me about a time you had to learn something new quickly.**
+*Testing:* learning ability, resourcefulness.
+*Sample:* "I was handed an on-call rotation for a Kafka pipeline I'd never touched, two days before. I read the runbooks, paired with the previous owner for an hour, traced one end-to-end flow myself, and wrote a one-pager of the failure modes. When it paged me that weekend, I diagnosed a consumer-lag issue from my own notes."
+
+**17. Tell me about a time you were given a vague or ambiguous task.**
+*Testing:* can you create structure where there is none?
+*Skeleton:* Vague mandate → how you clarified scope (asked questions, proposed a concrete plan, got buy-in) → executed → result.
+
+**18. Tell me about a time requirements changed mid-project.**
+*Testing:* adaptability, communication.
+*Skeleton:* The change → impact you flagged → how you re-planned → delivered.
+
+## Leadership & influence
+
+**19. Tell me about a time you influenced without authority.**
+*Testing:* the core senior-engineer skill — getting people to do things you can't order them to do.
+*Sample:* "I thought we should adopt typed APIs across services but I was a mid-level IC with no mandate. I built a small proof-of-concept on one endpoint, showed the bug it would have caught in a recent incident, and wrote a one-page proposal. I got two senior engineers to co-sign it before bringing it to the team. It was adopted as a standard the next quarter."
+
+**20. Tell me about a time you drove a decision across multiple teams.**
+*Testing:* cross-team leadership, alignment.
+*Skeleton:* The cross-team problem → how you got stakeholders aligned (shared doc, meeting, data) → drove to a decision → executed.
+
+**21. Tell me about a time you had to convince someone who disagreed with you.**
+*Testing:* persuasion, listening.
+*Skeleton:* Their position → you understood *why* → addressed their actual concern with evidence → won them over (or found a better synthesis).
+
+**22. Tell me about a time you led a project.**
+*Testing:* technical leadership, planning, coordination.
+*Skeleton:* The project and your leadership role → how you broke it down and delegated → how you handled a snag → result → team impact.
+
+## Feedback, mentoring & growing others
+
+**23. Tell me about a time you gave difficult feedback to a peer.**
+*Testing:* directness with empathy, raising the bar.
+*Sample:* "A teammate's PRs were consistently huge and hard to review, slowing everyone down. I raised it privately, framed around impact ('reviews are taking days and I think smaller PRs would unblock you faster'), and suggested splitting by layer. He started shipping smaller PRs and his merge time dropped a lot. Keeping it private and specific kept it from feeling like an attack."
+
+**24. Tell me about a time you mentored someone.**
+*Testing:* force multiplication — a key senior signal.
+*Skeleton:* Who you mentored and on what → how you taught (paired, gave stretch work, reviewed) → their growth (concrete: they now own X) → what you learned about mentoring.
+
+**25. Tell me about a time you helped a struggling teammate.**
+*Testing:* empathy, team-first instinct.
+*Skeleton:* You noticed they were stuck/overwhelmed → approached supportively → concrete help (paired, took load off, unblocked) → they recovered → outcome. Don't make them look bad.
+
+**26. Tell me about a time you received feedback and acted on it.**
+*Testing:* coachability, growth mindset.
+*Skeleton:* The feedback → you took it seriously → specific change you made → measurable improvement. "I was told my design docs were too long; I started leading with a one-paragraph summary and got faster sign-off."
+
+## Prioritization & tradeoffs
+
+**27. Tell me about a time you had to prioritize competing tasks.**
+*Testing:* judgment, focus, communication of tradeoffs.
+*Skeleton:* The competing demands → your framework for ranking (impact, deadlines, dependencies) → the call → how you communicated it → outcome.
+
+**28. Tell me about a time you had to say no.**
+*Testing:* backbone, focus, protecting the team's bandwidth.
+*Sample:* "A stakeholder wanted a custom report that would've taken a week and served one user. I said no to the bespoke build but offered a self-serve export that covered 80% of the need in a day. Saying no to the literal ask while solving the real need kept the relationship good."
+
+**29. Tell me about a time you had to cut scope.**
+*Testing:* pragmatism, shipping over gold-plating.
+*Skeleton:* The deadline pressure → what you cut and why (kept the core, deferred the nice-to-haves) → shipped on time → followed up on the cut parts.
+
+**30. Tell me about a time you made a tradeoff between speed and quality.**
+*Testing:* engineering judgment.
+*Skeleton:* The situation → how you decided where speed was OK and where it wasn't → the explicit tradeoff (e.g. shipped with a known-acceptable limitation, tracked the debt) → outcome.
+
+## Deadlines & pressure
+
+**31. Tell me about a time you were going to miss a deadline.**
+*Testing:* communication, ownership — *do you raise it early or hide it?*
+*Sample:* "Two weeks before a launch I realized a dependency wouldn't be ready in time. Instead of hoping, I raised it immediately with options: slip a week, cut the dependent feature, or ship a stubbed version. We chose to ship the core on time and fast-follow the rest. The early flag is what made that possible — surprising people at the deadline would've been the real failure."
+
+**32. Tell me about a time you worked under significant pressure.**
+*Testing:* composure, prioritization under stress.
+*Skeleton:* The high-stakes situation (incident, crunch) → how you stayed organized and calm → what you focused on → outcome.
+
+**33. Tell me about a time you had to deliver under a tight timeline.**
+*Testing:* execution, scoping.
+*Skeleton:* Tight timeline → how you scoped to fit → what you parallelized/cut → delivered → result.
+
+## Disagree and commit, risk, judgment
+
+**34. Tell me about a time you disagreed with a decision but went along with it.**
+*Testing:* disagree-and-commit maturity — you can lose an argument gracefully and still execute fully.
+*Sample:* "I argued for building our own auth instead of a vendor. The team chose the vendor for speed. I disagreed, but once the call was made I committed fully — I led the integration and made it solid rather than half-heartedly proving my point. It turned out fine, and frankly the speed mattered more than I'd weighted it."
+
+**35. Tell me about a time you took a calculated risk.**
+*Testing:* judgment, ownership of outcomes.
+*Skeleton:* The risk and the upside → how you de-risked it (small, reversible, monitored) → outcome → what you learned about your risk calibration.
+
+**36. Tell me about a time you had to make an unpopular decision.**
+*Testing:* backbone, conviction.
+*Skeleton:* The decision → why it was right despite being unpopular → how you communicated it → outcome.
+
+**37. Tell me about a time your judgment was tested.**
+*Testing:* decision quality under ambiguity.
+*Skeleton:* The hard call → the factors you weighed → your reasoning → outcome and reflection.
+
+## Self-awareness & motivation
+
+**38. What's your biggest weakness?**
+*Testing:* self-awareness and whether you're actively working on it. Avoid fake weaknesses ("I work too hard").
+*Sample:* "Historically I've under-communicated progress — I'd go heads-down and resurface with the finished thing, which made stakeholders nervous. I've been deliberately fixing it: I now post a short async update mid-project and I've gotten direct feedback that it's made me easier to work with. It's still something I'm consciously practicing." *(Real weakness + active remediation + evidence.)*
+
+**39. What's your greatest strength?**
+*Testing:* self-awareness and fit. Pick a strength relevant to the role and prove it with a one-line example.
+
+**40. Tell me about your proudest accomplishment.**
+*Testing:* what you value, scope of impact.
+*Tip:* Pick something with real impact you can quantify, and make clear *why* you're proud (the hard part, not just the outcome).
+
+**41. Why are you looking to leave your current role?**
+*Testing:* motivation, professionalism. Never badmouth your employer.
+*Tip:* Frame as moving *toward* growth ("I want bigger scale / more ownership / a new domain"), not away from problems.
+
+**42. Where do you see yourself in a few years?**
+*Testing:* ambition, alignment with the role's trajectory.
+*Tip:* Aim for "growing into a senior IC / tech lead solving harder problems," ideally connected to what this company offers.
+
+## Company & role fit
+
+**43. Why do you want to work here?**
+*Testing:* genuine interest and that you did your homework.
+*Tip:* Name something *specific* — their product, an engineering blog post, a problem they solve at scale — and connect it to your stated direction. Generic answers ("great culture") read as filler.
+
+**44. Why this role specifically?**
+*Testing:* fit between your goals and the actual job.
+*Tip:* Tie the role's scope to your "Future" beat from your pitch. Specificity = sincerity.
+
+**45. What are you looking for in your next team?**
+*Testing:* fit, self-knowledge.
+*Tip:* Describe what genuinely matters to you (ownership, mentorship, technical depth) — but check it aligns with what they offer.
+
+## Questions that combine themes
+
+Some prompts deliberately blend themes — "tell me about a hard project where you also had a disagreement." For these, pick your richest multi-theme story and structure the Action to hit both beats. This is why a few deep stories beat many shallow ones (see the STAR lesson's theme matrix).
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Before each interview, scan this bank and confirm every theme is covered by one of your 6-8 stories. The gap you find is exactly the question that will catch you off guard.
+</div>
+
+<div class="callout warn">
+  <div class="ct">The trap</div>
+  Don't have a *different* answer memorized for all 45. You'll never recall the right one under pressure. Map them onto a small set of deeply-known stories instead, and know which story each question pulls.
+</div>
+
+<div class="callout key">
+  <div class="ct">This week</div>
+  Go through all 45, write the story-name and one-line opener you'd use for each, and flag any with no story behind them. Mine a story for every flag. By the end you should be able to answer any of these within five seconds of hearing it.
+</div>

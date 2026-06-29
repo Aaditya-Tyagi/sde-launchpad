@@ -1,0 +1,244 @@
+---
+title: "Data structures for testers"
+track: qa-programming
+summary: "The pragmatic data structures an SDET actually uses — arrays/lists, the HashMap/Set workhorse, stacks and queues — plus parse-and-assert tasks over logs and JSON."
+order: 5
+est: 24
+difficulty: medium
+priority: deep
+tags: [data-structures, hashmap, set, stack, queue, json]
+whyAsked: "SDET coding and design questions lean on a handful of structures. Knowing when to reach for a HashMap vs a List, and parsing real data to assert on it, is everyday test-tooling work."
+followUps:
+  - "When would you use a Set instead of a List?"
+  - "Which structure gives O(1) lookup?"
+  - "How would you detect balanced brackets?"
+  - "Parse this log and count errors per service."
+resources:
+  - { label: "Big-O cheat sheet", url: "https://www.bigocheatsheet.com/" }
+  - { label: "Java Collections overview", url: "https://docs.oracle.com/javase/tutorial/collections/" }
+  - { label: "Python data structures", url: "https://docs.python.org/3/tutorial/datastructures.html" }
+---
+
+You don't need a CS-textbook tour of red-black trees. As an SDET you need a *small* set of structures, deep knowledge of **when** to use each, and the ability to **parse real data and assert on it**. This lesson is deliberately pragmatic — the structures you'll actually reach for in test tooling.
+
+## The cheat table — pick the right structure
+
+| Structure | Lookup | Use it for | In test tooling |
+|---|---|---|---|
+| Array / List | O(n) search, O(1) index | Ordered sequence, duplicates ok | Steps, rows of test data, results |
+| HashMap / dict | O(1) get/put | Key → value, counting | Test data, config, frequency counts |
+| HashSet / set | O(1) contains | Uniqueness, "seen it?" | Dedupe IDs, visited URLs |
+| Stack (LIFO) | O(1) push/pop | Reverse order, nesting | Undo, bracket matching, DFS |
+| Queue (FIFO) | O(1) enqueue/dequeue | First-in-first-out | Task/job processing, BFS, retries |
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  When a problem says "count", "group by", "have I seen this", "look up by id", or "find the complement" — reach for a HashMap or Set. They turn O(n²) scans into O(n) passes and are the SDET's most-used structures by far.
+</div>
+
+## Arrays and lists
+
+Ordered, indexable, allow duplicates. Your default for "a sequence of things."
+
+```python
+results = []                 # list
+results.append("PASS")       # O(1) amortized at end
+results[0]                    # O(1) index access
+"FAIL" in results            # O(n) membership search
+for r in results: ...        # iterate
+```
+
+```java
+List<String> results = new ArrayList<>();
+results.add("PASS");         // O(1) amortized
+results.get(0);              // O(1)
+results.contains("FAIL");    // O(n)
+```
+
+Use a List when order matters and you may have duplicates. If you need fast membership, switch to a Set.
+
+## HashMap and Set — the workhorses
+
+### HashMap / dict — lookup and counting
+
+```python
+# group test results by status
+from collections import defaultdict
+groups = defaultdict(list)
+for case in cases:
+    groups[case["status"]].append(case["name"])
+# groups["FAIL"] -> ["login_test", "checkout_test"]
+
+# count occurrences
+from collections import Counter
+counts = Counter(c["status"] for c in cases)   # {"PASS": 40, "FAIL": 3}
+```
+
+```java
+Map<String, Integer> counts = new HashMap<>();
+for (Case c : cases)
+    counts.merge(c.getStatus(), 1, Integer::sum);   // O(1) per item
+```
+
+### Set — uniqueness and membership
+
+```python
+seen = set()
+for id_ in ids:
+    if id_ in seen:                  # O(1)
+        print("duplicate:", id_)
+    seen.add(id_)
+
+unique_emails = set(all_emails)      # instant dedupe
+```
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  HashMap/HashSet are unordered. If you need insertion order, use `LinkedHashMap`/`LinkedHashSet` (Java) — Python's `dict` and `set` differ here: `dict` preserves insertion order, `set` does not. Don't assume iteration order in assertions.
+</div>
+
+## Stacks and queues
+
+### Stack — Last In, First Out (LIFO)
+
+Think of a stack of plates: you add and remove from the top. Used for reversing, nesting/bracket matching, undo, and depth-first traversal.
+
+```python
+stack = []
+stack.append(1)      # push
+stack.append(2)
+top = stack.pop()    # pop -> 2 (LIFO)
+```
+
+### Queue — First In, First Out (FIFO)
+
+A line at a counter: first in is first served. Used for job/task processing, retries, and breadth-first traversal.
+
+```python
+from collections import deque
+queue = deque()
+queue.append("job1")     # enqueue
+queue.append("job2")
+first = queue.popleft()  # dequeue -> "job1" (FIFO)
+```
+
+```java
+Deque<String> queue = new ArrayDeque<>();
+queue.offer("job1");     // enqueue
+String first = queue.poll();   // dequeue
+```
+
+### Worked example — balanced brackets (classic stack problem)
+
+Validating brackets shows up in config/JSON validation and is the canonical stack interview question.
+
+```python
+def is_balanced(s):
+    pairs = {")": "(", "]": "[", "}": "{"}
+    stack = []
+    for ch in s:
+        if ch in "([{":
+            stack.append(ch)
+        elif ch in ")]}":
+            if not stack or stack.pop() != pairs[ch]:
+                return False
+    return not stack            # O(n) time, O(n) space
+```
+
+## Parse-and-assert tasks (the real SDET skill)
+
+Most "data structure" work in test tooling is: read messy data, structure it, assert on it. Practice these patterns.
+
+### Parse a log and count errors per service
+
+```python
+# log lines: "2026-06-14 ERROR auth   token expired"
+from collections import Counter
+
+errors_by_service = Counter()
+with open("app.log") as f:
+    for line in f:
+        parts = line.split()
+        if len(parts) >= 3 and parts[1] == "ERROR":
+            errors_by_service[parts[2]] += 1
+
+# assert no service exceeded a threshold
+assert all(n <= 5 for n in errors_by_service.values()), errors_by_service
+```
+
+### Parse JSON and assert on its contents
+
+```python
+import json
+
+with open("response.json") as f:
+    data = json.load(f)
+
+# assert every order has a positive total and a known status
+valid_statuses = {"paid", "shipped", "refunded"}      # a Set for O(1) membership
+for order in data["orders"]:
+    assert order["total"] > 0, f"bad total: {order}"
+    assert order["status"] in valid_statuses, f"unknown status: {order['status']}"
+
+# build a quick lookup: order id -> order  (HashMap pattern)
+by_id = {o["id"]: o for o in data["orders"]}
+assert by_id[42]["status"] == "shipped"
+```
+
+```java
+// Java: parse JSON to a list, index it by id
+ObjectMapper mapper = new ObjectMapper();
+JsonNode root = mapper.readTree(new File("response.json"));
+Map<Integer, JsonNode> byId = new HashMap<>();
+for (JsonNode o : root.get("orders"))
+    byId.put(o.get("id").asInt(), o);
+assertEquals("shipped", byId.get(42).get("status").asText());
+```
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  When validating a collection, first transform it into the structure that makes your assertion O(1): a Set for "is this allowed?", a Map keyed by id for "find this record", a Counter for "how many of each?". Pick the structure to fit the assertion.
+</div>
+
+## Big-O of the operations you'll quote
+
+| Operation | List | HashMap/Set | Stack/Queue |
+|---|---|---|---|
+| Access by index | O(1) | n/a | n/a |
+| Search / contains | O(n) | O(1) | O(n) |
+| Insert at end | O(1)* | O(1) | O(1) |
+| Delete | O(n) | O(1) | O(1) (ends) |
+
+\*amortized for a dynamic array.
+
+## Interview questions & model answers
+
+**Q: When would you use a Set instead of a List?**
+A: When I need uniqueness or fast membership checks — deduping IDs, tracking visited URLs, or validating a value is in an allowed set. Set gives O(1) `contains` and rejects duplicates; List is for ordered sequences with possible duplicates and index access.
+
+**Q: Which structure gives O(1) lookup, and how does it work?**
+A: A HashMap (and HashSet). It hashes the key to a bucket, so get/put/contains are O(1) on average. That's why counting, grouping, and "have I seen this?" problems use it to avoid O(n²) scans.
+
+**Q: Stack vs queue — give a testing use for each.**
+A: Stack is LIFO — I'd use it to validate balanced brackets in a config file or to implement undo. Queue is FIFO — I'd use it for processing a backlog of test jobs or retry tasks in submission order.
+
+**Q: How would you detect duplicate IDs in a large list?**
+A: One pass with a Set: for each id, if it's already in the set it's a duplicate, otherwise add it. O(n) time and space — far better than the O(n²) nested-loop comparison.
+
+**Q: You get a JSON response with 1000 orders and need to assert details about specific ones — how do you structure it?**
+A: Parse it once into a Map keyed by order id, so each lookup is O(1) instead of scanning the list every time. For "is this status valid" checks I'd keep the allowed statuses in a Set.
+
+**Q: Why might iteration order surprise you with a HashSet?**
+A: HashSet/HashMap don't guarantee order — it depends on hashing. If a test asserts on order, I use a LinkedHashSet/LinkedHashMap or sort first; otherwise the assertion can pass or fail unpredictably across runs or JVM versions.
+
+**Q: How do you choose a data structure for a parsing task?**
+A: I work backward from the assertion. "How many of each?" → Counter/Map. "Is it allowed?" → Set. "Find record by key?" → Map keyed by that field. "Preserve order?" → List or LinkedHashMap. The structure should make the assertion cheap and clear.
+
+## Common mistakes
+
+- **Using a List for membership checks** in a hot loop — O(n) each time becomes O(n²); switch to a Set.
+- **Assuming HashMap/HashSet iteration order** — it's not guaranteed; use the Linked variants or sort when order matters.
+- **Re-scanning a list inside a loop** instead of building a Map/Set index once up front.
+- **Mutating a collection while iterating it** — causes errors or skipped elements; iterate a copy or collect-then-mutate.
+- **Over-engineering** — reaching for trees/heaps when a HashMap and a List solve the actual test-tooling problem cleanly.
+- **Not handling malformed input** when parsing logs/JSON — guard against short/empty lines and missing keys before indexing.

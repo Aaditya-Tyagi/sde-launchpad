@@ -1,0 +1,395 @@
+---
+title: "REST Assured deep dive (Java API automation)"
+track: qa-api
+summary: "End-to-end REST Assured: given/when/then BDD, request & response specs, all CRUD verbs, params, headers, POJO serialization, value extraction, JSONPath, JSON Schema validation, auth, Hamcrest matchers, logging, reusable specs, TestNG integration and a full CRUD test class — plus Playwright request and requests+pytest as alternatives."
+order: 3
+est: 28
+difficulty: medium
+priority: must
+tags: [rest-assured, java, testng, hamcrest, json-schema, automation]
+whyAsked: "REST Assured is the default API-automation library for Java SDET roles. Interviewers ask you to write or read a given/when/then test, extract a value, validate a schema, and structure a CRUD suite."
+followUps:
+  - "Show the given/when/then for a POST that asserts a field."
+  - "How do you extract a value (id/token) from a response?"
+  - "How do you validate a response against a JSON schema in REST Assured?"
+  - "How do you avoid repeating headers/base URI across tests?"
+  - "How do you send a Bearer token / Basic auth?"
+resources:
+  - { label: "REST Assured", url: "https://rest-assured.io/" }
+  - { label: "REST Assured usage guide", url: "https://github.com/rest-assured/rest-assured/wiki/Usage" }
+  - { label: "Hamcrest matchers", url: "https://hamcrest.org/JavaHamcrest/" }
+  - { label: "json-schema-validator module", url: "https://github.com/rest-assured/rest-assured/wiki/Usage#json-schema-validation" }
+  - { label: "TestNG", url: "https://testng.org/" }
+  - { label: "Playwright APIRequest (Java)", url: "https://playwright.dev/java/docs/api-testing" }
+---
+
+REST Assured is a Java DSL for testing HTTP APIs in a readable **given / when / then** style. It hides the boilerplate of building requests and parsing responses so a test reads almost like a sentence, and it plugs straight into TestNG or JUnit and your CI. For Java SDET roles it's the default — you should be able to write it from memory.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  <code>given()</code> sets up the request (headers, params, auth, body), <code>when()</code> fires the HTTP verb, <code>then()</code> asserts on the response. Assertions use Hamcrest matchers and JSONPath (Groovy GPath) to reach into the body.
+</div>
+
+## Setup (Maven)
+
+```xml
+<dependency>
+  <groupId>io.rest-assured</groupId>
+  <artifactId>rest-assured</artifactId>
+  <version>5.5.0</version>
+  <scope>test</scope>
+</dependency>
+<dependency>
+  <groupId>io.rest-assured</groupId>
+  <artifactId>json-schema-validator</artifactId>
+  <version>5.5.0</version>
+  <scope>test</scope>
+</dependency>
+<dependency>
+  <groupId>org.testng</groupId>
+  <artifactId>testng</artifactId>
+  <version>7.10.2</version>
+  <scope>test</scope>
+</dependency>
+```
+
+Static imports make the DSL fluent:
+
+```java
+import static io.restassured.RestAssured.*;
+import static org.hamcrest.Matchers.*;
+import static io.restassured.module.jsonschema.JsonSchemaValidator.matchesJsonSchemaInClasspath;
+```
+
+## given / when / then — the basic shape
+
+```java
+@Test
+public void getUser() {
+    given()
+        .baseUri("https://reqres.in").basePath("/api")
+        .header("Accept", "application/json")
+    .when()
+        .get("/users/2")
+    .then()
+        .statusCode(200)
+        .contentType("application/json")
+        .body("data.id", equalTo(2))
+        .body("data.email", containsString("@"))
+        .time(lessThan(2000L));
+}
+```
+
+`body("data.id", equalTo(2))` uses GPath (`data.id`) to navigate the JSON and a Hamcrest matcher (`equalTo`) to assert.
+
+## All the verbs, params and headers
+
+```java
+// GET with query params
+given().queryParam("page", 2).queryParam("per_page", 3)
+.when().get("/users")
+.then().statusCode(200).body("page", equalTo(2));
+
+// GET with path param
+given().pathParam("id", 2)
+.when().get("/users/{id}")
+.then().statusCode(200);
+
+// POST with a raw JSON body
+given().contentType("application/json")
+       .body("{ \"name\": \"sahil\", \"job\": \"sdet\" }")
+.when().post("/users")
+.then().statusCode(201).body("name", equalTo("sahil"));
+
+// PUT (full replace) and PATCH (partial)
+given().contentType("application/json").body("{ \"job\": \"lead\" }")
+.when().put("/users/2").then().statusCode(200).body("job", equalTo("lead"));
+
+// DELETE
+when().delete("/users/2").then().statusCode(204);
+```
+
+Headers: `.header("X-API-Key", "abc")`, `.headers(Map.of(...))`, or read them back with `.then().header("Location", notNullValue())`.
+
+## Body via POJO (serialization with Jackson/Gson)
+
+Hand-built JSON strings are brittle. Map a Java object instead — REST Assured serializes it (Jackson or Gson on the classpath) when you set a `contentType` of JSON:
+
+```java
+public class UserRequest {
+    public String name;
+    public String job;
+    public UserRequest(String name, String job) { this.name = name; this.job = job; }
+}
+
+@Test
+public void createWithPojo() {
+    UserRequest req = new UserRequest("sahil", "sdet");
+    given().contentType("application/json").body(req)   // serialized to JSON
+    .when().post("/users")
+    .then().statusCode(201).body("job", equalTo("sdet"));
+}
+```
+
+Deserialize the response into a POJO with `.as(UserResponse.class)` for type-safe assertions:
+
+```java
+UserResponse user =
+    given().contentType("application/json").body(new UserRequest("sahil", "sdet"))
+    .when().post("/users")
+    .then().statusCode(201)
+    .extract().as(UserResponse.class);
+
+assertEquals(user.getName(), "sahil");
+```
+
+## Extracting values (id, token) for chaining
+
+The most common real need — grab something from one response to use in the next:
+
+```java
+// extract a single path
+String token =
+    given().contentType("application/json")
+           .body("{ \"email\": \"eve.holt@reqres.in\", \"password\": \"x\" }")
+    .when().post("/login")
+    .then().statusCode(200)
+    .extract().path("token");
+
+// or grab the whole response and read several values
+Response resp = when().get("/users/2").then().extract().response();
+int    id    = resp.path("data.id");
+String email = resp.jsonPath().getString("data.email");
+```
+
+Then reuse: `given().header("Authorization", "Bearer " + token)...`.
+
+JSONPath/GPath helpers: `resp.jsonPath().getList("data.id")`, `getMap(...)`, and Groovy filters like `data.find { it.id == 2 }.email`.
+
+## JSON Schema validation
+
+Catch structural drift in one assertion. Put the schema at `src/test/resources/schemas/user-schema.json`:
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["data", "support"],
+  "properties": {
+    "data": {
+      "type": "object",
+      "required": ["id", "email", "first_name"],
+      "properties": {
+        "id":         { "type": "integer" },
+        "email":      { "type": "string", "format": "email" },
+        "first_name": { "type": "string" }
+      }
+    }
+  }
+}
+```
+
+```java
+when().get("/users/2")
+.then().statusCode(200)
+       .body(matchesJsonSchemaInClasspath("schemas/user-schema.json"));
+```
+
+## Authentication
+
+```java
+// Bearer / JWT
+given().header("Authorization", "Bearer " + token)
+.when().get("/me").then().statusCode(200);
+
+// also: preemptive OAuth2 token
+given().auth().oauth2(token).when().get("/me").then().statusCode(200);
+
+// HTTP Basic (preemptive so the header is sent on the first call)
+given().auth().preemptive().basic("user", "pass")
+.when().get("/secure").then().statusCode(200);
+```
+
+## Assertions with Hamcrest
+
+Hamcrest matchers are the assertion vocabulary inside `body(...)`:
+
+```java
+.body("data.id", equalTo(2))
+.body("data.email", containsString("@reqres"))
+.body("data", hasKey("first_name"))
+.body("page", greaterThan(0))
+.body("data.id", everyItem(notNullValue()))   // over a list
+.body("data.size()", equalTo(6))
+.body("data.first_name", hasItems("George", "Janet"));
+```
+
+You can mix in TestNG asserts (`assertEquals`) on extracted POJOs when matchers get awkward.
+
+## Logging
+
+```java
+given().log().all()          // log the full request
+.when().get("/users/2")
+.then().log().ifValidationFails()   // log response only when an assertion fails
+       .statusCode(200);
+```
+
+`log().ifValidationFails()` keeps passing-test output clean while giving full detail on failures — the production-friendly default.
+
+## Reusable specs (DRY)
+
+Stop repeating base URI, headers and common assertions. Build a `RequestSpecification` and `ResponseSpecification` once:
+
+```java
+RequestSpecification reqSpec = new RequestSpecBuilder()
+    .setBaseUri("https://reqres.in").setBasePath("/api")
+    .setContentType("application/json")
+    .addHeader("Accept", "application/json")
+    .build();
+
+ResponseSpecification okJson = new ResponseSpecBuilder()
+    .expectStatusCode(200)
+    .expectContentType("application/json")
+    .expectResponseTime(lessThan(2000L))
+    .build();
+
+@Test public void reuseSpecs() {
+    given().spec(reqSpec)
+    .when().get("/users/2")
+    .then().spec(okJson).body("data.id", equalTo(2));
+}
+```
+
+Set `RestAssured.requestSpecification` / `RestAssured.responseSpecification` (or base URI) in a `@BeforeClass` to apply globally.
+
+## Full CRUD test class with TestNG
+
+```java
+import io.restassured.RestAssured;
+import io.restassured.builder.RequestSpecBuilder;
+import io.restassured.specification.RequestSpecification;
+import org.testng.annotations.*;
+
+import static io.restassured.RestAssured.given;
+import static org.hamcrest.Matchers.*;
+
+public class UserCrudTest {
+
+    private RequestSpecification spec;
+    private String createdId;
+
+    @BeforeClass
+    public void setup() {
+        spec = new RequestSpecBuilder()
+            .setBaseUri("https://reqres.in").setBasePath("/api")
+            .setContentType("application/json")
+            .build();
+    }
+
+    @Test(priority = 1)
+    public void createUser() {
+        createdId =
+            given().spec(spec).body("{ \"name\": \"sahil\", \"job\": \"sdet\" }")
+            .when().post("/users")
+            .then().statusCode(201)
+                   .body("name", equalTo("sahil"))
+                   .body("id", notNullValue())
+            .extract().path("id");
+    }
+
+    @Test(priority = 2, dependsOnMethods = "createUser")
+    public void readUser() {
+        given().spec(spec).pathParam("id", 2)
+        .when().get("/users/{id}")
+        .then().statusCode(200).body("data.id", equalTo(2));
+    }
+
+    @Test(priority = 3, dependsOnMethods = "createUser")
+    public void updateUser() {
+        given().spec(spec).body("{ \"name\": \"sahil\", \"job\": \"lead\" }")
+        .when().put("/users/" + createdId)
+        .then().statusCode(200).body("job", equalTo("lead"));
+    }
+
+    @Test(priority = 4, dependsOnMethods = "createUser")
+    public void deleteUser() {
+        given().spec(spec)
+        .when().delete("/users/" + createdId)
+        .then().statusCode(204);
+    }
+}
+```
+
+`dependsOnMethods` ties the chain together so downstream tests are skipped (not failed) if create breaks; `priority` orders them. For independent, parallel-safe tests, prefer self-contained setup/teardown over ordered dependencies.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  ReqRes and similar sandboxes return fake/echoed data and don't truly persist — your created id won't be re-fetchable. Against a real API, create in setup, capture the real id, and delete it in teardown so each run is clean and order-independent.
+</div>
+
+## Alternatives (know these exist)
+
+**Playwright `request` (Java/JS/Python/.NET)** — Playwright ships an API testing client, handy when a team already uses Playwright for UI so API + UI share one toolchain and report:
+
+```java
+APIResponse r = request.get("https://reqres.in/api/users/2");
+assertEquals(r.status(), 200);
+assertTrue(r.text().contains("first_name"));
+```
+
+**Python `requests` + pytest** — concise and popular for Python shops:
+
+```python
+import requests
+
+def test_create_user():
+    r = requests.post("https://reqres.in/api/users",
+                      json={"name": "sahil", "job": "sdet"})
+    assert r.status_code == 201
+    body = r.json()
+    assert body["name"] == "sahil"
+    assert "id" in body
+```
+
+Pick by team language/stack: REST Assured for Java, requests+pytest for Python, Playwright `request` when you're already on Playwright.
+
+## Interview questions & model answers
+
+**Q1. Explain the given/when/then structure.**
+`given()` configures the request — base URI, headers, query/path params, auth, body. `when()` performs the HTTP verb. `then()` validates the response — status code, body via JSONPath + Hamcrest, headers, time. It reads like a BDD sentence, which is why it's so readable.
+
+**Q2. How do you extract a value from a response to use in the next request?**
+I append `.extract().path("token")` (or `.extract().response()` and then `resp.path(...)`) to pull the value out, store it in a variable, and pass it into the next `given()` — e.g. `given().header("Authorization", "Bearer " + token)`. For type-safety I can `extract().as(Pojo.class)`.
+
+**Q3. How do you validate a response against a JSON schema?**
+Add the `json-schema-validator` module, put the schema in `src/test/resources`, and assert `.body(matchesJsonSchemaInClasspath("schemas/user-schema.json"))`. It validates the whole structure in one line, catching missing/extra fields and type drift.
+
+**Q4. How do you avoid repeating base URI and headers in every test?**
+Build a `RequestSpecification` with `RequestSpecBuilder` (and a `ResponseSpecification` for common response checks) and apply it via `given().spec(reqSpec)`. Or set `RestAssured.baseURI`/`requestSpecification` in a `@BeforeClass` so it applies globally.
+
+**Q5. POJO body vs raw JSON string — which and why?**
+POJO. REST Assured serializes the object with Jackson/Gson, so you get compile-time safety, no brittle escaped-quote strings, and easy reuse. I deserialize responses with `.extract().as(Class)` for type-safe assertions too. Raw strings are fine for quick one-offs.
+
+**Q6. How do you send authentication?**
+Bearer/JWT: `given().header("Authorization", "Bearer " + token)` or `given().auth().oauth2(token)`. Basic: `given().auth().preemptive().basic(user, pass)` — preemptive so the credentials go on the first request rather than waiting for a 401 challenge.
+
+**Q7. How do you debug a failing REST Assured test?**
+`log().all()` on the request and `log().ifValidationFails()` on the response give full request/response detail only when an assertion fails, keeping passing output clean. I check the actual body, status, and the GPath I'm asserting against.
+
+**Q8. How does REST Assured integrate with TestNG and CI?**
+Tests are TestNG `@Test` methods; I use `@BeforeClass` for spec/setup, `priority`/`dependsOnMethods` for ordered flows, and run via Maven Surefire so it executes in CI. Surefire emits XML the pipeline reports on, and the build fails on any assertion failure.
+
+**Q9. When would you choose Playwright request or requests+pytest instead?**
+Playwright `request` when the team already uses Playwright for UI, so API and UI tests share one runner and report. requests+pytest for Python stacks where REST Assured (Java) doesn't fit the language. REST Assured remains the default for Java teams.
+
+## Common mistakes
+
+- Building JSON bodies as hand-escaped strings instead of POJOs — brittle and unreadable.
+- Forgetting `.extract()` and trying to "save" a value inside `then()` — you must extract to capture it.
+- Setting Basic auth without `preemptive()`, so the header isn't sent until after a 401.
+- Hard-coding base URI in every test instead of a spec / `@BeforeClass`.
+- Ordered tests with shared mutable state that can't run in parallel or in isolation — prefer self-contained setup/teardown for real APIs.
+- Logging everything always (`log().all()` on response) — noisy; use `ifValidationFails()`.
+- Assuming sandbox APIs (ReqRes) persist data; they don't, so chained read/update/delete on a created id won't reflect real state.
+- Asserting only the status code and skipping body/schema/negative checks.

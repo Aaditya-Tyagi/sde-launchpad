@@ -1,0 +1,202 @@
+---
+title: "Waits & killing flakiness"
+track: qa-web
+summary: "The single most important reliability topic — implicit vs explicit vs fluent waits, why never to mix implicit+explicit, the Thread.sleep anti-pattern, ExpectedConditions, Playwright auto-wait, every root cause of flakiness with its fix, retry/quarantine strategy, and how to debug a flaky test."
+order: 4
+est: 26
+difficulty: medium
+priority: deep
+tags: [waits, flakiness, synchronization, retries]
+whyAsked: "Flaky tests destroy trust in automation. 'How do you handle waits / fix a flaky test?' is asked in almost every automation interview and separates juniors from seniors."
+followUps:
+  - "Implicit vs explicit wait — and why not mix them?"
+  - "Why is Thread.sleep an anti-pattern?"
+  - "Name the root causes of flakiness and your fixes."
+  - "Walk me through debugging a test that fails 1 in 10 runs."
+resources:
+  - { label: "Selenium waits", url: "https://www.selenium.dev/documentation/webdriver/waits/" }
+  - { label: "Playwright actionability", url: "https://playwright.dev/docs/actionability" }
+  - { label: "Google: flaky tests", url: "https://testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html" }
+---
+
+Modern web apps load asynchronously — data arrives, the DOM re-renders, animations play. Acting before an element is ready is the root of most flaky tests. **Synchronization** is the cure, and getting it right is the difference between a suite people trust and one they ignore.
+
+## The three Selenium waits
+
+### Implicit wait
+
+A **global** setting: for every `findElement`, poll the DOM up to N seconds for the element to *exist* before throwing `NoSuchElement`.
+
+```java
+driver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
+```
+
+Simple but blunt. It only waits for *presence in the DOM*, not visibility or clickability — an element can be present but hidden. It also applies to every lookup, slowing negative assertions ("verify X is absent" now waits the full timeout).
+
+### Explicit wait (the correct default)
+
+Wait for a **specific condition** on a **specific element**:
+
+```java
+WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
+WebElement pay = wait.until(ExpectedConditions.elementToBeClickable(By.id("pay")));
+pay.click();
+```
+
+Targeted, expressive, and only as slow as it needs to be. This is what you should reach for.
+
+### Fluent wait
+
+An explicit wait with a custom **polling interval** and **ignored exceptions** — useful for slow-appearing or transiently-stale elements:
+
+```java
+Wait<WebDriver> fluent = new FluentWait<>(driver)
+    .withTimeout(Duration.ofSeconds(15))
+    .pollingEvery(Duration.ofMillis(500))
+    .ignoring(NoSuchElementException.class)
+    .ignoring(StaleElementReferenceException.class);
+
+WebElement el = fluent.until(d -> d.findElement(By.id("late")));
+```
+
+(`WebDriverWait` is itself a specialised FluentWait with a 500 ms default poll.)
+
+## Why you must NEVER mix implicit and explicit waits
+
+This is a guaranteed interview question. When both are set, their timeouts **compound unpredictably**. During an explicit wait's polling loop, each underlying `findElement` may *also* trigger the implicit wait, so a 10 s explicit wait can effectively become 10 s + (implicit × polls). You get inconsistent, longer-than-expected waits and intermittent failures that are maddening to diagnose. **Pick one strategy — use explicit waits and leave implicit wait at 0.**
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Set implicit wait once or not at all. If you use explicit waits (recommended), do not also set an implicit wait. Mixing them is one of the most common causes of "random" Selenium timing failures.
+</div>
+
+## The cardinal sin: Thread.sleep
+
+```java
+Thread.sleep(5000); // ❌ never
+```
+
+It pauses a **fixed** time regardless of app readiness. Too short → still flaky on a slow run. Too long → every test wastes seconds, suite crawls. It optimises for neither correctness nor speed. Replace every sleep with a conditional (explicit) wait that waits for the actual state you need.
+
+## ExpectedConditions you'll use constantly
+
+```java
+ExpectedConditions.visibilityOfElementLocated(by)
+ExpectedConditions.elementToBeClickable(by)
+ExpectedConditions.presenceOfElementLocated(by)
+ExpectedConditions.invisibilityOfElementLocated(by)   // spinner gone
+ExpectedConditions.textToBePresentInElementLocated(by, "Success")
+ExpectedConditions.alertIsPresent()
+ExpectedConditions.frameToBeAvailableAndSwitchToIt(by)
+ExpectedConditions.numberOfElementsToBe(by, 3)
+ExpectedConditions.stalenessOf(oldElement)            // old DOM replaced
+```
+
+A robust pattern after an async action: wait for the **spinner to disappear**, then for the **result to appear**:
+
+```java
+wait.until(ExpectedConditions.invisibilityOfElementLocated(By.css(".spinner")));
+wait.until(ExpectedConditions.visibilityOfElementLocated(By.css(".results")));
+```
+
+## Playwright auto-wait — why it's less flaky
+
+Playwright eliminates most manual waiting. Before every action it runs **actionability checks** — the element must be attached, visible, **stable** (not animating), enabled, and receiving events (not covered by an overlay) — retrying until they pass or the timeout hits. Its `expect(locator)` assertions retry too.
+
+```ts
+await page.getByRole('button', { name: 'Pay' }).click();   // auto-waits for actionable
+await expect(page.getByText('Order placed')).toBeVisible(); // retries until true
+```
+
+When you do need to wait on something specific:
+
+```ts
+await page.waitForResponse('**/api/orders');     // a network call
+await expect(page.locator('.spinner')).toBeHidden();
+// avoid: await page.waitForTimeout(2000)  // this is Playwright's Thread.sleep
+```
+
+## All root causes of flakiness — with the concrete fix
+
+| Root cause | Why it flakes | Concrete fix |
+|---|---|---|
+| **Timing / async** | Acting before element/data ready | Explicit waits on the exact condition; Playwright auto-wait + `expect(locator)` |
+| **Animations / transitions** | Element moving when clicked | Wait for "stable" (PW does this); disable CSS animations in test env; wait for transition end |
+| **Network latency / 3rd-party** | Slow or failing external calls | Wait for the specific response; **mock** external/unstable APIs (route/WireMock) |
+| **Brittle/dynamic locators** | Auto-generated ids, deep CSS chains change | data-testid, role/text locators; `starts-with`/`contains` for dynamic ids |
+| **Stale elements** | DOM re-rendered after caching a reference | Re-find before use; PW locators re-resolve automatically; `ignoring(StaleElement…)` |
+| **Shared / leftover test data** | Two tests touch the same record | Unique data per test (UUIDs/timestamps); create+clean data per test |
+| **Test order dependency** | Test B relies on Test A's side effects | Make each test independent and self-seeding; never rely on order |
+| **Shared browser state** | Cookies/session bleed between tests | Fresh context per test (PW); clear cookies/storage in setup |
+| **Environment differences** | Local passes, CI fails (slower box, headless, fonts, timezone, viewport) | Pin viewport, timezone, locale; run CI config locally; allow realistic timeouts |
+| **Concurrency / race conditions** | App state changes mid-test under parallel load | Idempotent setup; isolate data; wait on observable state not time |
+| **Hard-coded sleeps** | Fixed delay vs variable readiness | Replace with conditional waits |
+| **Assertion reads value once** | Reads before the value updates | Use retrying assertions (`expect(locator).toHaveText`, ExpectedConditions text) |
+
+## Retry strategy & quarantine
+
+Retries are a **safety net, not a cure**. Configure a small number (1–2) so a genuinely transient blip doesn't fail the build — but treat any test that needs retries as a bug to fix.
+
+```ts
+// Playwright config
+retries: process.env.CI ? 2 : 0,
+```
+
+```java
+// TestNG IRetryAnalyzer (see Test Runners lesson) retries failed tests N times
+```
+
+**Quarantine** chronically flaky tests: move them out of the blocking suite into a separate, non-gating job so they stop eroding trust, then fix and reinstate. A green suite people believe is worth more than a comprehensive one they ignore.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Cranking retries up to mask flakiness hides real product bugs (a feature that genuinely fails 1 in 10 times) and slows the suite. Use retries to absorb true infra noise, and always track + fix the underlying flake.
+</div>
+
+## How to debug a flaky test — step by step
+
+1. **Reproduce.** Run it in a loop (`--repeat-each=20`, or a shell loop) to confirm it's flaky and get a failure rate. A test that fails 1/20 needs many runs to study.
+2. **Capture evidence.** Enable trace/video/screenshots (Playwright trace viewer is ideal). For Selenium, screenshot + page source + logs on failure.
+3. **Read the failure point.** Is it a timeout (timing), a stale element, a wrong value (data/race), or a missing element (locator/network)? The exception usually points at the category.
+4. **Form a hypothesis from the table above** and isolate: run alone vs in parallel (order/shared-state), local vs CI (environment), with network mocked (3rd-party).
+5. **Fix the root cause**, not the symptom — replace a sleep with a condition, swap a brittle locator, seed unique data, mock the flaky dependency.
+6. **Verify** by re-running the loop many times; only close it when it's green across dozens of runs.
+7. **Add a guardrail** — better locator, deterministic data setup, or a wait helper — so the class of flake can't recur.
+
+## Interview questions & model answers
+
+**Q: Implicit vs explicit wait?**
+Implicit is a global poll-for-presence applied to every findElement; explicit waits for a specific condition on a specific element. Explicit is more precise and faster; I default to explicit and leave implicit at 0.
+
+**Q: Why never mix them?**
+Their timeouts compound unpredictably — the implicit wait fires inside each poll of the explicit wait — producing inconsistent, longer waits and intermittent failures.
+
+**Q: Why is Thread.sleep an anti-pattern?**
+It waits a fixed time regardless of readiness: too short and it's flaky, too long and it's slow. A conditional wait waits exactly as long as needed.
+
+**Q: Why is Playwright less flaky than Selenium for waiting?**
+It auto-waits via actionability checks (attached, visible, stable, enabled, receiving events) before every action and retries `expect(locator)` assertions, so most manual synchronization disappears.
+
+**Q: Name three causes of flakiness and your fix for each.**
+Timing → explicit/auto waits on the real condition. Shared test data → unique self-seeded data per test. Environment differences → pin viewport/timezone/locale and run the CI config locally.
+
+**Q: A test fails 1 in 10 runs in CI but passes locally. What do you do?**
+Reproduce with a repeat loop, capture a trace, and look at the failure category. CI-only points to environment/timing/parallelism — slower box, headless, shared data. I isolate (run alone, mock network), fix the root cause, then verify over many runs.
+
+**Q: When are retries acceptable?**
+As a small safety net (1–2) for genuine infra noise, paired with tracking and fixing the underlying flake — never as a permanent mask, and never to hide a product bug.
+
+## Common mistakes
+
+- Setting both an implicit and explicit wait.
+- Sprinkling `Thread.sleep` / `waitForTimeout` to "stabilise" tests.
+- Waiting for presence when you needed visibility or clickability.
+- Caching elements and reusing them after a re-render.
+- Sharing test data across tests, then debugging "random" failures.
+- Bumping retries to green the build instead of fixing the cause.
+- Reading a value once for an assertion instead of using a retrying assertion.
+
+<div class="callout key">
+  <div class="ct">Mindset</div>
+  Treat every flaky test as a real bug in your automation, not random noise. Quarantine it, find the timing/state cause, fix it, then verify over dozens of runs. A suite people don't trust is worse than no suite.
+</div>

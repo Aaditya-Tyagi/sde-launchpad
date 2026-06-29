@@ -1,0 +1,85 @@
+---
+// Generic array/string step visualizer. Driven entirely by a registry
+// entry in /public/viz-algos.js (window.VIZ_ALGOS[algo]). One component,
+// many visualizations — add a generator to the registry to add a new one.
+const { algo } = Astro.props;
+const id = 'av_' + Math.random().toString(36).slice(2, 8);
+---
+<div class="viz" data-av={id} data-algo={algo}>
+  <div class="viz-title" data-role="title">Visualizer</div>
+  <div class="viz-desc" data-role="desc"></div>
+  <div class="viz-stage"><div class="av-cells" data-role="cells"></div></div>
+  <div class="viz-controls">
+    <button class="btn" data-act="prev">◀ Back</button>
+    <button class="btn btn-primary" data-act="next">Step ▶</button>
+    <button class="btn" data-act="auto">▶ Auto</button>
+    <button class="btn" data-act="reset">Reset</button>
+    <span data-role="inputs" class="row" style="gap:6px"></span>
+    <button class="btn" data-act="run">Run</button>
+  </div>
+  <div class="viz-status" data-role="status"></div>
+</div>
+<style is:global>
+  .av-cells { display: flex; gap: 6px; flex-wrap: wrap; padding: 32px 4px 6px; }
+  .av-cell { position: relative; min-width: 42px; height: 44px; padding: 0 6px; border-radius: 9px; display: grid; place-items: center;
+    font-family: var(--mono); font-weight: 700; font-size: 16px; background: var(--panel-3); border: 1px solid var(--line); transition: 0.2s; }
+  .av-cell.dim { opacity: 0.28; }
+  .av-cell.active { background: rgba(242, 204, 96, 0.18); border-color: var(--warn); color: var(--warn); }
+  .av-cell.good { background: rgba(126, 231, 135, 0.18); border-color: var(--accent-2); color: var(--accent-2); }
+  .av-cell.bad { background: rgba(255, 123, 114, 0.18); border-color: var(--hot); color: var(--hot); }
+  .av-cell.win { background: rgba(110, 168, 254, 0.16); border-color: var(--accent); }
+  .av-cell.good.win { box-shadow: 0 0 0 2px var(--accent-2) inset; }
+  .av-ptr { position: absolute; left: 50%; transform: translateX(-50%); font-size: 10px; font-weight: 700; white-space: nowrap; }
+  .av-ptr.a { color: var(--accent); } .av-ptr.b { color: var(--accent-2); } .av-ptr.c { color: var(--warn); }
+  .av-in { max-width: 140px; }
+</style>
+<script define:vars={{ id, algo }}>
+  (function () {
+    function start() {
+      var spec = window.VIZ_ALGOS && window.VIZ_ALGOS[algo];
+      var root = document.querySelector('[data-av="' + id + '"]');
+      if (!root) return;
+      if (!spec) { setTimeout(start, 50); return; } // registry not loaded yet
+      var q = function (r) { return root.querySelector('[data-role="' + r + '"]'); };
+      q('title').innerHTML = spec.title;
+      q('desc').innerHTML = spec.desc;
+      // build input fields
+      q('inputs').innerHTML = spec.inputs.map(function (inp) {
+        return '<input class="av-in" data-key="' + inp.key + '" type="text" placeholder="' + inp.label + '" value="' + inp.def + '" title="' + inp.label + '">';
+      }).join('');
+
+      var steps = [], cur = 0, timer = null;
+      function parse() {
+        var vals = {};
+        spec.inputs.forEach(function (inp) {
+          var raw = root.querySelector('[data-key="' + inp.key + '"]').value;
+          if (inp.type === 'ints') vals[inp.key] = raw.split(',').map(function (x) { return parseInt(x.trim(), 10); }).filter(function (x) { return !isNaN(x); });
+          else if (inp.type === 'int') vals[inp.key] = parseInt(raw.trim(), 10);
+          else vals[inp.key] = raw.trim();
+        });
+        return vals;
+      }
+      function render() {
+        var s = steps[cur]; if (!s) return;
+        q('cells').innerHTML = s.cells.map(function (c, i) {
+          var ptrs = (s.ptrs || []).filter(function (p) { return p.i === i; });
+          var ph = ptrs.map(function (p, k) { return '<span class="av-ptr ' + p.cls + '" style="top:' + (-20 - k * 14) + 'px">' + p.label + ' ▾</span>'; }).join('');
+          return '<div class="av-cell ' + (c.s || '') + '">' + ph + c.v + '</div>';
+        }).join('');
+        q('status').innerHTML = '<b>Step ' + cur + '/' + (steps.length - 1) + ':</b> ' + s.msg;
+      }
+      function run() { stop(); try { steps = spec.gen(parse()); } catch (e) { steps = [{ cells: [], ptrs: [], msg: 'Invalid input.' }]; } cur = 0; render(); }
+      function stop() { if (timer) { clearInterval(timer); timer = null; } }
+      root.addEventListener('click', function (e) {
+        var a = e.target.getAttribute('data-act'); if (!a) return;
+        if (a === 'next') { stop(); cur = Math.min(cur + 1, steps.length - 1); render(); }
+        if (a === 'prev') { stop(); cur = Math.max(cur - 1, 0); render(); }
+        if (a === 'reset') { stop(); cur = 0; render(); }
+        if (a === 'run') run();
+        if (a === 'auto') { if (timer) { stop(); return; } timer = setInterval(function () { if (cur >= steps.length - 1) { stop(); return; } cur++; render(); }, 800); }
+      });
+      run();
+    }
+    start();
+  })();
+</script>

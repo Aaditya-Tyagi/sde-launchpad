@@ -1,0 +1,254 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { CODE_PROBLEMS } from '../../data/codeProblems';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+
+// group by pattern for the selector
+const groups: Record<string, typeof CODE_PROBLEMS> = {};
+CODE_PROBLEMS.forEach((p) => { (groups[p.pattern] ||= []).push(p); });
+---
+<BaseLayout title="Code Lab · SDE-2 Launchpad" active="code">
+  <div class="wrap" style="padding-top:28px;max-width:980px">
+    <h1>Code Lab</h1>
+    <p class="sub">Solve real problems in your browser — no LeetCode tab, no network. Your code runs in a sandboxed worker against hidden test cases. Solving a problem here marks it solved in <a href={`${base}/game`}>DSA Quest</a> too.</p>
+
+    <div class="cl-shell">
+      <!-- problem picker -->
+      <div class="cl-bar">
+        <select id="clSelect" class="cl-select">
+          <option value="scratch">📝 Scratchpad (free JS)</option>
+          {Object.entries(groups).map(([pat, ps]) => (
+            <optgroup label={pat}>
+              {ps.map((p) => <option value={p.id}>{`#${p.id} ${p.name} · ${p.difficulty}`}</option>)}
+            </optgroup>
+          ))}
+        </select>
+        <span class="cl-solved-pill hide" id="clSolvedPill">✓ Solved</span>
+        <div class="spacer"></div>
+        <button class="btn" id="clReset">↺ Reset</button>
+        <button class="btn btn-primary" id="clRun">▶ Run <kbd>⌘↵</kbd></button>
+      </div>
+
+      <!-- problem statement -->
+      <div class="panel cl-desc" id="clDesc">
+        <div class="cl-desc-head">
+          <span class="tag" id="clPat"></span>
+          <span class="pill" id="clDiff"></span>
+        </div>
+        <p id="clDescText"></p>
+      </div>
+
+      <!-- editor -->
+      <div class="cl-editor-wrap">
+        <div class="cl-gutter" id="clGutter"></div>
+        <textarea id="clCode" class="cl-code" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+      </div>
+
+      <!-- results -->
+      <div class="cl-results" id="clResults">
+        <div class="cl-results-empty muted">Run your code to see output and test results.</div>
+      </div>
+    </div>
+  </div>
+
+  <style is:global>
+    .cl-shell { margin-top:18px; }
+    .cl-bar { display:flex; gap:10px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
+    .cl-select { padding:9px 12px; border-radius:10px; border:1px solid var(--line); background:var(--panel); color:var(--text); font-size:13.5px; font-family:var(--mono); max-width:100%; cursor:pointer; }
+    .cl-select:focus { outline:none; border-color:var(--accent); }
+    .cl-solved-pill { font-size:12px; font-family:var(--mono); color:#06251a; background:var(--accent-2); padding:5px 10px; border-radius:999px; font-weight:700; }
+    .cl-bar kbd { font-size:10px; opacity:.7; }
+
+    .cl-desc { padding:14px 16px; margin-bottom:12px; }
+    .cl-desc.hide { display:none; }
+    .cl-desc-head { display:flex; gap:8px; margin-bottom:8px; }
+    .cl-desc p { font-size:14px; line-height:1.55; color:var(--text); margin:0; }
+    .cl-desc code { background:var(--panel-3); padding:1px 5px; border-radius:4px; font-family:var(--mono); font-size:12.5px; }
+
+    .cl-editor-wrap { display:flex; background:#0b0e16; border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+    .cl-gutter { padding:14px 0; text-align:right; color:var(--faint); font-family:var(--mono); font-size:13px; line-height:1.55; user-select:none; background:rgba(255,255,255,.02); min-width:42px; }
+    .cl-gutter span { display:block; padding:0 10px; }
+    .cl-code { flex:1; background:transparent; border:none; color:var(--text); padding:14px 12px; font-family:var(--mono); font-size:13px; line-height:1.55; resize:vertical; min-height:260px; outline:none; white-space:pre; overflow-wrap:normal; tab-size:2; }
+
+    .cl-results { margin-top:14px; }
+    .cl-results-empty { padding:18px; border:1px dashed var(--line); border-radius:12px; text-align:center; font-size:13px; }
+    .cl-banner { padding:13px 16px; border-radius:11px; margin-bottom:12px; font-size:14px; font-weight:600; display:flex; align-items:center; gap:10px; }
+    .cl-banner.ok { background:rgba(78,222,163,.12); border:1px solid rgba(78,222,163,.35); color:var(--text); }
+    .cl-banner.fail { background:rgba(255,180,171,.1); border:1px solid rgba(255,180,171,.3); color:var(--text); }
+    .cl-banner.err { background:rgba(255,185,95,.1); border:1px solid rgba(255,185,95,.3); color:var(--text); }
+
+    .cl-console { background:#0b0e16; border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:12px; }
+    .cl-console .cl-clabel { font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--faint); margin-bottom:6px; }
+    .cl-console pre { margin:0; font-family:var(--mono); font-size:12.5px; color:var(--accent-2); white-space:pre-wrap; }
+
+    .cl-test { display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border:1px solid var(--line); border-radius:10px; margin-bottom:7px; background:var(--panel); }
+    .cl-test-icon { flex:0 0 auto; width:20px; height:20px; border-radius:50%; display:grid; place-items:center; font-size:12px; font-weight:800; }
+    .cl-test.pass .cl-test-icon { background:var(--accent-2); color:#06251a; }
+    .cl-test.fail .cl-test-icon { background:var(--hot); color:#2a0d09; }
+    .cl-test-body { flex:1; min-width:0; font-family:var(--mono); font-size:12px; }
+    .cl-test-body .cl-args { color:var(--muted); }
+    .cl-test-body .cl-exp { color:var(--accent-2); }
+    .cl-test-body .cl-got { color:var(--hot); }
+  </style>
+
+  <script define:vars={{ base, problems: CODE_PROBLEMS }}>
+    const store = window.SDE2;
+    const el = (id) => document.getElementById(id);
+    const byId = Object.fromEntries(problems.map((p) => [String(p.id), p]));
+    const codeEl = el('clCode'), gutter = el('clGutter');
+
+    /* ── sandboxed worker (created from a Blob → fully offline) ── */
+    const WORKER_SRC = `
+      function fmt(a){ try { return typeof a==='object' && a!==null ? JSON.stringify(a) : String(a); } catch(e){ return String(a); } }
+      function cmp(a,b,mode){ if(mode==='set'){ a=Array.isArray(a)?a.slice().sort():a; b=Array.isArray(b)?b.slice().sort():b; } return JSON.stringify(a)===JSON.stringify(b); }
+      self.onmessage = function(e){
+        var d = e.data, logs = [];
+        self.console = { log:push, error:push, warn:push, info:push };
+        function push(){ logs.push(Array.prototype.map.call(arguments, fmt).join(' ')); }
+        try {
+          if (d.mode === 'run') { (new Function(d.code))(); self.postMessage({ logs: logs }); return; }
+          var fn = (new Function(d.code + '\\nreturn typeof ' + d.fnName + '==="function" ? ' + d.fnName + ' : undefined;'))();
+          if (typeof fn !== 'function') { self.postMessage({ logs: logs, error: 'No function named ' + d.fnName + '(...) was defined.' }); return; }
+          var results = d.tests.map(function(t){
+            try {
+              var input = JSON.parse(JSON.stringify(t.args));
+              var got = fn.apply(null, input);
+              return { pass: cmp(got, t.expected, t.compare), got: got===undefined?'undefined':got, expected: t.expected, args: t.args };
+            } catch(err){ return { pass:false, error:String(err && err.message || err), expected:t.expected, args:t.args }; }
+          });
+          self.postMessage({ logs: logs, results: results });
+        } catch(err){ self.postMessage({ logs: logs, error:String(err && err.message || err) }); }
+      };
+    `;
+    const workerUrl = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'application/javascript' }));
+    let worker = null, timer = null;
+    function killWorker() { if (worker) { worker.terminate(); worker = null; } if (timer) { clearTimeout(timer); timer = null; } }
+
+    /* ── editor: line numbers + tab support + persistence ── */
+    function syncGutter() {
+      const lines = codeEl.value.split('\n').length;
+      let h = '';
+      for (let i = 1; i <= lines; i++) h += `<span>${i}</span>`;
+      gutter.innerHTML = h;
+    }
+    codeEl.addEventListener('input', () => { syncGutter(); saveCode(); });
+    codeEl.addEventListener('scroll', () => { gutter.scrollTop = codeEl.scrollTop; });
+    codeEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const s = codeEl.selectionStart, en = codeEl.selectionEnd;
+        codeEl.value = codeEl.value.slice(0, s) + '  ' + codeEl.value.slice(en);
+        codeEl.selectionStart = codeEl.selectionEnd = s + 2;
+        syncGutter();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); run(); }
+    });
+
+    /* ── current problem ── */
+    let cur = null; // null = scratchpad
+    const codeKey = (p) => 'code:' + (p ? p.id : 'scratch');
+    function saveCode() { store.setNote(codeKey(cur), codeEl.value); }
+    function loadProblem(val) {
+      cur = val === 'scratch' ? null : byId[val];
+      const saved = store.notes(codeKey(cur));
+      if (cur) {
+        el('clDesc').classList.remove('hide');
+        el('clPat').textContent = cur.pattern;
+        el('clDiff').textContent = cur.difficulty;
+        el('clDiff').className = 'pill p-' + cur.difficulty.toLowerCase();
+        el('clDescText').innerHTML = mdInline(cur.desc);
+        codeEl.value = saved || cur.stub;
+        el('clSolvedPill').classList.toggle('hide', !store.isSolved(cur.id));
+      } else {
+        el('clDesc').classList.add('hide');
+        el('clSolvedPill').classList.add('hide');
+        codeEl.value = saved || "// Scratchpad — write & run any JS.\n// console.log output appears below.\n\nconsole.log('Hello from the sandbox');";
+      }
+      syncGutter();
+      el('clResults').innerHTML = '<div class="cl-results-empty muted">Run your code to see output and test results.</div>';
+    }
+    // tiny inline markdown for `code` spans
+    function mdInline(s) {
+      return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+    }
+    function esc(s) { return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+    const show = (v) => { try { return typeof v === 'object' ? JSON.stringify(v) : String(v); } catch { return String(v); } };
+
+    /* ── run ── */
+    function run() {
+      killWorker();
+      const code = codeEl.value;
+      el('clRun').disabled = true;
+      el('clResults').innerHTML = '<div class="cl-results-empty muted">Running…</div>';
+      worker = new Worker(workerUrl);
+      timer = setTimeout(() => {
+        killWorker(); el('clRun').disabled = false;
+        el('clResults').innerHTML = '<div class="cl-banner err">⏱ Timed out after 4s — likely an infinite loop. The sandbox was terminated; your page is safe.</div>';
+      }, 4000);
+      worker.onmessage = (e) => { clearTimeout(timer); timer = null; el('clRun').disabled = false; render(e.data); killWorker(); };
+      worker.onerror = (e) => { clearTimeout(timer); timer = null; el('clRun').disabled = false; el('clResults').innerHTML = `<div class="cl-banner err">⚠ ${esc(e.message || 'Worker error')}</div>`; killWorker(); };
+      worker.postMessage(cur
+        ? { mode: 'tests', code, fnName: cur.fn, tests: cur.tests }
+        : { mode: 'run', code });
+    }
+
+    function render(data) {
+      let html = '';
+      if (data.error) html += `<div class="cl-banner err">⚠ ${esc(data.error)}</div>`;
+
+      if (data.results) {
+        const passed = data.results.filter((r) => r.pass).length;
+        const total = data.results.length;
+        const allPass = passed === total;
+        html += `<div class="cl-banner ${allPass ? 'ok' : 'fail'}">${allPass ? '✅' : '❌'} ${passed} / ${total} tests passed${allPass ? ' — nice.' : ''}</div>`;
+        html += data.results.map((r) => `
+          <div class="cl-test ${r.pass ? 'pass' : 'fail'}">
+            <span class="cl-test-icon">${r.pass ? '✓' : '✕'}</span>
+            <div class="cl-test-body">
+              <div class="cl-args">${cur.fn}(${r.args.map(show).join(', ')})</div>
+              <div><span class="cl-exp">expected: ${esc(show(r.expected))}</span>${r.pass ? '' : (r.error ? `&nbsp;·&nbsp;<span class="cl-got">threw: ${esc(r.error)}</span>` : `&nbsp;·&nbsp;<span class="cl-got">got: ${esc(show(r.got))}</span>`)}</div>
+            </div>
+          </div>`).join('');
+
+        if (allPass && cur) handleSolved();
+      }
+
+      if (data.logs && data.logs.length) {
+        html += `<div class="cl-console"><div class="cl-clabel">Console</div><pre>${esc(data.logs.join('\n'))}</pre></div>`;
+      } else if (!cur && !data.error) {
+        html += `<div class="cl-console"><div class="cl-clabel">Console</div><pre class="muted">(no output)</pre></div>`;
+      }
+
+      el('clResults').innerHTML = html;
+    }
+
+    function handleSolved() {
+      if (store.isSolved(cur.id)) return;
+      store.toggleSolved(cur.id, cur.difficulty);
+      el('clSolvedPill').classList.remove('hide');
+      const xp = cur.difficulty === 'Hard' ? 30 : cur.difficulty === 'Easy' ? 10 : 20;
+      const t = document.createElement('div');
+      t.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--accent-2);color:var(--accent-2);padding:11px 22px;border-radius:30px;font-weight:700;z-index:210;box-shadow:var(--shadow)';
+      t.textContent = `🎉 Solved #${cur.id}! +${xp} XP · counts toward DSA Quest`;
+      document.body.appendChild(t);
+      setTimeout(() => { t.style.transition = 'opacity .3s'; t.style.opacity = '0'; }, 2400);
+      setTimeout(() => t.remove(), 2800);
+    }
+
+    /* ── wire up ── */
+    el('clSelect').addEventListener('change', (e) => loadProblem(e.target.value));
+    el('clRun').addEventListener('click', run);
+    el('clReset').addEventListener('click', () => {
+      if (cur) { if (!confirm('Reset to the starter code? Your current draft for this problem will be lost.')) return; codeEl.value = cur.stub; }
+      else codeEl.value = '';
+      syncGutter(); saveCode();
+    });
+
+    // deep-link: /practice/code?p=1
+    const pq = new URLSearchParams(location.search).get('p');
+    if (pq && byId[pq]) { el('clSelect').value = pq; loadProblem(pq); }
+    else loadProblem('scratch');
+  </script>
+</BaseLayout>

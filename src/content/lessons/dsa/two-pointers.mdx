@@ -1,0 +1,185 @@
+---
+title: "Two Pointers"
+track: dsa
+summary: "Opposite-end and read/write pointers — clean, optimal, O(n)/O(1) solutions and a startup favorite. Your move-zeros gap lives here."
+order: 2
+est: 28
+difficulty: medium
+priority: must
+tags: [two-pointers, arrays]
+whyAsked: "Two-pointer solutions are O(n), O(1) space, and easy to discuss — interviewers love them. This is the exact family your move-zeros question came from."
+followUps:
+  - "When can you use opposite-end pointers, and what must be true of the input?"
+  - "How is the read/write variant different from the converging variant?"
+  - "How do you avoid duplicate triples in 3Sum?"
+  - "Why does the greedy move in Container With Most Water never miss the answer?"
+resources:
+  - { label: "NeetCode: Two Pointers", url: "https://neetcode.io/practice" }
+---
+import ArrayViz from '../../../components/ArrayViz.astro';
+
+Two pointers replace a nested loop with two indices that move intelligently, giving O(n) time and O(1) space. There are two flavors: **converging** (start at the ends, move inward) and **read/write** (one fast scanner, one slow writer).
+
+## When to reach for it — recognition triggers
+
+- "Find a **pair/triple** in a **sorted** array summing to a target" → converging pointers.
+- "**Palindrome** / compare from both ends" → converging pointers.
+- "**Remove / compact / partition in place** with O(1) space" → read/write pointers.
+- "**Max area / closest / container**" between two endpoints → converging + greedy move.
+- The brute force is a nested loop and the data is sorted (or sortable) → two pointers usually collapse it to O(n).
+
+<div class="callout key">
+  <div class="ct">Pattern trigger</div>
+  Sorted array + "find a pair/triple" → converging pointers. "Compact / remove / partition in place" → read/write pointers. Both are O(n), O(1) space.
+</div>
+
+## Flavor 1 — converging (opposite ends)
+
+Two pointers start at the ends and move toward each other. Requires the array to be **sorted** (or symmetric, like a palindrome). At each step a comparison tells you *which* pointer to move.
+
+```js
+// Two Sum II (sorted): move ends inward based on the sum.  O(n) time, O(1) space
+function twoSum(nums, target) {
+  let l = 0, r = nums.length - 1;
+  while (l < r) {
+    const sum = nums[l] + nums[r];
+    if (sum === target) return [l + 1, r + 1];   // 1-indexed per problem
+    sum < target ? l++ : r--;   // too small → raise left; too big → lower right
+  }
+  return [];
+}
+```
+
+This works because sorting gives the comparison meaning: a smaller-than-target sum means you *must* increase the left value — there is no point keeping the current left with any smaller right.
+
+## Flavor 2 — read/write (fast/slow)
+
+One pointer reads through the array; another marks where to write the next "kept" element. This is **in-place compaction** — exactly Move Zeroes.
+
+<ArrayViz algo="move-zeros" />
+
+```js
+// Move Zeroes: write all non-zeros forward, then fill the rest with 0.  O(n), O(1)
+function moveZeroes(nums) {
+  let write = 0;
+  for (let read = 0; read < nums.length; read++) {
+    if (nums[read] !== 0) {
+      [nums[write], nums[read]] = [nums[read], nums[write]];  // swap keeps order stable
+      write++;
+    }
+  }
+  return nums;
+}
+```
+
+The invariant: everything left of `write` is finalized (the kept elements in order). When the read pointer finishes, you're done — no second pass needed.
+
+## Worked examples
+
+### Valid Palindrome — converging with filtering
+
+Compare from both ends, skipping non-alphanumeric characters, case-insensitive.
+
+```js
+// O(n) time, O(1) space
+function isPalindrome(s) {
+  const ok = c => /[a-z0-9]/i.test(c);
+  let l = 0, r = s.length - 1;
+  while (l < r) {
+    while (l < r && !ok(s[l])) l++;
+    while (l < r && !ok(s[r])) r--;
+    if (s[l].toLowerCase() !== s[r].toLowerCase()) return false;
+    l++; r--;
+  }
+  return true;
+}
+```
+
+Idea: skip junk before each comparison; the two inner `while`s never cross because they're bounded by `l < r`.
+**Time** O(n) · **Space** O(1).
+
+### 3Sum — sort, then converging inner loop
+
+Fix one element, then run Two Sum II on the rest. The hard part is **skipping duplicates** to avoid repeated triples.
+
+```js
+// O(n²) time, O(1) extra space (excluding output)
+function threeSum(nums) {
+  nums.sort((a, b) => a - b);
+  const res = [];
+  for (let i = 0; i < nums.length - 2; i++) {
+    if (nums[i] > 0) break;                      // all positives ahead → no zero sum
+    if (i > 0 && nums[i] === nums[i - 1]) continue;  // skip duplicate anchor
+    let l = i + 1, r = nums.length - 1;
+    while (l < r) {
+      const sum = nums[i] + nums[l] + nums[r];
+      if (sum < 0) l++;
+      else if (sum > 0) r--;
+      else {
+        res.push([nums[i], nums[l], nums[r]]);
+        l++; r--;
+        while (l < r && nums[l] === nums[l - 1]) l++;  // skip dup left
+        while (l < r && nums[r] === nums[r + 1]) r--;  // skip dup right
+      }
+    }
+  }
+  return res;
+}
+```
+
+Idea: sorting enables both the converging move and the dedup-by-skipping-equal-neighbors. The outer fix is O(n), the inner two-pointer scan is O(n).
+**Time** O(n²) · **Space** O(1) extra (O(n) if you count the sort).
+
+### Container With Most Water — converging + greedy move
+
+Area is `min(height[l], height[r]) * (r - l)`. Always move the **shorter** wall inward.
+
+```js
+// O(n) time, O(1) space
+function maxArea(height) {
+  let l = 0, r = height.length - 1, best = 0;
+  while (l < r) {
+    const area = Math.min(height[l], height[r]) * (r - l);
+    best = Math.max(best, area);
+    height[l] < height[r] ? l++ : r--;   // move the limiting (shorter) wall
+  }
+  return best;
+}
+```
+
+Idea: moving the taller wall can only shrink the width without raising the limiting height, so it can never improve the area. Moving the shorter wall is the only move that *could* help — so we never miss the optimum.
+**Time** O(n) · **Space** O(1).
+
+## Complexity & why it beats brute force
+
+The brute-force pair/triple search is O(n²)/O(n³). Two pointers exploit sortedness so each pointer makes a single forward (or inward) pass — converging variants are O(n) per pass, read/write variants are a single O(n) sweep. Space stays O(1) because we mutate indices, not allocate structures.
+
+## Edge cases & common bugs
+
+- **Unsorted input** for a converging solution — you must sort first (and note the O(n log n) cost), or the comparison logic is meaningless.
+- **`l < r` vs `l <= r`** — for pair-finding you want `l < r` (two distinct positions).
+- **Duplicate triples** in 3Sum — forgetting the skip-equal-neighbor steps yields repeated answers.
+- **Move Zeroes order** — using a plain overwrite instead of a swap can clobber values; the swap keeps it stable and in-place.
+- **Empty / single-element arrays** — loops with `l < r` handle these naturally (no iterations).
+- **Integer overflow** in other languages for the sum — not an issue in JS numbers but worth stating in Java/C++.
+
+## Interview tips & questions
+
+- Interviewers probe: "Why does the greedy move in Container never skip the best answer?" Be ready to give the limiting-wall argument.
+- "Can you do it in O(1) space?" is the tell that they want two pointers, not a hash map.
+- For 3Sum, narrate the dedup strategy explicitly — it's the part most candidates botch.
+
+| Problem | Difficulty | Variant |
+|---|---|---|
+| [Valid Palindrome](https://leetcode.com/problems/valid-palindrome/) | Easy | converging |
+| [Move Zeroes](https://leetcode.com/problems/move-zeroes/) | Easy | read/write |
+| [Two Sum II](https://leetcode.com/problems/two-sum-ii-input-array-is-sorted/) | Medium | converging |
+| [3Sum](https://leetcode.com/problems/3sum/) | Medium | sort + converging inner loop |
+| [Container With Most Water](https://leetcode.com/problems/container-with-most-water/) | Medium | converging, greedy move |
+| [Sort Colors](https://leetcode.com/problems/sort-colors/) | Medium | three-way partition (Dutch flag) |
+| [Trapping Rain Water](https://leetcode.com/problems/trapping-rain-water/) | Hard | converging + running max |
+
+<div class="callout tip">
+  <div class="ct">Template</div>
+  Converging: start <code>l = 0, r = n - 1</code>; loop while <code>l &lt; r</code>, compare and move one pointer inward. Read/write: keep a writer <code>w = 0</code>; for each read index, if you keep the element do <code>nums[w++] = nums[read]</code>.
+</div>

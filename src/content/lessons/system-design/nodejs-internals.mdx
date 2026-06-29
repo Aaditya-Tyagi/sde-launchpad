@@ -1,0 +1,153 @@
+---
+title: "Node.js internals: event loop, streams, scaling"
+track: system-design
+summary: "How Node stays fast on one thread — libuv loop phases, the thread pool, CPU vs IO-bound work, clustering & worker_threads, streams/backpressure, GC, and production pitfalls."
+order: 4
+est: 30
+difficulty: medium
+priority: deep
+tags: [nodejs, event-loop, libuv, streams, cluster, worker-threads, gc]
+whyAsked: "For a Node-stack role, interviewers want to know you understand why Node handles concurrency without threads, what blocks the loop, and how to scale and not crash it in production."
+followUps:
+  - "How does Node handle thousands of connections on one thread?"
+  - "What runs on the libuv thread pool, and what doesn't?"
+  - "What blocks the event loop, and how do you avoid it?"
+  - "cluster vs worker_threads — when each?"
+  - "What is backpressure in streams?"
+resources:
+  - { label: "Node.js: the event loop", url: "https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick" }
+  - { label: "libuv design overview", url: "https://docs.libuv.org/en/v1.x/design.html" }
+  - { label: "Don't block the event loop", url: "https://nodejs.org/en/learn/asynchronous-work/dont-block-the-event-loop" }
+---
+
+Node runs your JavaScript on a **single thread**, but stays highly concurrent by never blocking on I/O. It hands I/O to the OS or a background thread pool (**libuv**) and processes the results via the event loop. Same event loop as the browser, plus extra phases for server work. The whole value proposition — and every pitfall — follows from "one JS thread, offloaded I/O."
+
+## Why one thread handles thousands of connections
+
+Most server work is **I/O-bound** — waiting on the network, disk, or DB. Node issues the I/O, registers a callback, and immediately moves on to other requests. When the OS signals the I/O is done, the callback runs. So one thread juggles thousands of in-flight requests because it's almost never *computing* — it's orchestrating waits.
+
+Contrast a thread-per-request server (classic Java/Apache): 10,000 connections → 10,000 threads → megabytes of stack each + heavy context-switching. Node holds 10,000 connections as cheap callbacks on one stack. **This is why Node shines for I/O-heavy services** (API gateways, BFFs, real-time/WebSocket servers, proxies) and struggles for CPU-heavy ones (video transcoding, ML inference).
+
+## The libuv loop phases
+
+Each tick of the loop runs phases **in order**; the ones that matter:
+
+```
+   ┌─► timers        setTimeout / setInterval callbacks whose time elapsed
+   │      │
+   │   pending       deferred system callbacks
+   │      │
+   │    poll  ◄────── retrieve completed I/O events, run their callbacks
+   │      │           (the heart of server work; loop may BLOCK here waiting for I/O)
+   │   check          setImmediate callbacks
+   │      │
+   └── close          'close' cleanup callbacks
+```
+
+Between **every** phase, Node drains **microtasks**: `process.nextTick` (highest priority) then Promise callbacks. Microtasks run to completion before the loop advances — so a flood of `nextTick`/Promise work can **starve** the loop and delay timers/I/O. Mental model: `nextTick` ≫ Promises ≫ then macrotasks (timers/poll/check).
+
+A common gotcha: `setTimeout(fn, 0)` (timers phase) vs `setImmediate(fn)` (check phase). Inside an I/O callback (poll phase), `setImmediate` always fires before `setTimeout(0)`, because check follows poll. Knowing this disambiguation flags real Node depth.
+
+## The libuv thread pool
+
+"Single-threaded" is about *your JS*. libuv keeps a small **thread pool** (default **4** threads, `UV_THREADPOOL_SIZE`) for operations the OS can't do async natively:
+
+- **File system** operations (`fs.*`)
+- **DNS** lookups (`dns.lookup`)
+- **CPU-bound crypto** (`crypto.pbkdf2`, `bcrypt`) and `zlib` compression
+
+Network I/O does **not** use the pool — it uses the OS's native async mechanisms (epoll/kqueue/IOCP), which is why network concurrency is essentially unbounded. But heavy file or crypto work can **exhaust the 4-thread pool** and serialize, causing latency spikes that look mysterious until you realize the pool is the bottleneck (bump `UV_THREADPOOL_SIZE` or offload).
+
+## CPU-bound vs I/O-bound — what blocks the loop
+
+Because there's one JS thread, a **CPU-bound** task (a big synchronous loop, `JSON.parse` of a huge payload, sync crypto, image resize, a regex catastrophe) **blocks every other request** until it finishes — all 10,000 connections stall. Fixes:
+
+- **`worker_threads`** for CPU-heavy work — true parallel JS in a separate V8 isolate, communicating via message passing / `SharedArrayBuffer`.
+- **Break work into chunks** yielded with `setImmediate` so the loop can service other requests between chunks.
+- **Offload to a queue** + a separate worker process (or a different service better suited to the compute).
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  The sneaky blockers aren't obvious loops — they're <code>JSON.parse</code>/<code>JSON.stringify</code> on large objects, synchronous <code>fs.readFileSync</code>, unbounded regex backtracking (ReDoS), and crypto without the async API. Any of them freezes the entire process. Measure with <code>--prof</code> or event-loop-lag metrics; don't guess.
+</div>
+
+## cluster vs worker_threads
+
+Both add parallelism but solve different problems:
+
+| | **cluster** | **worker_threads** |
+|---|---|---|
+| Unit | Separate **processes** (own memory + V8) | Threads **within one process**, separate V8 isolates |
+| Use for | Scaling **I/O-bound** work across CPU cores (multiple HTTP servers sharing a port) | Offloading **CPU-bound** work without blocking the main loop |
+| Sharing | IPC only; no shared memory | Message passing + `SharedArrayBuffer` |
+| Crash blast radius | One worker dies, others survive | A thread crash can take the process |
+
+`cluster` forks N processes (≈ #cores) that share the listening socket so the OS load-balances connections — the standard way to use all cores for an HTTP service. In containerized production you often skip `cluster` and instead run **one Node process per container** and scale **replicas** behind a load balancer (simpler, plays well with orchestrators). Either way, keep processes **stateless** (sessions in Redis) so any one can serve any request.
+
+## Streams & backpressure
+
+**Streams** process data in chunks instead of loading it all into memory — essential for large files, uploads, or proxying. **Backpressure** is the mechanism that stops a fast producer from overwhelming a slow consumer: `writable.write()` returns `false` when the internal buffer is full, signaling the reader to **pause** until the `'drain'` event. `pipe()` (or, better, `pipeline()` which also propagates errors and cleans up) wires this automatically.
+
+```
+readFileStream.pipe(gzip).pipe(httpResponse)
+   │ fast            │ medium      │ slow client
+   └── if response buffer fills, write() → false → upstream pauses → bounded memory
+```
+
+That's why you **stream** a file to the HTTP response instead of `readFileSync` then `res.send` — the latter buffers the whole file in memory, and a few large concurrent requests OOM the process. Backpressure keeps memory bounded regardless of consumer speed; ignoring it is a top production crash cause.
+
+## Memory & garbage collection
+
+Node uses V8's **generational GC**: most objects die young (collected in a cheap, frequent "scavenge" of new space); survivors get promoted to old space (collected by less frequent, more expensive "mark-sweep-compact"). Implications:
+
+- The default heap is capped (~2 GB historically; tune with `--max-old-space-size`). A growing heap that never drops signals a **leak**.
+- Common leaks: unbounded caches/maps, forgotten event-listener registrations, closures capturing large objects, timers never cleared.
+- GC pauses are **stop-the-world** for the JS thread — long old-space collections show up as latency spikes. Keep object churn and retained heap low for latency-sensitive services.
+
+## Scaling a Node service — the checklist
+
+1. **Stay stateless** — sessions/state in Redis, so you can scale horizontally.
+2. **Use all cores** — `cluster` or N container replicas behind a load balancer.
+3. **Never block the loop** — offload CPU work to `worker_threads` or a queue.
+4. **Stream large payloads** — respect backpressure; never buffer big bodies.
+5. **Bound everything** — connection pools, queue depth, cache size, request timeouts (apply backpressure/`503` under overload rather than buffering).
+6. **Watch the thread pool** — tune `UV_THREADPOOL_SIZE` if fs/crypto-heavy.
+7. **Observe** — track event-loop lag, heap usage, GC pauses; they're your early-warning signals.
+
+## Interview questions & model answers
+
+**Q: How does Node handle thousands of connections on one thread?**
+"Server work is mostly I/O-bound. Node issues the I/O, registers a callback, and moves on — it's waiting, not computing — so one thread orchestrates thousands of in-flight requests. The OS notifies completion via epoll/kqueue and the callback runs in the poll phase. No thread-per-connection overhead, which is why Node excels at I/O-heavy services."
+
+**Q: What actually runs on the libuv thread pool?**
+"File system ops, DNS lookups, and CPU-bound crypto/zlib — things without a native async OS API. Network I/O does *not*; it uses the OS event mechanisms directly. The pool defaults to 4 threads, so heavy fs/crypto load can saturate it and cause latency spikes; I'd raise `UV_THREADPOOL_SIZE` or offload."
+
+**Q: What blocks the event loop and how do you avoid it?**
+"Any synchronous CPU-bound work on the JS thread — big loops, `JSON.parse` of huge payloads, sync crypto, ReDoS, `readFileSync`. It stalls every connection. I offload to `worker_threads`, chunk the work yielding via `setImmediate`, or push it to a queue and a separate worker."
+
+**Q: cluster vs worker_threads?**
+"cluster forks separate processes sharing a port — for scaling I/O-bound work across cores. worker_threads run threads inside one process with their own V8 isolate — for offloading CPU-bound work off the main loop. So cluster for throughput across cores, worker_threads for not blocking on compute. In containers I often just run replicas instead of cluster."
+
+**Q: What is backpressure?**
+"It's flow control between a fast producer and slow consumer. `writable.write()` returns false when the buffer is full; the producer pauses until `drain`. `pipe`/`pipeline` handle it automatically. It's why I stream files to the response instead of buffering — without it, a few large requests OOM the process."
+
+**Q: setTimeout(0) vs setImmediate inside an I/O callback — which fires first?**
+"setImmediate, because it runs in the check phase which immediately follows the poll phase where I/O callbacks run, whereas the timer waits for the next loop iteration's timers phase. Outside an I/O callback the order isn't guaranteed."
+
+**Q: How would you debug a Node service with latency spikes?**
+"Check event-loop lag first — spikes usually mean the loop is blocked by CPU work or GC. Profile with `--prof` or clinic.js to find the blocking call. Check heap growth for leaks and GC pause times. Check if the libuv thread pool is saturated by fs/crypto. The fix is usually offload-the-CPU-work or bound-the-memory."
+
+## Common mistakes / what weak candidates do
+
+- Saying Node is "multithreaded" or claiming all async work uses the thread pool (network I/O doesn't).
+- Not knowing the **4-thread pool default** or that fs/crypto can saturate it.
+- Buffering large files with `readFileSync`/`res.send` instead of streaming with backpressure.
+- Putting CPU-bound work on the main thread and blaming Node for being "slow."
+- Confusing `cluster` (processes, I/O scaling) with `worker_threads` (CPU offload).
+- Holding session state in process memory, breaking horizontal scaling.
+- Ignoring microtask starvation (`nextTick`/Promise floods delaying timers and I/O).
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Node runs JS on one thread but offloads I/O — so it handles thousands of concurrent connections because it's waiting, not computing, which is why it's great for I/O-heavy services. libuv has a 4-thread pool for fs/DNS/crypto; network I/O uses the OS directly. CPU-bound work blocks the loop, so I offload it to worker_threads or a queue. Streams + backpressure keep memory bounded. To use all cores I run stateless processes — cluster or container replicas — behind a load balancer, with shared session state in Redis."
+</div>

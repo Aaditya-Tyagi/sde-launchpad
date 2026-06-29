@@ -1,0 +1,199 @@
+---
+title: "Heaps & Priority Queues"
+track: dsa
+summary: "Top-K, streaming medians, and merge-k-sorted with a heap — O(log n) access to the smallest/largest, and the two-heap balance trick."
+order: 8
+est: 28
+difficulty: medium
+priority: deep
+tags: [heap, priority-queue, top-k, streaming]
+whyAsked: "Heaps appear in top-K, streaming, and merge problems — common in product-style rounds. JS has no built-in heap, so a clean implementation signals real fluency."
+followUps:
+  - "Why is a heap better than sorting for top-K?"
+  - "How do you maintain a running median?"
+  - "How do you merge k sorted lists efficiently?"
+  - "Min-heap or max-heap for kth largest, and why?"
+resources:
+  - { label: "NeetCode: Heap / Priority Queue", url: "https://neetcode.io/practice" }
+---
+
+A heap (priority queue) gives you the min or max element in **O(1)** and push/pop in **O(log n)**. It's the right tool whenever you repeatedly need "the next smallest/largest" without fully sorting.
+
+## When to reach for it — recognition triggers
+
+- "**Top K / K largest / K smallest / K closest / K most frequent**".
+- "**Kth largest / kth smallest**" element.
+- "**Running / streaming median**" or "median of a data stream".
+- "**Merge K sorted** lists/arrays".
+- "Schedule by priority / always process the **most urgent** next" (Dijkstra, task scheduler).
+- You'd otherwise re-sort after every insertion.
+
+<div class="callout key">
+  <div class="ct">Pattern trigger</div>
+  "Top-K / kth / running median / merge k sorted / repeatedly take the min-or-max" → heap. For top-K keep a heap of size K (O(n log k)); for medians balance two heaps.
+</div>
+
+## The min-heap, from scratch (JS has none built in)
+
+```js
+// Binary min-heap backed by an array. push/pop O(log n), peek O(1).
+class MinHeap {
+  constructor(compare = (a, b) => a - b) { this.h = []; this.cmp = compare; }
+  size() { return this.h.length; }
+  peek() { return this.h[0]; }
+  push(v) {
+    this.h.push(v);
+    let i = this.h.length - 1;
+    while (i > 0) {                          // bubble up
+      const p = (i - 1) >> 1;
+      if (this.cmp(this.h[i], this.h[p]) >= 0) break;
+      [this.h[i], this.h[p]] = [this.h[p], this.h[i]];
+      i = p;
+    }
+  }
+  pop() {
+    const top = this.h[0], last = this.h.pop();
+    if (this.h.length) {
+      this.h[0] = last;
+      let i = 0;                             // sift down
+      const n = this.h.length;
+      while (true) {
+        let smallest = i, l = 2 * i + 1, r = 2 * i + 2;
+        if (l < n && this.cmp(this.h[l], this.h[smallest]) < 0) smallest = l;
+        if (r < n && this.cmp(this.h[r], this.h[smallest]) < 0) smallest = r;
+        if (smallest === i) break;
+        [this.h[i], this.h[smallest]] = [this.h[smallest], this.h[i]];
+        i = smallest;
+      }
+    }
+    return top;
+  }
+}
+// Max-heap: new MinHeap((a, b) => b - a)
+```
+
+In an interview, you can usually *describe* the heap and assume a PQ, but having this memorized means you're never blocked by the missing standard library.
+
+## Worked examples
+
+### Kth Largest Element — min-heap of size k
+
+Keep the k largest seen so far in a min-heap; its root is the kth largest.
+
+```js
+// O(n log k) time, O(k) space
+function findKthLargest(nums, k) {
+  const heap = new MinHeap();               // min-heap of the k largest
+  for (const x of nums) {
+    heap.push(x);
+    if (heap.size() > k) heap.pop();        // drop the smallest of the top-(k+1)
+  }
+  return heap.peek();
+}
+```
+
+Idea: a *min*-heap (not max) so the weakest of the current top-k sits at the root and is cheapest to evict.
+**Time** O(n log k) · **Space** O(k) — beats sorting's O(n log n) when k ≪ n.
+
+### K Closest Points to Origin — max-heap of size k
+
+Keep the k closest by evicting the farthest when the heap overflows.
+
+```js
+// O(n log k) time, O(k) space
+function kClosest(points, k) {
+  const dist = ([x, y]) => x * x + y * y;            // squared distance (avoid sqrt)
+  const heap = new MinHeap((a, b) => dist(b) - dist(a)); // max-heap by distance
+  for (const p of points) {
+    heap.push(p);
+    if (heap.size() > k) heap.pop();                 // evict the farthest
+  }
+  return heap.h;
+}
+```
+
+Idea: a max-heap keeps the farthest point at the root, so it's the one we evict.
+**Time** O(n log k) · **Space** O(k).
+
+### Find Median from a Data Stream — two heaps
+
+Balance a **max-heap of the low half** and a **min-heap of the high half**. The median is the top of the larger heap (odd count) or the average of both tops (even count).
+
+```js
+// addNum O(log n), findMedian O(1)
+class MedianFinder {
+  constructor() {
+    this.low = new MinHeap((a, b) => b - a);   // max-heap (lower half)
+    this.high = new MinHeap((a, b) => a - b);  // min-heap (upper half)
+  }
+  addNum(x) {
+    this.low.push(x);
+    this.high.push(this.low.pop());            // funnel largest-of-low into high
+    if (this.high.size() > this.low.size())    // rebalance: low keeps the extra
+      this.low.push(this.high.pop());
+  }
+  findMedian() {
+    if (this.low.size() > this.high.size()) return this.low.peek();
+    return (this.low.peek() + this.high.peek()) / 2;
+  }
+}
+```
+
+Idea: every number routes through `low` then into `high`, then we rebalance so `low` holds the median (or both tops straddle it).
+**Time** O(log n) per add · **Space** O(n).
+
+### Merge K Sorted Lists — heap of list heads
+
+Push the head of each list; repeatedly pop the smallest and push its successor.
+
+```js
+// O(N log k) where N = total nodes, k = number of lists
+function mergeKLists(lists) {
+  const heap = new MinHeap((a, b) => a.val - b.val);
+  for (const node of lists) if (node) heap.push(node);
+  const dummy = { next: null }; let tail = dummy;
+  while (heap.size()) {
+    const node = heap.pop();
+    tail.next = node; tail = node;
+    if (node.next) heap.push(node.next);
+  }
+  return dummy.next;
+}
+```
+
+Idea: the heap always holds at most k candidates (one per list), so each of the N pops is O(log k).
+**Time** O(N log k) · **Space** O(k).
+
+## Complexity & why it beats brute force
+
+For **top-K**, a size-K heap is O(n log K) versus O(n log n) for a full sort — a big win when K ≪ n, and it works on streams where you can't sort. For **merge-K-sorted**, the heap is O(N log K) versus O(N·K) for repeatedly scanning all heads. For **streaming median**, two heaps give O(log n) updates versus O(n log n) re-sorting per query. Building a heap from an array is O(n) (heapify), not O(n log n).
+
+## Edge cases & common bugs
+
+- **Min vs max heap confusion** — kth *largest* uses a *min*-heap of size k (and vice versa). Reason it out loud.
+- **Heap overflow timing** — push then pop-if-too-big keeps size exactly k; popping first can drop a valid element.
+- **Two-heap imbalance** — after each insert, sizes must differ by at most 1; pick a fixed invariant (here `low` may have one extra).
+- **Empty heap** — guard `peek`/`pop`; for median, handle the no-elements case if required.
+- **Comparator sign** — `(a,b)=>a-b` is min-heap, `(a,b)=>b-a` is max-heap; a flipped sign silently inverts everything.
+- **Squared distance** — avoid `sqrt` for K-closest; it's monotonic so ordering is preserved and you dodge float error.
+
+## Interview tips & questions
+
+- Interviewers probe: "Why a heap and not a sort?" — streaming + K ≪ n. "Min or max heap, and why that size?"
+- Mention `heapify` (O(n) build) and that many languages have a built-in PQ but JS does not.
+- For "kth largest in a stream", the size-k min-heap is the canonical answer — state it immediately.
+
+| Problem | Difficulty | Pattern |
+|---|---|---|
+| [Last Stone Weight](https://leetcode.com/problems/last-stone-weight/) | Easy | max-heap |
+| [Kth Largest Element in an Array](https://leetcode.com/problems/kth-largest-element-in-an-array/) | Medium | size-k min-heap |
+| [K Closest Points to Origin](https://leetcode.com/problems/k-closest-points-to-origin/) | Medium | size-k max-heap |
+| [Top K Frequent Elements](https://leetcode.com/problems/top-k-frequent-elements/) | Medium | count + heap |
+| [Task Scheduler](https://leetcode.com/problems/task-scheduler/) | Medium | greedy + heap |
+| [Merge k Sorted Lists](https://leetcode.com/problems/merge-k-sorted-lists/) | Hard | heap of heads |
+| [Find Median from Data Stream](https://leetcode.com/problems/find-median-from-data-stream/) | Hard | two heaps |
+
+<div class="callout tip">
+  <div class="ct">Template</div>
+  Top-K: keep a heap of size K, push each element, pop when size &gt; K. Median: two heaps balanced to differ by ≤ 1. Merge-K: heap of the k current heads, pop-min and push its successor.
+</div>

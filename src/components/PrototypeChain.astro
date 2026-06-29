@@ -1,0 +1,66 @@
+---
+const id = 'pc_' + Math.random().toString(36).slice(2, 8);
+---
+<div class="viz" data-pc={id}>
+  <div class="viz-title">Prototype chain explorer</div>
+  <div class="viz-desc">When you read a property, JS walks up the <code>[[Prototype]]</code> chain until it finds it — or hits <code>null</code>. Click a property to watch the lookup.</div>
+  <div class="viz-stage">
+    <div class="pc-chain" id={`${id}-chain`}></div>
+  </div>
+  <div class="viz-controls">
+    <span class="muted" style="font-size:13px">Look up:</span>
+    <button class="btn" data-prop="greet">dog.greet()</button>
+    <button class="btn" data-prop="bark">dog.bark()</button>
+    <button class="btn" data-prop="hasOwnProperty">dog.hasOwnProperty</button>
+    <button class="btn" data-prop="fly">dog.fly</button>
+  </div>
+  <div class="viz-status" id={`${id}-status`}></div>
+</div>
+<style is:global>
+  .pc-chain { display: flex; flex-direction: column; gap: 0; align-items: center; }
+  .pc-node { width: 100%; max-width: 360px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 10px 14px; transition: 0.2s; }
+  .pc-node.lit { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(110, 168, 254, 0.25); }
+  .pc-node.hit { border-color: var(--accent-2); box-shadow: 0 0 0 2px rgba(126, 231, 135, 0.3); }
+  .pc-node .nm { font-family: var(--mono); font-size: 13px; color: var(--accent); font-weight: 700; }
+  .pc-node .props { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .pc-node .props b { color: var(--accent-2); }
+  .pc-arrow { color: var(--faint); font-size: 12px; padding: 6px 0; font-family: var(--mono); }
+  .pc-null { font-family: var(--mono); color: var(--hot); font-weight: 700; }
+</style>
+<script define:vars={{ id }}>
+  (function () {
+    const root = document.querySelector(`[data-pc="${id}"]`); if (!root) return;
+    const chainEl = document.getElementById(`${id}-chain`);
+    const statusEl = document.getElementById(`${id}-status`);
+    // chain bottom→top
+    const chain = [
+      { nm: 'dog (instance)', props: ['name: "Rex"'], owns: ['name'] },
+      { nm: 'Dog.prototype', props: ['bark()'], owns: ['bark'] },
+      { nm: 'Animal.prototype', props: ['greet()'], owns: ['greet'] },
+      { nm: 'Object.prototype', props: ['hasOwnProperty()', 'toString()'], owns: ['hasOwnProperty', 'toString'] },
+      { nm: 'null', props: [], owns: [], isNull: true },
+    ];
+    function render(lit, hit) {
+      chainEl.innerHTML = chain.map((n, i) => {
+        if (n.isNull) return `${i ? '<div class="pc-arrow">↑ [[Prototype]]</div>' : ''}<div class="pc-null">null  ⟵ end of chain</div>`;
+        const cls = ['pc-node']; if (i === hit) cls.push('hit'); else if (lit.includes(i)) cls.push('lit');
+        const props = n.props.map((p) => `<b>${p}</b>`).join(', ') || '—';
+        return `${i ? '<div class="pc-arrow">↑ [[Prototype]]</div>' : ''}<div class="${cls.join(' ')}"><div class="nm">${n.nm}</div><div class="props">${props}</div></div>`;
+      }).join('');
+    }
+    function lookup(prop) {
+      const lit = []; let hit = -1;
+      for (let i = 0; i < chain.length; i++) {
+        if (chain[i].isNull) { lit.push(i); break; }
+        lit.push(i);
+        if (chain[i].owns.includes(prop)) { hit = i; break; }
+      }
+      render(lit, hit);
+      if (hit >= 0) statusEl.innerHTML = `Found <b>${prop}</b> on <b style="color:var(--accent-2)">${chain[hit].nm}</b> after walking ${hit} level(s) up.`;
+      else statusEl.innerHTML = `Walked the entire chain to <b style="color:var(--hot)">null</b> without finding <b>${prop}</b> → returns <code>undefined</code>.`;
+    }
+    root.addEventListener('click', (e) => { const p = e.target.getAttribute('data-prop'); if (p) lookup(p); });
+    render([], -1);
+    statusEl.textContent = 'Click a lookup above to trace the chain.';
+  })();
+</script>

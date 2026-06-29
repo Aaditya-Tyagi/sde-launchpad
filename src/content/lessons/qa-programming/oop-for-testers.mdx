@@ -1,0 +1,438 @@
+---
+title: "OOP & core programming for testers"
+track: qa-programming
+summary: "The OOP a tester gets grilled on — the four pillars with testing examples, interfaces vs abstract classes, collections, exceptions, file/JSON handling, generics and equals/hashCode."
+order: 2
+est: 28
+difficulty: medium
+priority: must
+tags: [oop, java, collections, json, exceptions, generics]
+whyAsked: "The Page Object Model and every framework are built on OOP. Interviewers probe whether you can write maintainable code — overriding, collections, exceptions — not just record-and-playback."
+followUps:
+  - "What is the Page Object Model in OOP terms?"
+  - "Difference between an interface and an abstract class?"
+  - "Overloading vs overriding — give a testing example."
+  - "When would you use a Set instead of a List?"
+  - "Why must you override hashCode when you override equals?"
+resources:
+  - { label: "Refactoring Guru — patterns", url: "https://refactoring.guru/design-patterns" }
+  - { label: "Oracle Java Tutorials — OOP", url: "https://docs.oracle.com/javase/tutorial/java/concepts/" }
+  - { label: "Java Collections overview", url: "https://docs.oracle.com/javase/tutorial/collections/" }
+---
+
+Automation *is* software engineering. The Page Object Model, every base class, and every utility you write lean on object-oriented programming. Interviewers use OOP questions to find out whether you can build a *maintainable* framework. This lesson uses **Java as the primary language** (what most SDET interviews assume) with **Python notes** where they help.
+
+## Classes and objects
+
+A **class** is a blueprint; an **object** is an instance of it. In a framework, each page is a class and each test creates objects from those classes.
+
+```java
+public class LoginPage {
+    private final WebDriver driver;          // field / state
+
+    public LoginPage(WebDriver driver) {     // constructor
+        this.driver = driver;
+    }
+
+    public void login(String user, String pass) {   // behaviour
+        driver.findElement(By.id("user")).sendKeys(user);
+        driver.findElement(By.id("pass")).sendKeys(pass);
+        driver.findElement(By.id("submit")).click();
+    }
+}
+
+// In a test:
+LoginPage login = new LoginPage(driver);   // object
+login.login("standard_user", "secret");
+```
+
+```python
+# Python equivalent
+class LoginPage:
+    def __init__(self, driver):      # constructor
+        self.driver = driver
+    def login(self, user, pwd):
+        ...
+```
+
+## The four pillars (each with a testing example)
+
+### 1. Encapsulation — hide state, expose behaviour
+
+A page hides its locators and internals; tests only see meaningful actions. Change a locator and no test breaks.
+
+```java
+public class LoginPage {
+    private final By userField = By.id("user");   // hidden
+    private final By passField = By.id("pass");
+    private final WebDriver driver;
+
+    public LoginPage(WebDriver driver) { this.driver = driver; }
+
+    // public behaviour — the only thing tests touch
+    public InventoryPage login(String user, String pass) {
+        driver.findElement(userField).sendKeys(user);
+        driver.findElement(passField).sendKeys(pass);
+        driver.findElement(By.id("submit")).click();
+        return new InventoryPage(driver);
+    }
+}
+```
+
+Encapsulation = `private` fields + `public` methods (getters/setters when needed). Tests never reach into raw selectors.
+
+### 2. Inheritance — share common behaviour
+
+A `BasePage` holds shared waits and utilities; every page `extends` it and reuses them.
+
+```java
+public abstract class BasePage {
+    protected final WebDriver driver;
+    protected final WebDriverWait wait;
+
+    protected BasePage(WebDriver driver) {
+        this.driver = driver;
+        this.wait = new WebDriverWait(driver, Duration.ofSeconds(10));
+    }
+    protected WebElement waitVisible(By locator) {
+        return wait.until(ExpectedConditions.visibilityOfElementLocated(locator));
+    }
+}
+
+public class InventoryPage extends BasePage {     // inherits driver, wait, waitVisible
+    public InventoryPage(WebDriver driver) { super(driver); }
+
+    public void addFirstItem() {
+        waitVisible(By.cssSelector(".inventory_item button")).click();
+    }
+}
+```
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Prefer shallow inheritance. Deep page hierarchies (Base → Auth → Dashboard → ...) become fragile. Favor composition (helper/utility objects) over tall inheritance chains.
+</div>
+
+### 3. Polymorphism — one interface, many forms
+
+Two flavors, and interviewers want both clearly distinguished.
+
+**Overriding (runtime):** a subclass redefines a parent method with the *same signature*. A `MobileLoginPage` can override `login()` with mobile-specific steps; code that holds a `LoginPage` reference calls the right version at runtime.
+
+```java
+public class LoginPage {
+    public void login(String u, String p) { /* web flow */ }
+}
+public class MobileLoginPage extends LoginPage {
+    @Override
+    public void login(String u, String p) { /* tap-based flow */ }
+}
+
+LoginPage page = new MobileLoginPage();  // parent type, child object
+page.login("a", "b");                    // calls MobileLoginPage.login (runtime dispatch)
+```
+
+**Overloading (compile-time):** same method name, *different parameter lists*, in the same class. Handy for flexible test helpers.
+
+```java
+public class Asserts {
+    void check(int actual, int expected) { /* ... */ }
+    void check(String actual, String expected) { /* ... */ }
+    void check(int actual, int expected, String message) { /* ... */ }
+}
+```
+
+| | Overriding | Overloading |
+|---|---|---|
+| Where | Subclass vs parent | Same class |
+| Signature | **Same** | **Different** params |
+| Resolved | Runtime | Compile-time |
+| Annotation | `@Override` | none |
+
+### 4. Abstraction — expose *what*, hide *how*
+
+Tests should read like English; the messy WebDriver/API calls live behind methods. Java tools for abstraction are **abstract classes** and **interfaces**.
+
+```java
+checkoutPage.placeOrder();   // intent is obvious; implementation is hidden
+```
+
+All four pillars together *are* the **Page Object Model**: pages as classes (encapsulation), a shared `BasePage` (inheritance), page-specific overrides where needed (polymorphism), and tests written against readable actions (abstraction).
+
+## Interfaces vs abstract classes
+
+Both enable abstraction; pick based on intent.
+
+```java
+// Interface — a contract: "anything that can run a test step"
+public interface TestStep {
+    void execute();                 // implementers MUST provide this
+    default void log() { System.out.println("running step"); } // optional default
+}
+
+// Abstract class — shared state + partial implementation
+public abstract class BaseApiTest {
+    protected RequestSpecification spec = RestAssured.given();
+    protected abstract String endpoint();      // subclass fills this in
+    public Response get() { return spec.get(endpoint()); }  // shared logic
+}
+```
+
+| | Interface | Abstract class |
+|---|---|---|
+| Purpose | A capability/contract | A partially-built base |
+| State (fields) | Constants only | Yes, instance fields |
+| Multiple inheritance | A class can implement **many** | A class extends **one** |
+| Constructors | No | Yes |
+| Use when | Unrelated types share a capability (`Comparable`, `TestStep`) | Related types share state + code (`BasePage`) |
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Interface = "can do" (a contract, many allowed). Abstract class = "is a" (a base with shared code, one allowed). Selenium's `WebDriver` is an interface; `ChromeDriver`/`FirefoxDriver` implement it — that's why you code to `WebDriver` and swap browsers freely.
+</div>
+
+## Access modifiers
+
+| Modifier | Same class | Same package | Subclass | Anywhere |
+|---|---|---|---|---|
+| `private` | yes | no | no | no |
+| (default) | yes | yes | no | no |
+| `protected` | yes | yes | yes | no |
+| `public` | yes | yes | yes | yes |
+
+In frameworks: locators `private`, shared base utilities `protected`, page actions and test methods `public`.
+
+## Static vs instance
+
+- **Instance** members belong to an object — each `LoginPage` has its own `driver`.
+- **Static** members belong to the class — one copy shared by all. Use for constants and stateless utilities.
+
+```java
+public class WaitUtils {
+    public static final int DEFAULT_TIMEOUT = 10;        // shared constant
+    public static void sleep(long ms) { /* utility, no state */ }   // call WaitUtils.sleep(500)
+}
+```
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Don't put mutable shared state in `static` fields in a parallel test run — every thread sees the same value and tests bleed into each other (flaky failures). Keep per-test state on instances or use ThreadLocal.
+</div>
+
+## Collections — and when to use each
+
+The three you must know cold:
+
+```java
+// List — ordered, allows duplicates, index access
+List<String> steps = new ArrayList<>();
+steps.add("open"); steps.add("login"); steps.add("open");  // dupes ok
+String first = steps.get(0);
+
+// Set — unique elements, no duplicates (HashSet unordered; LinkedHashSet keeps insertion order)
+Set<String> visitedUrls = new HashSet<>();
+visitedUrls.add("/home"); visitedUrls.add("/home");        // stored once
+
+// Map — key -> value lookups
+Map<String, String> testData = new HashMap<>();
+testData.put("user", "standard_user");
+String u = testData.get("user");
+```
+
+| Need | Use | Why |
+|---|---|---|
+| Ordered sequence, duplicates ok, index access | `List` (`ArrayList`) | Fast random access |
+| Uniqueness / "have I seen this?" / dedupe | `Set` (`HashSet`) | O(1) contains, no dupes |
+| Lookup by key (config, test data, counts) | `Map` (`HashMap`) | O(1) key lookup |
+| Insertion order preserved | `LinkedHashSet` / `LinkedHashMap` | Predictable iteration |
+| Sorted order | `TreeSet` / `TreeMap` | Auto-sorted keys |
+
+```python
+# Python equivalents
+steps = ["open", "login"]          # list
+visited = set()                    # set
+test_data = {"user": "standard"}   # dict
+```
+
+Iterate, filter, transform:
+
+```java
+List<Integer> prices = List.of(199, 99, 299);
+int total = prices.stream().mapToInt(Integer::intValue).sum();
+List<Integer> cheap = prices.stream().filter(p -> p < 100).toList();
+```
+
+## Strings & string manipulation
+
+String questions are extremely common in SDET screens (covered deeply in the coding-round lesson). Know the everyday operations:
+
+```java
+String s = "  Hello, QA  ";
+s.trim();                      // "Hello, QA"
+s.toLowerCase();               // "  hello, qa  "
+s.contains("QA");              // true
+s.replace("QA", "SDET");       // "  Hello, SDET  "
+s.split(",");                  // ["  Hello", " QA  "]
+s.substring(2, 7);             // "Hello"
+String.join("-", "a", "b");    // "a-b"
+"abc".equals("abc");           // true  — ALWAYS use equals, not ==
+"abc".charAt(0);               // 'a'
+```
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Strings are immutable in Java. Building a string in a loop with `+` is O(n²) — use `StringBuilder`. And compare with `.equals()`; `==` compares references, not content.
+</div>
+
+## Exceptions & custom exceptions
+
+```java
+try {
+    driver.findElement(By.id("pay")).click();
+} catch (NoSuchElementException e) {
+    // log + screenshot, then fail with a clear message
+    captureScreenshot();
+    throw new AssertionError("Pay button missing on checkout", e);
+} finally {
+    // always runs — cleanup
+}
+```
+
+- **Checked** exceptions (e.g. `IOException`) must be declared or caught — Java forces handling.
+- **Unchecked** (`RuntimeException` and subclasses, like `NoSuchElementException`) need not be declared.
+
+A **custom exception** makes failures self-explanatory in reports:
+
+```java
+public class TestDataNotFoundException extends RuntimeException {
+    public TestDataNotFoundException(String key) {
+        super("No test data found for key: " + key);
+    }
+}
+
+String value = testData.get("user");
+if (value == null) throw new TestDataNotFoundException("user");
+```
+
+Read stack traces **top-down**: the first line of *your* code in the trace is usually the cause. Prefer IDE breakpoints over print-debugging.
+
+```python
+# Python: define and raise a custom exception
+class TestDataNotFound(Exception):
+    pass
+raise TestDataNotFound("No data for key: user")
+```
+
+## File / JSON / CSV handling
+
+Tests are data-driven, so reading external data is a daily task.
+
+```java
+// JSON with Jackson — deserialize a list of objects
+ObjectMapper mapper = new ObjectMapper();
+List<User> users = mapper.readValue(new File("users.json"),
+        new TypeReference<List<User>>() {});
+
+// Serialize back to JSON (e.g. to build a request body)
+String body = mapper.writeValueAsString(new User("sahil", 26));
+```
+
+```java
+// CSV — simple read with java.nio
+List<String> lines = Files.readAllLines(Path.of("data.csv"));
+for (String line : lines) {
+    String[] cols = line.split(",");   // for real CSV use a lib (OpenCSV) to handle quoting
+}
+```
+
+```python
+# Python — JSON and CSV are built in
+import json, csv
+with open("users.json") as f:
+    users = json.load(f)
+with open("data.csv", newline="") as f:
+    for row in csv.DictReader(f):
+        print(row["email"])
+```
+
+## Generics basics
+
+Generics give you type safety and remove casts. You already use them: `List<String>`, `Map<String, User>`. You can write your own:
+
+```java
+// A generic, reusable wrapper for API responses in tests
+public class ApiResult<T> {
+    private final int status;
+    private final T body;
+    public ApiResult(int status, T body) { this.status = status; this.body = body; }
+    public T getBody() { return body; }     // typed — no cast needed
+}
+
+ApiResult<User> result = callApi();
+User u = result.getBody();                  // compiler knows it's a User
+```
+
+## equals() and hashCode()
+
+When you put objects in a `Set` or use them as `Map` keys, Java decides equality/uniqueness via `equals()` and `hashCode()`. Override **both together**.
+
+```java
+public class User {
+    private final String email;
+    public User(String email) { this.email = email; }
+
+    @Override public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof User user)) return false;
+        return email.equals(user.email);
+    }
+    @Override public int hashCode() {
+        return Objects.hash(email);
+    }
+}
+```
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  The contract: equal objects MUST have equal hashCodes. If you override `equals` but not `hashCode`, a `HashSet` can store two "equal" users as duplicates and `map.get(key)` can fail to find a present key — a classic interview gotcha.
+</div>
+
+## Practice task
+
+Build a tiny `BasePage` + `LoginPage` + `InventoryPage` for SauceDemo. Locators `private`, shared waits `protected` in `BasePage`, page actions `public`. No test logic yet — just classes, encapsulated locators, and action methods. You've now written real framework code touching all four pillars.
+
+## Interview questions & model answers
+
+**Q: Explain the four pillars of OOP with a testing example.**
+A: Encapsulation — a page hides locators (`private`) and exposes actions (`public`), so tests don't break when a selector changes. Inheritance — a `BasePage` holds shared waits and every page extends it. Polymorphism — a `WebDriver` reference runs `ChromeDriver` or `FirefoxDriver` (overriding), and overloaded helper methods accept different arg types. Abstraction — tests call `checkoutPage.placeOrder()` while the WebDriver details stay hidden. Together they form the Page Object Model.
+
+**Q: Overloading vs overriding?**
+A: Overloading is same method name, different parameters, in the same class, resolved at compile time — like multiple `check()` helpers. Overriding is a subclass redefining a parent method with the same signature, resolved at runtime — like `MobileLoginPage` overriding `login()`. Mnemonic: overloading = compile-time, overriding = runtime.
+
+**Q: Interface vs abstract class — when do you use each?**
+A: An interface is a contract with no state (just constants and method signatures, plus default methods); a class can implement many. An abstract class can hold fields and partial implementation, and a class extends only one. Use an interface when unrelated types share a capability (`WebDriver`, `Comparable`); use an abstract class when related types share state and code (`BasePage`).
+
+**Q: When would you use a Set instead of a List?**
+A: When I need uniqueness or fast "have I seen this?" checks — e.g. collecting visited URLs in a crawler, or de-duplicating IDs. A Set rejects duplicates and gives O(1) `contains`. A List when order and duplicates matter and I need index access.
+
+**Q: Why override hashCode when you override equals?**
+A: Hash-based collections (`HashSet`, `HashMap`) first bucket objects by `hashCode`, then compare with `equals`. The contract says equal objects must share a hashCode. If I override only `equals`, two "equal" objects may land in different buckets — duplicates in a Set, lookups failing in a Map.
+
+**Q: How do you handle a checked exception in a test?**
+A: Either declare it with `throws` or wrap it in a try/catch. For tests I usually catch it, log/screenshot for diagnostics, and rethrow as an `AssertionError` or a custom exception with a clear message so the report explains what failed — rather than swallowing it.
+
+**Q: Static vs instance — and a testing pitfall?**
+A: Static belongs to the class (one shared copy — good for constants and stateless utilities); instance belongs to each object. The pitfall: mutable static state in parallel runs is shared across threads, so tests interfere and go flaky. Keep per-test state on instances or use ThreadLocal.
+
+**Q: What's the Page Object Model in OOP terms?**
+A: Each page is a class that encapsulates its locators and exposes high-level actions. Pages share a `BasePage` via inheritance, can override behavior polymorphically, and tests interact only with the abstract action methods. It centralizes UI knowledge so a UI change touches one class, not dozens of tests.
+
+## Common mistakes
+
+- **Exposing locators publicly** so tests reference raw selectors — breaks encapsulation; one UI change ripples everywhere.
+- **Comparing strings with `==`** instead of `.equals()` — compares references, gives wrong results.
+- **Overriding `equals` but not `hashCode`** — silent duplicates in Sets and failed Map lookups.
+- **Deep inheritance trees** for pages — fragile; prefer composition.
+- **Mutable static state in parallel runs** — cross-test contamination and flakiness.
+- **Building strings with `+` in loops** — use `StringBuilder` for O(n) instead of O(n²).
+- **Swallowing exceptions** (empty catch blocks) — failures vanish; always log and rethrow meaningfully.

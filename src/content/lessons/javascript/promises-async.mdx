@@ -1,0 +1,203 @@
+---
+title: "Promises & async/await"
+track: javascript
+summary: "States, chaining, error handling, and the concurrency helpers — plus how await maps back to the event loop."
+order: 5
+est: 22
+difficulty: medium
+priority: must
+tags: [promises, async-await, concurrency, error-handling]
+whyAsked: "Async correctness separates juniors from mid/senior. Expect questions on error propagation, running things in parallel vs series, and what await actually does."
+followUps:
+  - "How do you run independent async calls in parallel instead of in series?"
+  - "Difference between Promise.all, allSettled, race, and any?"
+  - "How does error handling differ between .then/.catch and try/catch with await?"
+  - "Is await blocking?"
+  - "How do you convert a callback-based API into a promise?"
+  - "What happens to an unhandled promise rejection?"
+resources:
+  - { label: "javascript.info: Promises, async/await", url: "https://javascript.info/async" }
+  - { label: "MDN: Using promises", url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Using_promises" }
+  - { label: "MDN: Promise", url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise" }
+---
+import JsPlayground from '../../../components/JsPlayground.astro';
+
+A **Promise** is an object representing a value that will exist later. It's in one of three states: **pending**, then exactly once it becomes **fulfilled** (with a value) or **rejected** (with a reason). Once settled, it never changes again.
+
+Two terms worth saying precisely: a promise is **settled** once it is either fulfilled or rejected (no longer pending). "Resolved" is slightly different — a resolved promise has been *locked* to follow another promise/thenable, which may still be pending. In practice "resolved" ≈ "will fulfil/reject based on something else." The constructor gives you `resolve` and `reject`:
+
+<JsPlayground code={`const p = new Promise((resolve, reject) => {
+  setTimeout(() => resolve('done'), 50);   // call reject(err) to fail
+});
+p.then(v => console.log('fulfilled:', v))
+ .catch(e => console.log('rejected:', e));`} height={180} />
+
+## Chaining and flattening
+
+`.then` returns a *new* promise, so calls chain. Crucially, if a `.then` callback returns a promise, the chain waits for it — promises auto-flatten, which is what makes sequential async readable.
+
+```js
+fetchUser(id)
+  .then(user => fetchPosts(user.id))   // returns a promise → chain waits
+  .then(posts => render(posts))
+  .catch(err => showError(err))        // one catch handles any earlier rejection
+  .finally(() => stopSpinner());       // runs regardless
+```
+
+A single `.catch` at the end handles a rejection from *any* preceding step, because a rejection skips `.then` handlers until it finds a `.catch`. `.catch(fn)` is just sugar for `.then(undefined, fn)`.
+
+**Flattening rule:** what a `.then` callback *returns* decides the next promise's value. Return a plain value → next `.then` gets that value. Return a promise → the chain *waits* for it and unwraps it (no nested `Promise<Promise<T>>`). Throw → the chain rejects.
+
+<JsPlayground code={`Promise.resolve(1)
+  .then(v => v + 1)                 // returns plain value → 2
+  .then(v => Promise.resolve(v * 10)) // returns a promise → waits, unwraps → 20
+  .then(v => { throw new Error('boom at ' + v); }) // throw → reject
+  .then(v => console.log('skipped'))   // skipped on rejection
+  .catch(e => console.log('caught:', e.message)); // 'caught: boom at 20'`} height={220} />
+
+## async/await is the same thing, nicer
+
+`async` functions always return a promise. `await` pauses the function until the awaited promise settles, then resumes with its value (or throws its rejection). With `await`, you use ordinary `try/catch`:
+
+```js
+async function load(id) {
+  try {
+    const user = await fetchUser(id);
+    const posts = await fetchPosts(user.id);
+    render(posts);
+  } catch (err) {
+    showError(err);
+  } finally {
+    stopSpinner();
+  }
+}
+```
+
+<div class="callout warn">
+  <div class="ct">await is not blocking the thread</div>
+  <code>await</code> suspends only the <i>async function</i>, not the whole program. The engine is free to run other tasks meanwhile; when the promise settles, the rest of the function is scheduled as a <b>microtask</b>. (See the Event Loop lesson — everything after an <code>await</code> is a microtask continuation.)
+</div>
+
+## Series vs parallel — the most common mistake
+
+Awaiting in a loop runs requests **one at a time**. If they're independent, that's needlessly slow. Kick them all off, then await together:
+
+<JsPlayground code={`function task(n, ms){ return new Promise(r => setTimeout(() => r(n), ms)); }
+
+(async () => {
+  // SERIES: ~300ms total (100+100+100)
+  // PARALLEL: ~100ms total — start all, then await
+  const results = await Promise.all([task(1,100), task(2,100), task(3,100)]);
+  console.log('parallel results:', results.join(', '));
+})();`} height={170} />
+
+## The concurrency combinators
+
+| Helper | Resolves when | Rejects when | Use for |
+|---|---|---|---|
+| `Promise.all` | all fulfil | any rejects (fail-fast) | need every result |
+| `Promise.allSettled` | all settle | never | want each outcome regardless |
+| `Promise.race` | first settles | first settles (if reject) | timeouts |
+| `Promise.any` | first fulfils | all reject (`AggregateError`) | first success wins |
+
+**`Promise.all`** — fail-fast; one rejection rejects the whole thing (other promises still run, but their results are discarded). Use when you need *every* result and any failure is fatal.
+
+<JsPlayground code={`const ok = (n, ms) => new Promise(r => setTimeout(() => r(n), ms));
+Promise.all([ok(1,30), ok(2,10), ok(3,20)])
+  .then(rs => console.log('all:', rs.join(','))) // 'all: 1,2,3' (input order!)
+  .catch(e => console.log('one failed:', e));`} height={170} />
+
+Note the result array preserves *input* order, not settle order.
+
+**`Promise.allSettled`** — never rejects; you get `{status, value}` or `{status, reason}` for each. Use when you want partial success (e.g. fetch 10 widgets, render the 8 that worked).
+
+<JsPlayground code={`const ok = v => Promise.resolve(v);
+const bad = e => Promise.reject(e);
+Promise.allSettled([ok('A'), bad('X'), ok('B')])
+  .then(rs => console.log(rs.map(r => r.status).join(','))); // fulfilled,rejected,fulfilled`} height={170} />
+
+**`Promise.race`** — settles with the *first* to settle, success or failure. Classic use: a timeout wrapper.
+
+<JsPlayground code={`const work = new Promise(r => setTimeout(() => r('result'), 100));
+const timeout = new Promise((_, rej) => setTimeout(() => rej('timed out'), 40));
+Promise.race([work, timeout])
+  .then(v => console.log('got:', v))
+  .catch(e => console.log('error:', e)); // 'error: timed out'`} height={180} />
+
+**`Promise.any`** — resolves with the first *fulfilment*, ignoring rejections; rejects only if *all* reject (with an `AggregateError`). Use for "first success wins" (e.g. fastest of several mirrors).
+
+<JsPlayground code={`const bad = e => Promise.reject(e);
+const ok = (v, ms) => new Promise(r => setTimeout(() => r(v), ms));
+Promise.any([bad('e1'), ok('B', 50), ok('C', 10)])
+  .then(v => console.log('first success:', v)); // 'first success: C'`} height={180} />
+
+## Converting callbacks to promises
+
+Legacy APIs use `(err, result)` callbacks. Wrap them once in a promise (this is what Node's `util.promisify` does):
+
+<JsPlayground code={`function legacy(value, cb) {                 // err-first callback API
+  setTimeout(() => cb(null, value * 2), 20);
+}
+function promisified(value) {
+  return new Promise((resolve, reject) => {
+    legacy(value, (err, result) => {
+      if (err) reject(err);
+      else resolve(result);
+    });
+  });
+}
+promisified(21).then(r => console.log('result:', r)); // 42`} height={220} />
+
+## What's the output? (timing puzzle)
+
+<JsPlayground code={`console.log('1');
+setTimeout(() => console.log('2'), 0);
+Promise.resolve().then(() => console.log('3'));
+(async () => { console.log('4'); await null; console.log('5'); })();
+console.log('6');
+// → ?`} height={190} />
+
+Answer: `1, 4, 6, 3, 5, 2`. Sync: `1`, then the async IIFE runs up to `await` printing `4`, then `6`. Microtasks: `3` (the `.then`) and `5` (the await continuation) in scheduling order. Macrotask `2` last.
+
+## Error-handling pitfalls
+
+- **Forgotten `.catch`** — an unhandled rejection triggers `unhandledrejection` (browser) / crashes the process (Node, by default in recent versions).
+- **`try/catch` won't catch un-awaited promises** — `try { doAsync(); } catch {}` catches nothing; you must `await` inside the `try`.
+- **Rejection inside a non-async callback** — e.g. throwing inside a `setTimeout` callback isn't caught by an outer `try/catch`.
+- **`Promise.all` swallows later results on first reject** — use `allSettled` if you need every outcome.
+- **`return` vs no `return` in a `.then`** — forgetting to return a promise breaks the chain's waiting and ordering.
+- **`async` function throwing** rejects its returned promise; the caller must `.catch`/`await`-in-`try`.
+
+## Common gotchas
+
+- **Sequential awaits for independent work** is the #1 perf bug — parallelize with `Promise.all`.
+- **`await` in a `forEach`** does nothing useful — `forEach` ignores the returned promise; use a `for...of` loop (sequential) or `map` + `Promise.all` (parallel).
+- **Mixing `.then` and `await`** unnecessarily — pick one style per function for readability.
+- **Creating promises that never settle** (forgetting to call resolve/reject) leaks pending state.
+
+## Interview questions & model answers
+
+**Q: What are the promise states?**
+Pending, fulfilled, rejected. A promise settles once (fulfilled or rejected) and is immutable thereafter.
+
+**Q: Series vs parallel — how do you parallelize?**
+Start all promises first, then `await Promise.all([...])`. Awaiting one-by-one in a loop serializes independent work.
+
+**Q: `all` vs `allSettled` vs `race` vs `any`?**
+`all`: all-or-nothing, fail-fast. `allSettled`: every outcome, never rejects. `race`: first to settle (success or failure). `any`: first fulfilment, rejects only if all fail.
+
+**Q: Is `await` blocking?**
+It suspends only its async function and yields to the event loop; the continuation runs as a microtask. The thread isn't blocked.
+
+**Q: How do error handling styles differ?**
+`.then/.catch` chains rejections to a trailing `.catch`; `async/await` uses ordinary `try/catch`. Both end up handling the same rejections.
+
+**Q: How do you convert a callback API to a promise?**
+Wrap it in `new Promise((resolve, reject) => ...)`, calling `resolve`/`reject` from the callback — or use `util.promisify` in Node.
+
+**Q: What happens to an unhandled rejection?**
+It fires `unhandledrejection` in browsers and, in modern Node, terminates the process by default. Always attach a `.catch` or wrap awaits in `try/catch`.
+
+## Say it out loud (30s)
+
+> "A promise is a future value in pending/fulfilled/rejected. `.then` returns a new promise and auto-flattens returned promises, so chains stay flat; one trailing `.catch` handles any rejection. `async/await` is sugar over this with normal try/catch. `await` suspends only its function — the continuation runs as a microtask — so to parallelize independent work I start all the promises and `Promise.all` them rather than awaiting in a loop."

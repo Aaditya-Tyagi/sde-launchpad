@@ -1,0 +1,191 @@
+---
+title: "LLD: Design an EventEmitter / Pub-Sub"
+track: lld
+summary: "Full implementation of a typed EventEmitter with on, off, emit, once, and removeAll — one of the most common LLD coding questions."
+order: 3
+est: 22
+difficulty: medium
+priority: must
+tags: [lld, event-emitter, pub-sub, observer-pattern, typescript]
+whyAsked: "EventEmitter is the most common LLD question in JS interviews. It tests observer pattern knowledge, TypeScript generics, and edge cases like once() and cleanup."
+followUps:
+  - "How would you make the EventEmitter type-safe so emitting 'click' requires the correct payload type?"
+  - "What is the difference between EventEmitter and pub/sub?"
+  - "How would you add wildcards (emitting 'user.*' triggers 'user.login' listeners)?"
+  - "How would you prevent memory leaks from unremoved listeners?"
+  - "What does Node's EventEmitter do that yours doesn't?"
+resources:
+  - { label: "Node.js EventEmitter docs", url: "https://nodejs.org/api/events.html" }
+---
+
+## Step 1: Requirements
+
+- `on(event, listener)` — subscribe; return unsubscribe function
+- `off(event, listener)` — unsubscribe
+- `emit(event, ...args)` — notify all listeners for this event
+- `once(event, listener)` — subscribe, auto-remove after one call
+- `removeAll(event?)` — remove all listeners (optional: for a specific event)
+- TypeScript generics for type-safe event maps
+
+---
+
+## Step 2: Basic implementation
+
+```ts
+type Listener<T extends any[]> = (...args: T) => void;
+
+class EventEmitter {
+  private listeners = new Map<string, Set<Listener<any[]>>>();
+
+  on<T extends any[]>(event: string, fn: Listener<T>): () => void {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    this.listeners.get(event)!.add(fn as Listener<any[]>);
+    // Return unsubscribe function
+    return () => this.off(event, fn);
+  }
+
+  off<T extends any[]>(event: string, fn: Listener<T>): void {
+    this.listeners.get(event)?.delete(fn as Listener<any[]>);
+  }
+
+  emit<T extends any[]>(event: string, ...args: T): void {
+    this.listeners.get(event)?.forEach(fn => fn(...args));
+  }
+
+  once<T extends any[]>(event: string, fn: Listener<T>): () => void {
+    const wrapper: Listener<T> = (...args) => {
+      fn(...args);
+      this.off(event, wrapper); // auto-remove after first call
+    };
+    return this.on(event, wrapper);
+  }
+
+  removeAll(event?: string): void {
+    if (event) {
+      this.listeners.delete(event);
+    } else {
+      this.listeners.clear();
+    }
+  }
+
+  listenerCount(event: string): number {
+    return this.listeners.get(event)?.size ?? 0;
+  }
+}
+```
+
+## Step 3: Type-safe event map (bonus — often asked as follow-up)
+
+```ts
+// Constrain events and their payload types using a generic map
+type EventMap = Record<string, any[]>;
+
+class TypedEventEmitter<Events extends EventMap> {
+  private listeners = new Map<keyof Events, Set<(...args: any[]) => void>>();
+
+  on<K extends keyof Events>(event: K, fn: (...args: Events[K]) => void): () => void {
+    if (!this.listeners.has(event)) this.listeners.set(event, new Set());
+    this.listeners.get(event)!.add(fn);
+    return () => this.off(event, fn);
+  }
+
+  off<K extends keyof Events>(event: K, fn: (...args: Events[K]) => void): void {
+    this.listeners.get(event)?.delete(fn);
+  }
+
+  emit<K extends keyof Events>(event: K, ...args: Events[K]): void {
+    this.listeners.get(event)?.forEach(fn => fn(...args));
+  }
+
+  once<K extends keyof Events>(event: K, fn: (...args: Events[K]) => void): () => void {
+    const wrapper = (...args: Events[K]) => { fn(...args); this.off(event, wrapper); };
+    return this.on(event, wrapper);
+  }
+}
+
+// Usage — fully type-safe
+type AppEvents = {
+  login:  [userId: string, timestamp: number];
+  logout: [userId: string];
+  error:  [message: string, code: number];
+};
+
+const emitter = new TypedEventEmitter<AppEvents>();
+
+emitter.on('login', (userId, timestamp) => {
+  // TypeScript knows userId: string, timestamp: number
+  console.log(`User ${userId} logged in at ${timestamp}`);
+});
+
+emitter.emit('login', 'u_123', Date.now()); // ✓
+emitter.emit('login', 'u_123');             // ✗ TypeScript error — missing timestamp
+emitter.emit('unknown', 'data');            // ✗ TypeScript error — unknown event
+```
+
+## Step 4: Edge cases to talk through
+
+```ts
+// Edge case 1: emitting inside a listener (mutation during iteration)
+// Using Set protects us — iterating over Set is safe against .delete() calls
+// during iteration (the deleted item won't appear again, but the current
+// iteration isn't corrupted). However, to be safe, snapshot before iterating:
+emit<T extends any[]>(event: string, ...args: T): void {
+  const fns = this.listeners.get(event);
+  if (!fns) return;
+  // Snapshot to protect against listener removing itself mid-emit
+  [...fns].forEach(fn => fn(...args));
+}
+
+// Edge case 2: once() unsubscribe before it fires
+const unsub = emitter.once('login', handler);
+unsub(); // removes the wrapper before it can fire
+
+// Edge case 3: max listeners warning (Node.js does this — mention it)
+private maxListeners = 10;
+on(event, fn) {
+  // ...
+  if (this.listeners.get(event)!.size > this.maxListeners) {
+    console.warn(`MaxListenersExceeded: ${event} has > ${this.maxListeners} listeners — possible leak`);
+  }
+  // ...
+}
+```
+
+## Tests to validate your implementation
+
+```ts
+const ee = new EventEmitter();
+let callCount = 0;
+
+// on/emit
+const unsub = ee.on('data', (x) => { callCount += x; });
+ee.emit('data', 5);
+ee.emit('data', 3);
+console.assert(callCount === 8, 'on/emit');
+
+// off via unsubscribe function
+unsub();
+ee.emit('data', 100);
+console.assert(callCount === 8, 'unsubscribe works');
+
+// once
+let onceFired = 0;
+ee.once('tick', () => onceFired++);
+ee.emit('tick');
+ee.emit('tick');
+ee.emit('tick');
+console.assert(onceFired === 1, 'once fires exactly once');
+
+// removeAll
+ee.on('x', () => {});
+ee.on('x', () => {});
+ee.removeAll('x');
+console.assert(ee.listenerCount('x') === 0, 'removeAll');
+```
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "I store listeners in a `Map<string, Set<Listener>>`. `on` adds to the Set and returns an unsubscribe closure. `off` deletes from the Set. `emit` iterates a snapshot of the Set (to safely handle self-removal). `once` wraps the listener in a function that calls the original then removes the wrapper. The typed version uses a generic `EventMap` so TypeScript enforces both the event name and its payload types at call sites."
+</div>

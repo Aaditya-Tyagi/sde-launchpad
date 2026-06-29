@@ -1,0 +1,211 @@
+---
+title: "System Design: the framework"
+track: system-design
+summary: "A repeatable 6-step structure, capacity math, latency numbers, CAP/PACELC, and consistency models so you never freeze on an open-ended design question."
+order: 1
+est: 32
+difficulty: hard
+priority: must
+tags: [system-design, framework, scaling, cap, consistency, estimation]
+whyAsked: "Open-ended design rounds reward structure over trivia. A clear framework, real capacity math, and fluency with CAP/consistency signal seniority and keep you from rambling."
+followUps:
+  - "How do you estimate scale / capacity?"
+  - "What are functional vs non-functional requirements?"
+  - "How do you decide where to add a cache or a queue?"
+  - "Explain CAP, and then PACELC. Which do you pick and why?"
+  - "What consistency model does your design need?"
+  - "What's the difference between an SLA, an SLO, and an SLI?"
+resources:
+  - { label: "System Design Primer", url: "https://github.com/donnemartin/system-design-primer" }
+  - { label: "ByteByteGo", url: "https://bytebytego.com/" }
+  - { label: "Latency Numbers Every Programmer Should Know", url: "https://gist.github.com/jboner/2841832" }
+  - { label: "Designing Data-Intensive Applications (Kleppmann)", url: "https://dataintensive.net/" }
+---
+
+The mistake in design rounds isn't usually missing knowledge — it's jumping to a diagram before scoping the problem. Use a fixed structure and **narrate it out loud**. The interviewer is grading your reasoning, not whether you reproduce a canonical diagram.
+
+## The 6 steps
+
+### 1. Clarify requirements
+Split into two buckets and write them down where the interviewer can see them:
+
+- **Functional** — what the system *does*: "post a tweet, view a home feed, follow a user, like a post." These become your API and data model.
+- **Non-functional** — the *qualities* the system must have: scale (DAU, QPS), latency targets (`p99 < 200ms`), read:write ratio, consistency tolerance, availability target, durability, cost.
+
+Ask 3–5 sharp scoping questions, then **state your assumptions explicitly** ("I'll assume 100M DAU, reads dominate writes ~100:1, and a like count lagging a second is acceptable"). Locking these down first is what drives every later decision; skipping this is the #1 reason candidates flail.
+
+### 2. Estimate scale (back-of-the-envelope)
+You don't need precision — you need the *order of magnitude*, because 100 QPS and 1M QPS are completely different architectures. Compute QPS, storage/day, and bandwidth. (Worked example below.)
+
+### 3. Define the API
+A handful of endpoints: `POST /tweet`, `GET /feed?cursor=…&limit=20`. Designing the API forces clarity on inputs/outputs and surfaces exactly what data you must persist. Keep it minimal — you can always add.
+
+### 4. Data model
+Entities, relationships, and — crucially — the **access patterns**. The access patterns (not the entities) decide SQL vs NoSQL, what to index, and how to partition. "I read a user's feed by `user_id` ordered by time" is what tells you the shard key and the index, not the ER diagram.
+
+### 5. High-level design
+Draw the boxes: client → load balancer → stateless services → cache → database, plus a queue + workers for async work and object storage for blobs. (See *building blocks*.) Keep it high-level here; resist diving deep yet.
+
+### 6. Deep-dive & tradeoffs
+Pick the 1–2 hard parts the interviewer cares about and go deep: how to scale the feed, how to keep the cache consistent, how to shard, what happens when a node dies. **Every choice is a tradeoff — state the alternative and why you rejected it.** This step is where senior candidates separate themselves.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Spend roughly 5 min on requirements + estimation, 5 min on API + data model, 5 min on the high-level diagram, and the remaining ~20 min on deep-dives. Most candidates invert this and run out of time before the interesting part.
+</div>
+
+## Worked capacity estimate (do this in your head)
+
+Take a Twitter-like feed. Assumptions: **100M DAU**, each user reads their feed 10×/day, posts 0.1 tweets/day (10% of users post once).
+
+**QPS (reads):**
+```
+reads/day  = 100M users × 10 reads     = 1B reads/day
+avg QPS    = 1e9 / 86,400 s            ≈ 11,600 QPS
+peak QPS   ≈ 2–3× average              ≈ ~30,000 QPS
+```
+
+**QPS (writes):**
+```
+writes/day = 100M × 0.1                = 10M tweets/day
+avg QPS    = 1e7 / 86,400              ≈ 116 QPS  → peak ~300 QPS
+```
+Read:write ≈ **100:1** — confirms a read-heavy system. That single ratio justifies caching + read replicas and tells you writes are *not* your scaling problem.
+
+**Storage/day** (tweet ≈ 300 bytes text + metadata, say 1 KB to be safe):
+```
+10M tweets/day × 1 KB = 10 GB/day  ≈ 3.65 TB/year (text only)
+```
+Media changes everything: if 10% of tweets carry a 500 KB image →
+```
+1M images/day × 500 KB = 500 GB/day ≈ 180 TB/year → object storage (S3), not the DB.
+```
+
+**Bandwidth (read path):** 30K QPS × ~10 tweets/response × 1 KB ≈ **300 MB/s** outbound for text; media served via CDN, not your app tier.
+
+The discipline: round aggressively (1 day ≈ 100K seconds, not 86,400), keep powers of ten, and *narrate the assumptions* so the interviewer can correct you early.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Memorize: 1 day ≈ <code>10^5</code> s, 1 month ≈ <code>2.5M</code> s. 1M writes/day ≈ <code>~12</code> QPS. Multiply average by 2–3× for peak. These three shortcuts cover almost every estimate you'll be asked to do.
+</div>
+
+## Latency numbers every engineer should know
+
+Order-of-magnitude, ~2020s hardware. The *ratios* matter more than the exact figures.
+
+| Operation | Latency | Intuition |
+|---|---|---|
+| L1 cache reference | ~1 ns | baseline |
+| Branch mispredict | ~3 ns | |
+| L2 cache reference | ~4 ns | |
+| Mutex lock/unlock | ~17 ns | |
+| Main memory (RAM) reference | ~100 ns | 100× slower than L1 |
+| Compress 1 KB (Zippy/Snappy) | ~2 µs | |
+| Read 1 MB sequentially from RAM | ~3 µs | |
+| SSD random read | ~16 µs | |
+| Read 1 MB sequentially from SSD | ~50 µs | |
+| Round trip within same datacenter | ~0.5 ms | |
+| Read 1 MB sequentially from disk (HDD) | ~1–5 ms | |
+| Disk seek (HDD) | ~5–10 ms | avoid random HDD I/O |
+| Round trip US East ↔ US West | ~40 ms | |
+| Round trip cross-continent (US ↔ Europe) | ~80–150 ms | |
+
+Takeaways you can say out loud: **RAM is ~100× faster than SSD, SSD is ~100× faster than a network round trip, and a cross-region round trip dwarfs everything** — which is exactly why we cache in memory, why a CDN edge near the user matters, and why chatty cross-region calls kill latency. "A cross-region hop costs ~100ms, so I'll keep the synchronous path inside one region and replicate asynchronously" is a senior sentence.
+
+## CAP — and why PACELC is the better tool
+
+**CAP:** during a network **P**artition, you must choose between **C**onsistency (reject/stall to avoid stale data) and **A**vailability (serve possibly-stale data). You cannot have both *while partitioned*. Note CAP only speaks about the partition case — that's its big limitation.
+
+**PACELC** completes the picture: **if Partition, choose A or C; Else (normal operation), choose between Latency and Consistency.** Even with no partition, stronger consistency (e.g. synchronous quorum reads/writes) costs latency. This is the tradeoff you actually live with 99.9% of the time.
+
+| System | Partition behavior | Normal behavior |
+|---|---|---|
+| DynamoDB / Cassandra | AP (stay available) | EL (favor latency) — `PA/EL` |
+| HBase / MongoDB (default) | CP (stay consistent) | EC (favor consistency) — `PC/EC` |
+| Most RDBMS (single primary) | CP | EC — `PC/EC` |
+
+Don't just recite the acronym. Say: "Under a partition I'd stay **available** and serve a slightly stale like count, because for a social feed availability beats strict freshness; for the payments ledger I'd flip to **consistent** and reject the write. And even with no partition, I accept ~replication-lag staleness on reads to keep latency low."
+
+## Consistency models (strongest → weakest)
+
+| Model | Guarantee | Typical use |
+|---|---|---|
+| **Strong / linearizable** | Every read sees the latest committed write; behaves like a single copy | Bank balance, inventory decrement, locks |
+| **Read-your-writes** | A user always sees their *own* writes (others may lag) | Profile edits, posting your own comment |
+| **Monotonic reads** | You never see time go backwards (read won't show older data than a previous read) | Pagination, dashboards |
+| **Causal** | Operations with a cause→effect relationship are seen in order; unrelated ops may differ | Comment shown after the post it replies to |
+| **Eventual** | Replicas converge *eventually* if writes stop; reads may be stale meanwhile | Like counts, view counts, feeds |
+
+Picking the *weakest model that's still correct* is the senior move — strong consistency is expensive (coordination, latency, reduced availability). "Read-your-writes for the author, eventual for everyone else" is a common, cheap, correct answer for social systems.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  "Eventually consistent" is not "sometimes wrong forever" — it means replicas converge once writes stop. But it can surface real bugs: a user edits their profile, gets routed to a lagging replica, and sees the *old* value. The fix (read-your-writes: route a user's reads to the primary or a session-pinned replica for a short window) is the kind of detail interviewers reward.
+</div>
+
+## SLA, SLO, SLI
+
+- **SLI (Indicator)** — the actual *measurement*: e.g. "fraction of requests served `< 200ms`", "successful-request ratio."
+- **SLO (Objective)** — the internal *target* for an SLI: "p99 latency `< 200ms`, 99.9% availability over 30 days."
+- **SLA (Agreement)** — the *contractual* promise to customers, with penalties if missed. Always **looser** than your SLO (you give yourself headroom).
+
+The math that matters: **availability nines** = downtime budget.
+```
+99%      → ~3.65 days/year down
+99.9%    → ~8.8 hours/year   ("three nines")
+99.99%   → ~52 minutes/year
+99.999%  → ~5 minutes/year   ("five nines" — very expensive)
+```
+Every extra nine costs real money (redundancy, multi-region, on-call). Say: "I'd target three nines; the error budget tells us how much risk we can spend on shipping fast vs. hardening."
+
+## The levers you reach for
+
+| Goal | Lever | Cost / tradeoff |
+|---|---|---|
+| Scale reads | Cache (Redis), read replicas, CDN for static | Cache invalidation; replication lag → stale reads |
+| Scale writes | Shard/partition, batch, write-optimized (LSM) store | Cross-shard joins/txns hard; hot shards |
+| Smooth spikes / decouple | Message queue + background workers | At-least-once → need idempotent consumers |
+| Reduce latency | Cache, CDN edge, denormalize, precompute | Staleness; storage cost; write amplification |
+| Stay available | Replicate, health-check, graceful degradation | Cost; eventual consistency |
+| Reduce cost | Tiered storage, autoscaling, compression | Complexity; cold-read latency |
+
+The art is reaching for a lever **only when a non-functional requirement forces it**, and naming the cost as you do. Adding a cache "because caches are good" is a weak answer; "reads are 100:1 and the same hot tweets are read repeatedly, so a cache cuts DB load ~95% at the cost of invalidation complexity" is a strong one.
+
+## Interview questions & model answers
+
+**Q: How do you start an open-ended design question?**
+"I clarify functional vs non-functional requirements and ask scoping questions to pin down scale and consistency needs. Then I do back-of-envelope estimation, define a minimal API, sketch the data model from the access patterns, draw a high-level diagram, and spend most of the time on the 1–2 hard deep-dives, framing each decision as a tradeoff."
+
+**Q: Why estimate capacity at all?**
+"Because the architecture changes by orders of magnitude. At 100 QPS a single Postgres box is fine; at 1M QPS I need sharding, caching, and async pipelines. I also use the read:write ratio to decide where to invest — a 100:1 ratio tells me reads are the problem, so caching and replicas, not write sharding."
+
+**Q: Functional vs non-functional — give an example of each driving a decision.**
+"Functional 'view a feed' gives me a `GET /feed` endpoint and a posts table. Non-functional 'feed loads p99 `< 200ms` at 100M DAU, eventual consistency OK' is what tells me to precompute feeds, cache them, and accept staleness — the *qualities* drive the architecture more than the features do."
+
+**Q: Explain CAP, then PACELC.**
+"CAP says during a partition you choose consistency or availability, not both. But CAP only covers the partition case. PACELC adds: *else* — in normal operation — you still trade latency vs consistency, because stronger consistency means coordination. So Dynamo is PA/EL: available under partition, low-latency normally. A single-primary SQL DB is PC/EC."
+
+**Q: What consistency model does a 'like count' need vs a 'bank transfer'?**
+"Like count: eventual consistency — it can lag a second, nobody's harmed, and that buys availability and low latency. Bank transfer: strong/linearizable inside a transaction — partial or stale state is a correctness bug, so I accept the coordination cost."
+
+**Q: What's the difference between an SLA, SLO, and SLI?**
+"SLI is the measured metric, SLO is our internal target for it, SLA is the contractual promise (looser than the SLO, with penalties). The gap between SLO and 100% is the error budget — how much unreliability we can spend on moving fast."
+
+**Q: When would you NOT add a cache?**
+"When data is write-heavy or rarely re-read (low hit rate makes the cache pure overhead), when staleness is unacceptable and the data changes constantly, or when the dataset is tiny and already in memory. A cache trades freshness and adds an invalidation failure mode — I add it only when the read pattern justifies it."
+
+## Common mistakes / what weak candidates do
+
+- **Jumping straight to a diagram** without scoping requirements or scale — then redesigning halfway through.
+- **Estimating with false precision** (pulling out a calculator for `86,400`) instead of rounding to powers of ten and moving on.
+- **Reciting CAP as a slogan** ("you can only pick two") without choosing for *this* system or knowing PACELC.
+- **Defaulting to "eventually consistent" everywhere** without noticing the spots that genuinely need read-your-writes or strong consistency.
+- **Adding components for their own sake** ("let's add Kafka, Redis, and Elasticsearch") with no requirement forcing them.
+- **Designing entities before access patterns**, then being unable to justify the shard key or indexes.
+- **Going silent** — the framework is a script to keep narrating; an interviewer can't grade reasoning they can't hear.
+
+<div class="callout key">
+  <div class="ct">The senior signal</div>
+  Drive the conversation with the framework, state your assumptions, do the capacity math in your head, and frame every decision as a tradeoff against a named alternative. Know your latency ratios (RAM ≪ SSD ≪ network ≪ cross-region), pick the <i>weakest correct</i> consistency model, and reach for a lever only when a non-functional requirement demands it. Interviewers grade your <i>reasoning</i>, not a "correct" diagram.
+</div>

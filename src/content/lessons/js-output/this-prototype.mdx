@@ -1,0 +1,403 @@
+---
+title: "Output Questions: this & Prototype Chain"
+track: js-output
+summary: "Predict the output — implicit/explicit/new binding, arrow functions, prototype lookup, class inheritance, and the classic this-loss traps."
+order: 4
+est: 28
+difficulty: hard
+priority: must
+tags: [this, prototype, new, call, apply, bind, arrow, class, inheritance]
+whyAsked: "this binding is the most commonly misunderstood JS concept. These questions separate candidates who have memorized rules from those who can reason through execution."
+followUps:
+  - "What are the four rules for determining this?"
+  - "Why does this change when you extract a method?"
+  - "How does this work inside an arrow function?"
+  - "What does new do step by step?"
+  - "What is the prototype of a class instance?"
+resources:
+  - { label: "javascript.info: Object methods, this", url: "https://javascript.info/object-methods" }
+  - { label: "javascript.info: Prototype chain", url: "https://javascript.info/prototype-inheritance" }
+---
+import JsPlayground from '../../../components/JsPlayground.astro';
+
+**The four this rules (highest to lowest priority):**
+1. **new** — `this` is the newly created object.
+2. **Explicit** — `call/apply/bind` sets `this` explicitly.
+3. **Implicit** — `obj.method()` → `this` is `obj`.
+4. **Default** — bare function call → `this` is global/`undefined` (strict).
+
+Arrow functions have **no own `this`** — they inherit from the enclosing lexical scope.
+
+---
+
+## Q1 — implicit binding
+
+<JsPlayground code={`const obj = {
+  name: 'Alice',
+  greet() {
+    return 'Hello, ' + this.name;
+  }
+};
+
+console.log(obj.greet()); // ?
+
+const fn = obj.greet;
+console.log(fn());        // ?`} height={155} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+"Hello, Alice"
+"Hello, undefined"
+```
+`obj.greet()` — implicit binding: `this` is `obj`. `fn()` — the method is extracted into a plain variable, so when called as `fn()`, `this` is global (`window`) or `undefined` (strict). `window.name` is `""` (empty string in browsers, `undefined` in Node strict).
+</details>
+
+---
+
+## Q2 — call, apply, bind
+
+<JsPlayground code={`function greet(greeting, punctuation) {
+  return greeting + ', ' + this.name + punctuation;
+}
+
+const user = { name: 'Bob' };
+
+console.log(greet.call(user, 'Hello', '!'));      // ?
+console.log(greet.apply(user, ['Hi', '?']));      // ?
+
+const bound = greet.bind(user, 'Hey');
+console.log(bound('.')); // ?`} height={160} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+"Hello, Bob!"
+"Hi, Bob?"
+"Hey, Bob."
+```
+- `call(thisArg, ...args)` — sets `this` and spreads args.
+- `apply(thisArg, argsArray)` — same but args as array.
+- `bind(thisArg, ...partialArgs)` — returns a **new function** with `this` permanently bound. The `'Hey'` is partially applied; `'.'` is the remaining argument.
+</details>
+
+---
+
+## Q3 — arrow function: no own this
+
+<JsPlayground code={`const obj = {
+  value: 42,
+  regular: function() {
+    return this.value;
+  },
+  arrow: () => {
+    return this.value;
+  }
+};
+
+console.log(obj.regular()); // ?
+console.log(obj.arrow());   // ?`} height={170} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+42
+undefined
+```
+`regular()` — implicit binding: `this` is `obj`, so `this.value` is `42`. `arrow()` — arrow functions **don't have their own `this`**. They inherit `this` from where they were *defined* — at the object literal level, which is the global scope. `global.value` is `undefined`.
+</details>
+
+---
+
+## Q4 — this in nested functions
+
+<JsPlayground code={`const obj = {
+  name: 'Outer',
+  getNameFn: function() {
+    return function() {
+      return this.name;  // ?
+    };
+  },
+  getNameArrow: function() {
+    return () => {
+      return this.name;  // ?
+    };
+  }
+};
+
+const fn1 = obj.getNameFn()();
+const fn2 = obj.getNameArrow()();
+
+console.log(fn1); // ?
+console.log(fn2); // ?`} height={220} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+undefined
+"Outer"
+```
+`getNameFn()` returns a plain function. When called as `()`, `this` is global → `global.name` is `undefined`. 
+`getNameArrow()` returns an arrow function. Arrows inherit `this` from the enclosing scope — which is `getNameArrow`'s `this`, which is `obj` (called as `obj.getNameArrow()`). So `this.name` is `"Outer"`.
+</details>
+
+---
+
+## Q5 — new binding
+
+<JsPlayground code={`function Person(name) {
+  this.name = name;
+  this.sayHi = function() {
+    return 'Hi, I am ' + this.name;
+  };
+}
+
+const p1 = new Person('Alice');
+const p2 = new Person('Bob');
+
+console.log(p1.sayHi());              // ?
+console.log(p2.sayHi());              // ?
+console.log(p1.sayHi === p2.sayHi); // ?`} height={175} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+"Hi, I am Alice"
+"Hi, I am Bob"
+false
+```
+`new Person('Alice')` creates a fresh object, sets `this` to it, runs the constructor, and returns it. Each instance has its own `name` AND its own `sayHi` function (because it's created inside the constructor — this wastes memory). If `sayHi` were on `Person.prototype`, instances would share one copy.
+</details>
+
+---
+
+## Q6 — prototype chain lookup
+
+<JsPlayground code={`function Animal(name) {
+  this.name = name;
+}
+Animal.prototype.speak = function() {
+  return this.name + ' speaks';
+};
+
+const a = new Animal('Dog');
+
+console.log(a.name);                      // ?
+console.log(a.speak());                   // ?
+console.log(a.hasOwnProperty('name'));    // ?
+console.log(a.hasOwnProperty('speak'));   // ?
+console.log(a.__proto__ === Animal.prototype); // ?`} height={185} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+"Dog"
+"Dog speaks"
+true
+false
+true
+```
+`name` is an **own property** on `a`. `speak` is on `Animal.prototype` — not own. When you access `a.speak`, JS walks the prototype chain: `a` → `Animal.prototype` (found!). `hasOwnProperty` returns `false` for prototype-inherited properties. `a.__proto__` points to `Animal.prototype`.
+</details>
+
+---
+
+## Q7 — class inheritance and super
+
+<JsPlayground code={`class Animal {
+  constructor(name) {
+    this.name = name;
+  }
+  speak() {
+    return this.name + ' makes a noise.';
+  }
+}
+
+class Dog extends Animal {
+  speak() {
+    return super.speak() + ' Woof!';
+  }
+}
+
+const d = new Dog('Rex');
+console.log(d.speak());                       // ?
+console.log(d instanceof Dog);                // ?
+console.log(d instanceof Animal);             // ?
+console.log(Object.getPrototypeOf(Dog) === Animal); // ?`} height={215} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+"Rex makes a noise. Woof!"
+true
+true
+true
+```
+`Dog.speak()` calls `super.speak()` which invokes `Animal.prototype.speak` with `this` still being the Dog instance (`d`). `instanceof` walks the prototype chain — `d` is both a `Dog` and an `Animal`. `Object.getPrototypeOf(Dog)` (not the instance — the class itself!) is `Animal` — classes inherit static methods too.
+</details>
+
+---
+
+## Q8 — this lost in callback
+
+<JsPlayground code={`class Button {
+  constructor(label) {
+    this.label = label;
+  }
+
+  clickRegular() {
+    setTimeout(function() {
+      console.log('regular:', this.label); // ?
+    }, 0);
+  }
+
+  clickArrow() {
+    setTimeout(() => {
+      console.log('arrow:', this.label);   // ?
+    }, 0);
+  }
+}
+
+const btn = new Button('Save');
+btn.clickRegular();
+btn.clickArrow();`} height={220} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+regular: undefined
+arrow: Save
+```
+`clickRegular` — the callback is a regular function. When `setTimeout` calls it, `this` is global/undefined. `global.label` is `undefined`. 
+`clickArrow` — arrow function captures `this` from `clickArrow`'s scope (which is the `Button` instance), so `this.label` is `'Save'`.
+</details>
+
+---
+
+## Q9 — bind priority over implicit
+
+<JsPlayground code={`function greet() {
+  return this.name;
+}
+
+const obj1 = { name: 'A', greet };
+const obj2 = { name: 'B' };
+
+const boundToObj2 = obj1.greet.bind(obj2);
+
+console.log(obj1.greet());     // ?
+console.log(boundToObj2());    // ?`} height={155} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+"A"
+"B"
+```
+`obj1.greet()` — implicit binding → `this` is `obj1`. `boundToObj2()` — explicit `bind` wins over implicit. Even though `greet` was originally accessed via `obj1`, `bind(obj2)` permanently sets `this` to `obj2`.
+</details>
+
+---
+
+## Q10 — class static this
+
+<JsPlayground code={`class Counter {
+  static count = 0;
+
+  static increment() {
+    this.count++;
+    return this.count;
+  }
+}
+
+class SpecialCounter extends Counter {
+  static count = 100;
+}
+
+console.log(Counter.increment());        // ?
+console.log(SpecialCounter.increment()); // ?
+console.log(Counter.count);             // ?
+console.log(SpecialCounter.count);      // ?`} height={195} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+1
+101
+1
+101
+```
+Static methods are called on the class itself — `this` is the class (constructor function). `Counter.increment()` uses `this = Counter`, so `Counter.count` becomes `1`. `SpecialCounter.increment()` — even though `increment` is inherited from `Counter`, `this` is `SpecialCounter`, so `SpecialCounter.count` becomes `101`. Each subclass has its own `count`.
+</details>
+
+---
+
+## Q11 — prototype property vs own property
+
+<JsPlayground code={`function Foo() {
+  this.x = 1;
+}
+Foo.prototype.x = 2;
+Foo.prototype.y = 3;
+
+const f = new Foo();
+
+console.log(f.x);  // ?
+console.log(f.y);  // ?
+
+delete f.x;
+console.log(f.x);  // ?`} height={165} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+1
+3
+2
+```
+`f.x` — own property `1` shadows `Foo.prototype.x = 2`. `f.y` — not own, found on prototype: `3`. After `delete f.x` removes the **own** property, the prototype's `x = 2` is revealed. `delete` only removes own properties.
+</details>
+
+---
+
+## Q12 — Object.create and prototype
+
+<JsPlayground code={`const proto = {
+  greet() { return 'Hello from ' + this.name; }
+};
+
+const obj = Object.create(proto);
+obj.name = 'World';
+
+console.log(obj.greet());                          // ?
+console.log(Object.getPrototypeOf(obj) === proto); // ?
+console.log(obj.hasOwnProperty('greet'));           // ?
+console.log(obj.hasOwnProperty('name'));            // ?`} height={170} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+"Hello from World"
+true
+false
+true
+```
+`Object.create(proto)` creates an object whose `[[Prototype]]` is `proto`. `obj.greet()` finds `greet` on the prototype; `this` is `obj` (implicit binding). `greet` is NOT an own property — it's on the prototype. `name` IS an own property (set directly on `obj`).
+</details>
+
+<div class="callout key">
+  <div class="ct">The this resolution rules — ranked</div>
+  <strong>1. new</strong> → fresh object. <strong>2. bind/call/apply</strong> → explicit. <strong>3. obj.method()</strong> → obj. <strong>4. bare fn()</strong> → global/undefined. Arrow functions skip all rules — they inherit <code>this</code> lexically from where they were <em>written</em>, not called.
+</div>

@@ -1,0 +1,79 @@
+---
+title: "Two Pointers: Move Zeroes"
+track: quick-wins
+summary: "Compact an array in place with a read/write two-pointer — the pattern behind half of all easy/medium array problems."
+order: 1
+est: 18
+difficulty: easy
+priority: must
+tags: [two-pointers, arrays, in-place]
+whyAsked: "It's the cleanest test of the read/write two-pointer pattern — can you compact an array in place, O(n) time and O(1) space, without a bug? This exact problem tripped you up, and the pattern generalizes to remove-element, dedupe, and partition."
+followUps:
+  - "Can you do it with the minimum number of writes (only swap when needed)?"
+  - "What if you had to move zeroes to the front instead?"
+  - "Generalize it: remove all instances of a given value in place."
+  - "What's the time and space complexity, and why is it optimal?"
+resources:
+  - { label: "LeetCode: Move Zeroes", url: "https://leetcode.com/problems/move-zeroes/" }
+  - { label: "NeetCode: two-pointer pattern", url: "https://neetcode.io/" }
+---
+import ArrayViz from '../../../components/ArrayViz.astro';
+
+The pattern behind half of all easy/medium array problems is the **read/write two-pointer**: one pointer reads through the array, another marks where the next "kept" element should be written. Move Zeroes is the canonical drill.
+
+> **Problem.** Given an array, move all `0`s to the end while keeping the relative order of the non-zero elements. Do it **in place** — no copy.
+
+## See it run
+
+Step through it. The **slow** pointer holds the next slot for a non-zero value; the **fast** pointer scans ahead. Every time fast lands on a non-zero, we put it at slow and advance slow.
+
+<ArrayViz algo="move-zeros" />
+
+## The mental model
+
+Think of two jobs happening at once:
+
+- **fast** does the *reading* — it visits every element exactly once.
+- **slow** does the *writing* — it only moves forward when it has placed a value.
+
+Everything to the left of `slow` is already the compacted, zero-free prefix. When `fast` finishes, positions `[slow, end)` are guaranteed to be the leftover zeros, so you're done — no second pass needed.
+
+## The code
+
+```js
+function moveZeroes(nums) {
+  let slow = 0;
+  for (let fast = 0; fast < nums.length; fast++) {
+    if (nums[fast] !== 0) {
+      [nums[slow], nums[fast]] = [nums[fast], nums[slow]]; // swap
+      slow++;
+    }
+  }
+  return nums;
+}
+```
+
+That's the whole thing. The swap does double duty: it places the non-zero value at `slow` **and** carries whatever was at `slow` (a zero, once we're past the prefix) out to `fast`.
+
+<Fragment>
+  <div class="callout tip">
+    <div class="ct">Why swap instead of overwrite?</div>
+    A common variant writes non-zeros forward first, then fills the rest with zeros in a second loop. That works too, but the single-pass swap keeps relative order, touches each element once, and needs no second loop. Mention both in an interview and say which you'd pick and why.
+  </div>
+</Fragment>
+
+## Generalize the pattern
+
+Once Move Zeroes clicks, these are the *same* problem with a different "keep" condition:
+
+| Problem | "Keep" condition |
+|---|---|
+| Remove Element | `nums[fast] !== val` |
+| Remove Duplicates from Sorted Array | `nums[fast] !== nums[slow - 1]` |
+| Partition array (Dutch flag) | three pointers: low / mid / high |
+
+If you can write Move Zeroes from memory and explain the invariant (*"everything left of slow is finalized"*), you own this entire category.
+
+## Say it out loud (30s)
+
+> "I use two pointers — a write pointer `slow` and a read pointer `fast`. I scan with `fast`; whenever I hit a non-zero I swap it to `slow` and bump `slow`. The invariant is that everything left of `slow` is the compacted non-zero prefix, so when the scan ends the zeros are already at the back. One pass, O(n) time, O(1) extra space — optimal."

@@ -1,0 +1,183 @@
+---
+title: "Databases: SQL vs NoSQL, indexing, transactions"
+track: system-design
+summary: "The NoSQL families and when to use each, B-tree vs LSM indexing, ACID vs BASE and isolation levels, sharding & rebalancing, replication topologies, and access-patterns-drive-the-schema."
+order: 3
+est: 34
+difficulty: hard
+priority: must
+tags: [databases, sql, nosql, indexing, transactions, isolation, sharding, replication]
+whyAsked: "Backend rounds always probe data decisions. Confident, tradeoff-aware DB answers signal you can build real systems, not just pass algorithms."
+followUps:
+  - "When would you pick a wide-column store over a document store?"
+  - "B-tree vs LSM-tree — what's the read/write tradeoff?"
+  - "Walk me through the isolation levels and the anomalies they prevent."
+  - "How do you choose a shard key, and how do you rebalance?"
+  - "Leader-follower vs multi-leader vs quorum replication?"
+resources:
+  - { label: "Use The Index, Luke", url: "https://use-the-index-luke.com/" }
+  - { label: "Designing Data-Intensive Applications (Kleppmann)", url: "https://dataintensive.net/" }
+  - { label: "Jepsen (consistency analyses)", url: "https://jepsen.io/analyses" }
+---
+
+The decisions: which store, how to index, how to keep data correct under concurrency, and how to scale it. The unifying principle: **access patterns drive the schema**, not the other way around.
+
+## SQL vs NoSQL — and the NoSQL families
+
+Pick by **access pattern and consistency needs**, not hype.
+
+**Relational (SQL — Postgres, MySQL)** — structured schema, **joins**, and **ACID transactions**. Default choice when data is relational and correctness matters (payments, orders, anything with invariants across rows). Scales further than people assume (replicas, partitioning, modern Postgres handles enormous load).
+
+**NoSQL** is not one thing — it's four families, each tuned for an access pattern:
+
+| Family | Examples | Data model | Best for | Weakness |
+|---|---|---|---|---|
+| **Key-value** | Redis, DynamoDB, Memcached | `key → blob` | Massive-scale get/put by key, sessions, caches | No queries beyond the key |
+| **Document** | MongoDB, Couchbase | JSON-like docs | Flexible/nested schema, self-contained entities | Joins weak; cross-doc consistency hard |
+| **Wide-column** | Cassandra, HBase, Bigtable | rows with dynamic columns, partition+clustering keys | Write-heavy, time-series, huge volume, predictable queries | Query must match the key design; no ad-hoc joins |
+| **Graph** | Neo4j, Neptune | nodes + edges | Deeply connected data, traversals (social graph, fraud) | Doesn't scale horizontally as easily |
+| **Time-series** | InfluxDB, TimescaleDB | timestamped points | Metrics, IoT, monitoring (append + range scan) | Niche; specialized query model |
+
+The honest interview framing: *"SQL by default for relational, transactional data. I reach for a specific NoSQL family when an access pattern demands it: KV for raw-scale get/put, document for flexible nested shapes, wide-column for write-heavy time-series at huge volume, graph for traversals — accepting weaker joins or consistency in exchange."*
+
+## Indexing: B-tree vs hash vs LSM
+
+An index is a data structure that lets the DB find rows without scanning all of them. The cost is always the same: indexes **use space and slow writes** (every insert/update maintains them), so index the columns you filter/sort/join on — not everything.
+
+- **B-tree** (default in Postgres/MySQL): a balanced sorted tree → `O(log n)` point lookups **and** range scans (`WHERE age BETWEEN`, `ORDER BY`). The workhorse.
+- **Hash index:** `O(1)` exact-match lookups, but **no range queries** and no ordering. Use only when you exclusively do equality lookups.
+- **LSM-tree** (Cassandra, RocksDB, LevelDB): buffers writes in memory (memtable), flushes sorted runs to disk (SSTables), compacts in the background. **Write-optimized** — sequential disk writes, great throughput — at the cost of read amplification (a read may check several SSTables; mitigated by Bloom filters) and compaction overhead.
+
+```
+B-tree:  fast reads + ranges,  slower random writes  → read-heavy, OLTP
+LSM-tree: very fast writes,    reads need merging     → write-heavy, time-series
+```
+
+A **composite index** on `(a, b)` serves queries filtering on `a`, or `a` then `b`, but **not `b` alone** (left-prefix rule). A **covering index** that includes all selected columns lets the DB answer from the index without touching the table.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  B-tree for read-heavy/range queries; LSM for write-heavy ingestion. Order composite-index columns most-selective-and-equality first, range column last. And remember: every index is a tax on writes — profile before adding.
+</div>
+
+## Normalization vs denormalization
+
+- **Normalized** (3NF): each fact stored once, related by foreign keys. No update anomalies, less storage — but reads need **joins**, which get expensive at scale.
+- **Denormalized:** duplicate data so a read hits one place (e.g. embed the author name in each post). Faster reads, but writes must update every copy and you risk inconsistency.
+
+Normalize for write-heavy, integrity-critical data; denormalize for read-heavy paths where join cost dominates. NoSQL stores push you toward denormalization because they lack good joins — you model the data around the query.
+
+## ACID vs BASE
+
+**ACID** (relational): **A**tomic (all-or-nothing), **C**onsistent (invariants hold), **I**solated (concurrent txns don't corrupt each other), **D**urable (committed survives a crash). Use it when multiple writes must succeed together — a money transfer debits one account and credits another; partial completion is a bug.
+
+**BASE** (many NoSQL): **B**asically **A**vailable, **S**oft state, **E**ventually consistent. Trade strict consistency for availability and scale. Right for feeds, counters, catalogs where a brief stale read is harmless.
+
+## Isolation levels & their anomalies
+
+Isolation is the "I" in ACID — how concurrent transactions interleave. Stronger isolation prevents more anomalies but costs concurrency/throughput.
+
+| Level | Prevents | Still allows |
+|---|---|---|
+| **Read Uncommitted** | — | Dirty reads (see uncommitted data) |
+| **Read Committed** | Dirty reads | Non-repeatable reads, phantoms |
+| **Repeatable Read** | + Non-repeatable reads | Phantoms (in standard SQL; MySQL/Postgres add protections) |
+| **Serializable** | + Phantoms — behaves as if serial | Lowest concurrency |
+
+The anomalies, concretely:
+- **Dirty read** — you read another txn's *uncommitted* change that may roll back.
+- **Non-repeatable read** — you read a row twice in one txn and get different values (someone committed an update between).
+- **Phantom read** — you run the same range query twice and new rows appear (someone inserted matching rows).
+- **Lost update** — two txns read-modify-write the same row; one overwrites the other. (Fix: `SELECT ... FOR UPDATE` or atomic increments.)
+
+Default in Postgres is Read Committed; MySQL InnoDB defaults to Repeatable Read. Name the anomaly you're guarding against and pick the **weakest level that prevents it** — Serializable is correct but throttles throughput.
+
+## Transactions caveat: the N+1 trap
+
+Fetching a list, then firing one query per item, is **N+1 queries** — 1 query for 100 posts, then 100 for each author = 101 round trips, a silent killer. Fix with **eager loading**: a join, or a single `WHERE author_id IN (...)` batch.
+
+## Sharding / partitioning & rebalancing
+
+When one machine can't hold the writes/storage, split data across nodes by a **shard key**:
+
+| Strategy | Pro | Con |
+|---|---|---|
+| **Range** (by key range) | Efficient range scans | Hot ranges (recent data on one shard) |
+| **Hash** (hash the key) | Even distribution | No range queries |
+| **Directory/lookup** | Flexible rebalancing | Lookup service is a dependency/SPOF |
+
+**Choosing the key:** derive it from your access patterns and pick one that **distributes load evenly** and keeps related data co-located (so common queries hit one shard). A bad key creates **hot shards** and forces **scatter-gather** across all shards.
+
+**Rebalancing** is the hard part. `hash % N` reshuffles everything when N changes; instead use **consistent hashing** or pre-split into many small **partitions** and move whole partitions to new nodes. Either way you avoid moving most of the data.
+
+## Replication topologies
+
+| Topology | Writes | Reads | Tradeoff |
+|---|---|---|---|
+| **Leader-follower** (single leader) | Leader only | Followers (scale reads) | Replication lag → stale follower reads; failover needed |
+| **Multi-leader** | Any leader | Any | Multi-region low-latency writes, but **write conflicts** to resolve |
+| **Leaderless / quorum** (Dynamo) | Any N nodes | Any | Tunable consistency via `W + R > N`; no single failover point |
+
+- **Sync vs async** (leader-follower): sync waits for a follower ack → no data loss on failover, higher latency; async → fast writes but a crashed leader loses the un-replicated tail and followers lag.
+- **Quorum math:** with N replicas, if writes go to W and reads from R, then `W + R > N` guarantees a read overlaps a write → strong-ish consistency. Tune (W=N,R=1) for read-fast or (W=1,R=N) for write-fast.
+
+## Access patterns drive the schema — worked example
+
+Design storage for a **chat app**. Don't start with entities — start with the queries:
+
+**Access patterns:**
+1. Load the most recent 50 messages in a conversation (by far the hottest).
+2. Page older messages on scroll-up.
+3. Show a user's list of conversations, most-recently-active first.
+
+**Decision:** This is write-heavy (every message is a write), read by conversation in time order, with no need for cross-conversation joins. A **wide-column store (Cassandra)** fits:
+
+```
+Table messages
+  partition key:  conversation_id      -- co-locates a conversation on one node
+  clustering key: message_ts DESC       -- stored sorted by time → pattern 1 & 2 are a single seek
+
+Table conversations_by_user
+  partition key:  user_id
+  clustering key: last_active_ts DESC   -- pattern 3
+```
+
+Pattern 1 becomes a single partition read of the first 50 rows — no scan, no join. Pattern 3 is a denormalized second table maintained on write (write amplification we accept for read speed — classic CQRS-flavored modeling). Had I started from a normalized ER diagram, I'd have a `messages` table needing an index on `(conversation_id, ts)` and a join for the conversation list — fine at small scale, but the partition-key design is what scales. **The queries chose the store, the keys, and the duplication.**
+
+## Interview questions & model answers
+
+**Q: SQL or NoSQL for a new service — how do you decide?**
+"By access pattern and consistency needs. If the data is relational with cross-row invariants and I need transactions — SQL. If I need a specific pattern at scale — raw get/put (KV), flexible nested docs (document), or write-heavy time-series (wide-column) — and can give up joins or strong consistency, the matching NoSQL family. I default to Postgres and justify any move away from it."
+
+**Q: B-tree vs LSM-tree?**
+"B-tree gives balanced read/write with fast point and range queries — ideal for read-heavy OLTP. LSM buffers writes in memory and flushes sorted runs, so it's write-optimized with sequential I/O — great for ingestion and time-series — but reads may merge several SSTables (Bloom filters help) and compaction adds background work. So: read-heavy → B-tree, write-heavy → LSM."
+
+**Q: Walk me through isolation levels.**
+"Read Uncommitted allows dirty reads. Read Committed stops those but allows non-repeatable and phantom reads. Repeatable Read stops non-repeatable reads. Serializable behaves as if transactions ran one at a time, preventing phantoms too — but with the least concurrency. I pick the weakest level that prevents the specific anomaly I care about, and use `SELECT FOR UPDATE` or atomic increments to avoid lost updates."
+
+**Q: How do you choose a shard key?**
+"From the access patterns: it must distribute load evenly to avoid hot shards, and co-locate data that's queried together so common queries hit one shard instead of scatter-gather. For a chat app, conversation_id co-locates a conversation. I avoid keys that monotonically increase (timestamps) because recent traffic piles onto one shard."
+
+**Q: How do you rebalance shards without moving all the data?**
+"Avoid `hash % N`, which reshuffles everything when N changes. Use consistent hashing — adding a node only remaps one arc — or pre-split into many small partitions and migrate whole partitions to new nodes. Either way, only a fraction of the data moves."
+
+**Q: Explain quorum consistency.**
+"With N replicas, write to W and read from R. If `W + R > N`, every read set overlaps every write set, so a read sees the latest write — strong-ish consistency without a single leader. You tune W and R for read- or write-optimized behavior, trading latency against consistency."
+
+**Q: What is the N+1 problem and how do you fix it?**
+"Loading a list then querying once per item — 1 + N round trips. I fix it by eager-loading: a join or a single batched `WHERE id IN (...)`. ORMs hide it, so I watch query logs."
+
+## Common mistakes / what weak candidates do
+
+- **"NoSQL is faster/more scalable"** as a blanket claim, without naming a family or an access pattern.
+- **Indexing everything** (or nothing) — not connecting indexes to the actual filter/sort/join columns, or ignoring their write cost.
+- **Not knowing isolation levels** beyond "ACID," and missing lost-update/phantom anomalies.
+- **Choosing a monotonic shard key** (auto-increment id, timestamp) that creates a hot shard, or ignoring rebalancing entirely.
+- **Designing entities before access patterns**, then unable to justify the keys or indexes.
+- **Assuming dual writes to two stores are consistent** (use the outbox pattern instead).
+- **Forgetting replication lag** — reading your own write from a lagging replica and calling it a bug in the app.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "I let <b>access patterns drive the schema</b>. Default to relational for transactional, relational data; reach for a specific NoSQL family when a pattern needs horizontal scale or flexible schema, accepting weaker joins/consistency. B-tree for reads and ranges, LSM for write-heavy ingestion. I index the columns I filter and join on, pick the weakest isolation level that prevents the anomaly I care about, choose a shard key that distributes load and co-locates related data, and scale reads with replicas (knowing the lag) and writes by sharding — rebalancing with consistent hashing so I don't move all the data."
+</div>

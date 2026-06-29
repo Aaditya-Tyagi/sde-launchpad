@@ -1,0 +1,183 @@
+---
+title: "Intervals"
+track: dsa
+summary: "The sort-by-start trick, merging overlaps, insert interval, non-overlapping removal, and meeting-rooms scheduling with a heap."
+order: 12
+est: 26
+difficulty: medium
+priority: must
+tags: [intervals, sorting, greedy, heap]
+whyAsked: "Interval problems model scheduling and ranges — common in product rounds. They test whether you spot the sort-then-sweep pattern and reason about overlap conditions."
+followUps:
+  - "Why sort by start time (or sometimes end time)?"
+  - "How do you merge overlapping intervals in one pass?"
+  - "How do you find the minimum number of meeting rooms?"
+  - "What defines two intervals as overlapping?"
+resources:
+  - { label: "NeetCode: Intervals", url: "https://neetcode.io/practice" }
+---
+
+An interval is a pair `[start, end]`. Almost every interval problem starts the same way: **sort the intervals** (usually by start, sometimes by end), then **sweep left to right**, comparing each interval to the previous one or to a running boundary.
+
+## When to reach for it — recognition triggers
+
+- "**Merge / combine overlapping** ranges".
+- "**Insert** a new interval / does it conflict".
+- "**Minimum removals** to make non-overlapping" / "max non-overlapping intervals".
+- "**Meeting rooms** / can a person attend all / how many rooms needed".
+- "**Intersection** of two interval lists".
+- Anything about **time ranges, bookings, schedules, or [lo, hi] segments**.
+
+<div class="callout key">
+  <div class="ct">Pattern trigger</div>
+  Ranges / scheduling / overlaps → sort by start (or by end for greedy "keep the most"), then sweep once. Two intervals <code>a</code>, <code>b</code> overlap iff <code>a.start &lt;= b.end &amp;&amp; b.start &lt;= a.end</code>.
+</div>
+
+## The overlap condition
+
+```text
+[a0, a1] and [b0, b1] overlap  ⟺  a0 <= b1  AND  b0 <= a1
+If sorted by start (a0 <= b0), this simplifies to:  b0 <= a1
+```
+
+Internalize this — most bugs come from a wrong overlap/touching boundary check (does `[1,2]` and `[2,3]` count as overlapping? Decide and be consistent).
+
+## The merge template (sort by start, then sweep)
+
+```js
+// Merge Intervals.  O(n log n) time, O(n) space
+function merge(intervals) {
+  intervals.sort((a, b) => a[0] - b[0]);     // sort by start
+  const out = [intervals[0]];
+  for (let i = 1; i < intervals.length; i++) {
+    const [s, e] = intervals[i];
+    const last = out[out.length - 1];
+    if (s <= last[1]) last[1] = Math.max(last[1], e);  // overlap → extend the last interval
+    else out.push([s, e]);                             // gap → start a new interval
+  }
+  return out;
+}
+```
+
+Idea: after sorting by start, an interval can only overlap the most recent one in the output — so a single pass suffices.
+**Time** O(n log n) · **Space** O(n).
+
+## Worked examples
+
+### Insert Interval — three phases, no full re-sort
+
+The input is already sorted and non-overlapping. Add everything before the new interval, merge the overlapping middle, then add the rest.
+
+```js
+// O(n) time, O(n) space
+function insert(intervals, newInterval) {
+  const res = [];
+  let [ns, ne] = newInterval, i = 0, n = intervals.length;
+  while (i < n && intervals[i][1] < ns) res.push(intervals[i++]);      // ends before new starts
+  while (i < n && intervals[i][0] <= ne) {                             // overlaps new
+    ns = Math.min(ns, intervals[i][0]);
+    ne = Math.max(ne, intervals[i][1]);
+    i++;
+  }
+  res.push([ns, ne]);                                                  // the merged interval
+  while (i < n) res.push(intervals[i++]);                              // starts after new ends
+  return res;
+}
+```
+
+Idea: because the input is pre-sorted, we never need to sort — just three linear sweeps.
+**Time** O(n) · **Space** O(n).
+
+### Non-overlapping Intervals — greedy by earliest end
+
+To remove the fewest intervals (keep the most), greedily keep the interval that **ends earliest**, since it leaves the most room.
+
+```js
+// Min removals to make the rest non-overlapping.  O(n log n)
+function eraseOverlapIntervals(intervals) {
+  intervals.sort((a, b) => a[1] - b[1]);     // sort by END
+  let prevEnd = -Infinity, removed = 0;
+  for (const [s, e] of intervals) {
+    if (s >= prevEnd) prevEnd = e;           // no overlap → keep it
+    else removed++;                          // overlap → remove this one
+  }
+  return removed;
+}
+```
+
+Idea: sorting by end is the classic activity-selection greedy — keeping the earliest-ending interval is always at least as good as any alternative.
+**Time** O(n log n) · **Space** O(1).
+
+### Meeting Rooms II — minimum rooms via a min-heap of end times
+
+Sort by start; a min-heap holds the end times of in-progress meetings. Reuse a room if its meeting has ended.
+
+```js
+// Minimum rooms needed.  O(n log n) time, O(n) space
+function minMeetingRooms(intervals) {
+  intervals.sort((a, b) => a[0] - b[0]);     // by start
+  const ends = new MinHeap();                // min-heap of end times (see Heaps lesson)
+  for (const [s, e] of intervals) {
+    if (ends.size() && ends.peek() <= s) ends.pop();  // a room freed up → reuse it
+    ends.push(e);
+  }
+  return ends.size();                        // peak concurrency = rooms needed
+}
+```
+
+Idea: the heap size is the number of simultaneously-active meetings; its maximum is the answer. An alternative is the **sweep-line / chronological** approach: sort all start (+1) and end (−1) events and track the running count.
+**Time** O(n log n) · **Space** O(n).
+
+### Interval List Intersections — two-pointer sweep
+
+Both lists are sorted. The intersection of two intervals is `[max(starts), min(ends)]`, valid only if `max(starts) <= min(ends)`.
+
+```js
+// O(m + n) time, O(1) extra space (excluding output)
+function intervalIntersection(A, B) {
+  const res = []; let i = 0, j = 0;
+  while (i < A.length && j < B.length) {
+    const lo = Math.max(A[i][0], B[j][0]);
+    const hi = Math.min(A[i][1], B[j][1]);
+    if (lo <= hi) res.push([lo, hi]);        // they intersect
+    if (A[i][1] < B[j][1]) i++; else j++;    // advance the one that ends first
+  }
+  return res;
+}
+```
+
+Idea: advance the pointer whose interval ends first — it can't intersect anything further along.
+**Time** O(m + n) · **Space** O(1).
+
+## Complexity & why it beats brute force
+
+Comparing every pair of intervals is O(n²). Sorting once (O(n log n)) lets each interval be compared only to its neighbor or a running boundary in a single O(n) sweep — overall O(n log n), dominated by the sort. Insert-interval and intersections are even cheaper (O(n)/O(m+n)) because the inputs are already sorted. Meeting-rooms uses a heap for O(n log n) concurrency tracking.
+
+## Edge cases & common bugs
+
+- **Touching boundaries** — decide whether `[1,2]` and `[2,3]` overlap (`<=` vs `<`) and apply it consistently; meeting-rooms usually treats touching as *not* overlapping (a room frees exactly at the end time).
+- **Empty input** — return `[]`/`0` before touching `intervals[0]`.
+- **Wrong sort key** — merge/insert sort by *start*; greedy "keep the most" sorts by *end*. Mixing them gives wrong answers.
+- **Mutating while merging** — extend `last[1]` with `Math.max`, since a contained interval shouldn't shrink the range.
+- **Single interval** — the merge loop starting at `i = 1` handles it (just returns it).
+- **Heap reuse condition** — use `ends.peek() <= s` (free if it ended at or before this start); `<` would force extra rooms for back-to-back meetings.
+
+## Interview tips & questions
+
+- Interviewers probe: "Why sort by start here but by end there?" — tie it to merging vs greedy activity selection.
+- State the overlap condition explicitly before coding; it prevents boundary bugs.
+- For meeting rooms, offer both the heap and the sweep-line approaches — it shows range.
+
+| Problem | Difficulty | Idea |
+|---|---|---|
+| [Merge Intervals](https://leetcode.com/problems/merge-intervals/) | Medium | sort by start + sweep |
+| [Insert Interval](https://leetcode.com/problems/insert-interval/) | Medium | three-phase sweep |
+| [Non-overlapping Intervals](https://leetcode.com/problems/non-overlapping-intervals/) | Medium | greedy by end |
+| [Meeting Rooms](https://leetcode.com/problems/meeting-rooms/) | Easy | sort + adjacent overlap |
+| [Meeting Rooms II](https://leetcode.com/problems/meeting-rooms-ii/) | Medium | min-heap of ends |
+| [Interval List Intersections](https://leetcode.com/problems/interval-list-intersections/) | Medium | two-pointer sweep |
+
+<div class="callout tip">
+  <div class="ct">Template</div>
+  Merge/insert: <code>sort by start; for each, if (start &lt;= lastEnd) extend else push</code>. Greedy keep-most: <code>sort by end; keep if start &gt;= prevEnd</code>. Rooms: <code>sort by start; min-heap of ends; reuse if peek &lt;= start</code>.
+</div>

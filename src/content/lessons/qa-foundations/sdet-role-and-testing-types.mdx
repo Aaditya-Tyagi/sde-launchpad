@@ -1,0 +1,161 @@
+---
+title: "The SDET role & a tour of testing types"
+track: qa-foundations
+summary: "Manual QA vs automation vs SDET vs QA lead, what SDETs actually do, and a deep, interview-ready tour of functional and non-functional testing types with when-to-use for each."
+order: 6
+est: 26
+difficulty: easy
+priority: know
+tags: [sdet, roles, functional, non-functional, integration, uat]
+whyAsked: "Interviewers want to know you understand the role you're applying for and can name/define the full spectrum of testing types crisply — a common rapid-fire round."
+followUps:
+  - "What's the difference between a manual QA, an automation engineer, and an SDET?"
+  - "Top-down vs bottom-up vs big-bang integration?"
+  - "Smoke vs sanity vs retesting vs regression?"
+  - "Alpha vs beta testing?"
+resources:
+  - { label: "Google — How Google Tests Software", url: "https://testing.googleblog.com/" }
+  - { label: "ISTQB Foundation syllabus (CTFL v4)", url: "https://www.istqb.org/certifications/certified-tester-foundation-level" }
+  - { label: "WCAG 2.2 (accessibility)", url: "https://www.w3.org/WAI/standards-guidelines/wcag/" }
+---
+
+Two things get checked fast in QA interviews: do you understand the *role* you're interviewing for, and can you rattle off the *types* of testing with crisp definitions and a "when used" for each? This lesson nails both.
+
+## The roles: manual QA vs automation vs SDET vs QA lead
+
+These titles overlap and vary by company, but the distinctions matter:
+
+| Role | Core focus | Codes? | Typical strengths |
+|---|---|---|---|
+| **Manual / functional QA** | Designs and executes tests by hand; exploratory; defect reporting | Light/none | Test design, domain knowledge, sharp eye, exploratory skill |
+| **Automation engineer** | Builds and maintains automated test scripts against a framework | Yes (scripting) | Selenium/Playwright/Cypress, framework usage, CI integration |
+| **SDET** (Software Dev Engineer in Test) | Engineers *testability and tooling*; tests are real software | Yes (strong dev) | Builds frameworks, test harnesses, mocks, CI/CD, performance/API tooling, reads/writes production code |
+| **QA lead / manager** | Strategy, planning, process, people, metrics, stakeholder go/no-go | Varies | Estimation, risk-based planning, leadership, reporting |
+
+The key distinction interviewers probe: **automation engineer vs SDET.** An automation engineer primarily *uses* a framework to write UI/API test scripts. An **SDET is a software engineer whose product is quality** — they build the frameworks, test infrastructure, mocks/stubs, data factories, CI pipelines, and tooling that everyone else's tests run on, and they're comfortable in the production codebase, doing white-box and unit-level work. SDET = dev skills applied to testing problems.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  "Automation engineer writes tests against a framework; SDET builds the framework — and the testability — that those tests depend on. The SDET treats test code and tooling as first-class software." Saying this clearly is often the differentiator in an SDET interview.
+</div>
+
+## What SDETs actually do day-to-day
+
+- Build and own **test automation frameworks** (UI, API, mobile) and their utilities.
+- Improve **testability** of the product — add hooks, test endpoints, deterministic seams, feature flags.
+- Write **unit and integration tests** in the production codebase alongside developers.
+- Build **mocks, stubs, service virtualization, and test-data factories**.
+- Wire tests into **CI/CD**, manage quality gates, fight flakiness.
+- Stand up **performance, load, and API testing** tooling.
+- Do **code review** for testability and contribute production code.
+- Analyze failures, triage, and report quality signals with data.
+
+## Functional vs non-functional — the two big buckets
+
+- **Functional testing** verifies *what* the system does — features behave per the requirements. (Login works, the total adds up, the email sends.)
+- **Non-functional testing** verifies *how well* it does it — performance, security, usability, accessibility, compatibility, reliability. (It's fast, safe, usable, and works across devices.)
+
+Now the rapid-fire tour. For each, know a one-line definition and *when used* — that's exactly how these get asked.
+
+## Functional testing types
+
+- **Smoke testing** — a wide, shallow check that a new build's critical functions work at all ("build verification"). *When:* on every new build, before deeper testing; if it fails, reject the build. Often automated.
+- **Sanity testing** — a narrow, deep check that a specific fix or new feature works after a small change. *When:* after a focused change, to decide if fuller testing is worthwhile. Usually unscripted.
+- **Retesting (confirmation testing)** — re-running the *exact failed case* on a new build to confirm the specific defect is fixed. *When:* after a developer marks a defect fixed. Uses the same data/steps that found the bug.
+- **Regression testing** — re-running existing tests to confirm a change didn't break previously working functionality. *When:* after any code change; the prime automation candidate.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Retesting vs regression is a guaranteed question. Retesting = confirm *this* fix works (same case, planned). Regression = confirm *nothing else* broke (broader suite, can be automated). You always do both after a fix.
+</div>
+
+### Integration testing — the four approaches
+
+Integration testing checks that modules/services work together. *When:* after unit testing, before system testing. The four strategies, each a likely question:
+
+| Approach | How | Pros | Cons |
+|---|---|---|---|
+| **Big-bang** | Integrate everything at once, then test | Simple to set up | Hard to isolate which interface failed; needs all modules ready |
+| **Top-down** | Test high-level modules first, **stub** lower ones not yet built | Early validation of major flows/UI; defects in control logic found early | Needs many stubs; low-level modules tested late |
+| **Bottom-up** | Test low-level modules first, use **drivers** to call them; build upward | Low-level/utility modules well-tested early; less stubbing | UI/top logic tested late; no early end-to-end view |
+| **Sandwich / hybrid** | Combine top-down and bottom-up around a middle layer, working both directions | Parallel work both ways; balances the trade-offs | Complex to coordinate; needs both stubs and drivers |
+
+Remember the helpers: a **stub** stands in for a *called* (lower) module; a **driver** stands in for a *calling* (higher) module. Top-down uses stubs, bottom-up uses drivers, sandwich uses both.
+
+- **System testing** — testing the fully integrated application as a whole against requirements (functional and non-functional). *When:* after integration, before acceptance. Black-box, end-to-end.
+- **End-to-end (E2E) testing** — validating complete real user journeys across the whole stack and integrations (UI → API → DB → third parties). *When:* for critical business flows; keep few (pyramid).
+
+## Acceptance testing — UAT, alpha, beta
+
+- **User Acceptance Testing (UAT)** — the business/end users verify the system meets real-world needs and is fit to release. *When:* final stage before go-live; validation, not verification.
+- **Alpha testing** — done *in-house* by internal staff (often QA/employees acting as users) in a controlled environment before release. *When:* late, pre-beta.
+- **Beta testing** — done by *real external users* in their own environment ("field testing"). *When:* after alpha, to catch real-world issues at scale before general availability.
+
+Memory hook: **alpha = internal & controlled; beta = external & in-the-wild.**
+
+## Non-functional testing types
+
+- **Performance testing** (umbrella) — how the system behaves under workload. Sub-types:
+  - **Load** — behavior at expected/peak load (response time, throughput). *When:* before launch / capacity planning.
+  - **Stress** — push beyond limits to find the breaking point and how it fails/recovers. *When:* resilience validation.
+  - **Spike** — sudden sharp load increase (flash sale, viral event). *When:* event readiness.
+  - **Soak / endurance** — sustained load over long periods to find leaks/degradation. *When:* stability checks.
+  - **Scalability / volume** — behavior as load or data grows; large data sets.
+- **Security testing** — find vulnerabilities and verify data protection (auth/authz, injection, XSS, CSRF, encryption). *When:* throughout; includes pen-testing and SAST/DAST in CI.
+- **Usability testing** — how easy and intuitive the product is for real users; observe real users completing tasks. *When:* design validation, pre-release.
+- **Accessibility (a11y) testing** — usable by people with disabilities; conformance to **WCAG 2.2** (keyboard nav, screen-reader labels, color contrast, focus order). *When:* legal/ethical requirement; throughout. Tools: axe, Lighthouse, plus manual screen-reader passes.
+- **Compatibility testing** — works across browsers, OSes, devices, screen sizes, and network conditions (cross-browser/cross-device). *When:* for products with a varied user base.
+- **Localization (L10n) & internationalization (i18n) testing** — i18n: the app is *built* to support multiple languages/locales (no hard-coded strings, handles unicode, date/number/currency formats, RTL). L10n: a *specific* locale's translation, formatting, and cultural fit are correct. *When:* for multi-region products.
+- **Reliability / recovery testing** — behaves correctly over time and recovers from failures (crash, network loss, failover). *When:* high-availability systems.
+- **Compliance testing** — meets standards/regulations (GDPR, HIPAA, PCI-DSS, WCAG). *When:* regulated domains.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  When asked "what non-functional testing would you do for app X," map to the risk: a banking app → security + reliability + performance; a global consumer app → compatibility + localization + accessibility + load. Tie the type to the product's actual risks, don't just list them.
+</div>
+
+## A worked example — which types for a global e-commerce checkout?
+
+"For a worldwide checkout I'd run: functional (decision-table cases for discount/tax combos, state-transition for order/payment states), integration (top-down against stubbed payment gateways, then real-sandbox integration tests), system and a thin E2E on the buy journey, then non-functional — **load and spike** testing for sale events, **security** on payment and PII handling (PCI-DSS), **compatibility** across major browsers/devices, **localization** for currency/tax/RTL, and **accessibility** to WCAG 2.2 so checkout is keyboard- and screen-reader-operable. Finally UAT with business stakeholders before go-live."
+
+## Interview questions & model answers
+
+**Q: Manual QA vs automation engineer vs SDET?**
+"Manual QA designs and runs tests by hand and excels at exploratory and domain testing. An automation engineer writes and maintains test scripts against a framework. An SDET is a software engineer who builds the frameworks, tooling, and testability the others rely on, writes unit/integration tests in the product code, and owns CI quality infrastructure. SDET = dev skills applied to testing."
+
+**Q: Smoke vs sanity vs retesting vs regression?**
+"Smoke is a wide, shallow build-verification on every build. Sanity is a narrow, deep check of a specific change. Retesting re-runs the exact failed case to confirm a fix. Regression re-runs a broader suite to confirm nothing else broke — and it's what I automate."
+
+**Q: Top-down vs bottom-up vs big-bang vs sandwich integration?**
+"Big-bang integrates everything at once — simple but hard to localize failures. Top-down tests high-level modules first using stubs for unbuilt lower ones. Bottom-up tests low-level modules first using drivers, building upward. Sandwich combines both around a middle layer for parallel progress. Stubs replace called modules, drivers replace callers."
+
+**Q: Alpha vs beta testing?**
+"Alpha is internal, in a controlled environment by employees acting as users. Beta is external, by real users in their own environment to catch real-world issues before general release."
+
+**Q: Functional vs non-functional testing?**
+"Functional verifies *what* the system does against requirements. Non-functional verifies *how well* — performance, security, usability, accessibility, compatibility, reliability."
+
+**Q: What's the difference between load, stress and soak testing?**
+"Load tests expected peak conditions; stress pushes past limits to find the breaking point and recovery behavior; soak/endurance sustains load for a long time to find memory leaks and gradual degradation."
+
+**Q: What does an SDET do that an automation engineer doesn't?**
+"Beyond writing tests, an SDET builds the test framework and infrastructure, improves product testability with hooks and seams, writes unit/integration tests in the production code, creates mocks and data factories, and owns CI quality gates and flake control."
+
+**Q: i18n vs L10n?**
+"Internationalization is engineering the app to *support* many locales — no hard-coded strings, unicode-safe, format-aware, RTL-ready. Localization verifies a *specific* locale's translations, formats, and cultural fit are correct."
+
+## Common mistakes / what weak candidates say
+
+- Treating SDET and automation engineer as identical.
+- Saying an SDET "only writes Selenium scripts" — missing framework/tooling/testability.
+- Confusing retesting with regression, or smoke with sanity.
+- Mixing up stubs and drivers (stub = called/lower; driver = caller/higher).
+- Swapping alpha and beta (alpha internal, beta external).
+- Listing non-functional types with no "when used" or product mapping.
+- Forgetting accessibility and localization exist.
+- Describing load and stress testing as the same thing.
+
+<div class="callout tip">
+  <div class="ct">Interview-ready summary</div>
+  "Manual QA designs and explores, automation engineers script against frameworks, and SDETs engineer the frameworks, tooling, and testability as real software — including unit-level and CI work. On types, I separate functional (smoke, sanity, retest, regression, integration via top-down/bottom-up/big-bang/sandwich, system, E2E, UAT/alpha/beta) from non-functional (load/stress/spike/soak, security, usability, accessibility, compatibility, localization, reliability) and map each to the product's actual risks."
+</div>

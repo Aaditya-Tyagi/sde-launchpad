@@ -1,0 +1,245 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { getCollection } from 'astro:content';
+import { TRACKS } from '../../data/curriculum';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const lessons = (await getCollection('lessons')).filter((l) => !l.data.draft);
+// Question bank: the lesson itself + each follow-up question.
+const bank: any[] = [];
+lessons.forEach((l) => {
+  bank.push({ q: `Explain: ${l.data.title}`, track: l.data.track, hint: l.data.summary, url: `/lessons/${l.id}` });
+  (l.data.followUps || []).forEach((f) => bank.push({ q: f, track: l.data.track, hint: 'Tie it back to ' + l.data.title + '.', url: `/lessons/${l.id}` }));
+});
+const trackName = Object.fromEntries(TRACKS.map((t) => [t.id, t.name]));
+---
+<BaseLayout title="Mock Interview · SDE-2 Launchpad" active="mock">
+  <div class="wrap" style="padding-top:28px;max-width:760px">
+    <h1>Mock interview</h1>
+    <p class="sub">A timed, multi-question round. Answer each <b>out loud</b> as if someone's listening, reveal the approach only after you've attempted it, then grade yourself. Talking through answers is the single highest-leverage prep activity.</p>
+
+    <!-- ════ SETUP ════ -->
+    <div id="mkSetup">
+      <div class="panel" style="margin-top:18px">
+        <div class="mk-setlabel">Focus</div>
+        <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
+          <button class="btn chip-f btn-primary" data-f="all">🎲 All topics</button>
+          {TRACKS.map((t) => <button class="btn chip-f" data-f={t.id}>{t.icon} {t.name.split(' ')[0]}</button>)}
+        </div>
+        <div class="mk-setlabel" style="margin-top:18px">Length</div>
+        <div class="row" style="gap:8px;margin-top:8px">
+          <button class="btn chip-n" data-n="3">3 questions</button>
+          <button class="btn chip-n btn-primary" data-n="5">5 questions</button>
+          <button class="btn chip-n" data-n="8">8 questions</button>
+        </div>
+        <div class="row" style="margin-top:22px;align-items:center">
+          <span class="muted" style="font-size:13px" id="mkPoolInfo"></span>
+          <div class="spacer"></div>
+          <button class="btn btn-primary" id="mkStart" style="font-size:15px;padding:11px 22px">Start round ▶</button>
+        </div>
+      </div>
+
+      <!-- history -->
+      <h2 style="margin-top:28px;font-size:18px">Recent rounds</h2>
+      <div id="mkHistory" style="margin-top:10px"></div>
+    </div>
+
+    <!-- ════ RUNNING ════ -->
+    <div id="mkRun" class="hide">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-top:18px">
+        <span class="tag" id="mkQTrack"></span>
+        <div class="row" style="gap:14px;align-items:center">
+          <span class="muted" style="font-size:13px;font-family:var(--mono)" id="mkQProg"></span>
+          <span style="font-family:var(--mono);font-size:18px;font-weight:700" id="mkTimer">0:00</span>
+        </div>
+      </div>
+      <div class="qz-progbar"><i id="mkBar"></i></div>
+
+      <div class="panel" style="margin-top:12px">
+        <div style="font-size:21px;font-weight:700;margin:6px 0 16px;min-height:54px" id="mkQText"></div>
+        <div class="callout tip hide" id="mkHint"><div class="ct">Approach hint</div><span id="mkHintText"></span> <a id="mkQLink" href="#" style="margin-left:6px">Open lesson →</a></div>
+
+        <div class="row" id="mkRevealRow" style="margin-top:14px">
+          <button class="btn btn-primary" id="mkReveal">Reveal approach</button>
+          <button class="btn" id="mkEnd" style="margin-left:auto">End round</button>
+        </div>
+        <div class="hide" id="mkGradeRow" style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
+          <p class="muted" style="font-size:13px;margin-bottom:8px">How did that answer go?</p>
+          <div class="row">
+            <button class="btn mk-rate" data-s="1" style="border-color:var(--hot);color:var(--hot)">Struggled</button>
+            <button class="btn mk-rate" data-s="3">Decent</button>
+            <button class="btn mk-rate" data-s="4" style="border-color:var(--accent);color:var(--accent)">Good</button>
+            <button class="btn mk-rate" data-s="5" style="border-color:var(--accent-2);color:var(--accent-2)">Nailed it</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════ SUMMARY ════ -->
+    <div id="mkSummary" class="hide">
+      <div class="panel center" style="margin-top:18px;padding:30px 20px">
+        <div style="font-size:46px" id="mkEmoji">🎤</div>
+        <h2 id="mkAvg" style="margin-top:8px">—</h2>
+        <p class="muted" id="mkSummaryMsg" style="margin-top:6px"></p>
+        <p class="muted" id="mkSummaryMeta" style="margin-top:4px;font-size:13px;font-family:var(--mono)"></p>
+      </div>
+      <div class="panel" style="margin-top:12px">
+        <div class="mk-setlabel" style="margin-bottom:10px">Question breakdown</div>
+        <div id="mkBreakdown"></div>
+      </div>
+      <div class="row" style="justify-content:center;margin-top:16px">
+        <button class="btn btn-primary" id="mkAgain">New round</button>
+      </div>
+    </div>
+  </div>
+
+  <style is:global>
+    .qz-progbar { height:4px; background:rgba(255,255,255,.08); border-radius:3px; overflow:hidden; margin-top:10px; }
+    .qz-progbar i { display:block; height:100%; width:0%; background:linear-gradient(90deg,var(--accent),var(--accent-2)); transition:width .3s; }
+    .mk-setlabel { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--faint); font-weight:600; }
+    .mk-hist { display:flex; align-items:center; gap:12px; padding:11px 14px; border:1px solid var(--line); border-radius:11px; margin-bottom:8px; background:var(--panel); }
+    .mk-hist-score { font-family:var(--mono); font-weight:700; font-size:15px; }
+    .mk-hist-meta { flex:1; min-width:0; }
+    .mk-hist-meta b { font-size:14px; }
+    .mk-hist-meta div { font-size:12px; color:var(--muted); font-family:var(--mono); }
+    .mk-empty { padding:22px; text-align:center; color:var(--muted); border:1px dashed var(--line); border-radius:11px; font-size:13px; }
+    .mk-bd-row { display:flex; gap:10px; align-items:flex-start; padding:9px 0; border-top:1px solid var(--line); }
+    .mk-bd-row:first-child { border-top:none; }
+    .mk-bd-dot { flex:0 0 auto; width:10px; height:10px; border-radius:50%; margin-top:5px; }
+    .mk-bd-q { flex:1; min-width:0; font-size:13.5px; }
+    .mk-bd-q a { font-size:12px; }
+    .mk-bd-score { font-family:var(--mono); font-size:12px; flex:0 0 auto; }
+  </style>
+
+  <script define:vars={{ bank, base, trackName }}>
+    const store = window.SDE2;
+    const el = (id) => document.getElementById(id);
+    let focus = 'all', len = 5;
+
+    const pool = () => focus === 'all' ? bank : bank.filter((x) => x.track === focus);
+    function updatePoolInfo() {
+      const p = pool().length;
+      el('mkPoolInfo').textContent = `${Math.min(len, p)} questions from a pool of ${p}`;
+    }
+
+    // setup selectors
+    document.querySelectorAll('.chip-f').forEach((b) => b.addEventListener('click', () => {
+      document.querySelectorAll('.chip-f').forEach((x) => x.classList.remove('btn-primary'));
+      b.classList.add('btn-primary'); focus = b.dataset.f; updatePoolInfo();
+    }));
+    document.querySelectorAll('.chip-n').forEach((b) => b.addEventListener('click', () => {
+      document.querySelectorAll('.chip-n').forEach((x) => x.classList.remove('btn-primary'));
+      b.classList.add('btn-primary'); len = +b.dataset.n; updatePoolInfo();
+    }));
+
+    // session state
+    let queue = [], idx = 0, ratings = [], graded = false, startTs = 0, timerId = null;
+    function shuffle(a) { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+    function fmt(s) { return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+
+    function start() {
+      const p = pool(); if (!p.length) return;
+      queue = shuffle(p).slice(0, Math.min(len, p.length));
+      idx = 0; ratings = []; startTs = Date.now();
+      el('mkSetup').classList.add('hide');
+      el('mkSummary').classList.add('hide');
+      el('mkRun').classList.remove('hide');
+      if (timerId) clearInterval(timerId);
+      timerId = setInterval(() => { el('mkTimer').textContent = fmt(Math.floor((Date.now() - startTs) / 1000)); }, 1000);
+      el('mkTimer').textContent = '0:00';
+      showQ();
+    }
+    function showQ() {
+      graded = false;
+      const q = queue[idx];
+      el('mkQText').textContent = q.q;
+      el('mkQTrack').textContent = trackName[q.track] || q.track;
+      el('mkHint').classList.add('hide');
+      el('mkHintText').textContent = q.hint;
+      el('mkQLink').href = base + q.url;
+      el('mkRevealRow').classList.remove('hide');
+      el('mkGradeRow').classList.add('hide');
+      el('mkQProg').textContent = `Q ${idx + 1} / ${queue.length}`;
+      el('mkBar').style.width = (idx / queue.length * 100) + '%';
+    }
+    function reveal() {
+      el('mkHint').classList.remove('hide');
+      el('mkRevealRow').classList.add('hide');
+      el('mkGradeRow').classList.remove('hide');
+    }
+    function rate(score) {
+      if (graded) return; graded = true;
+      const q = queue[idx];
+      ratings.push({ q: q.q, score, track: q.track, url: q.url });
+      store.logMock(score, q.track);
+      idx++;
+      if (idx >= queue.length) finish(); else showQ();
+    }
+    function finish() {
+      if (timerId) { clearInterval(timerId); timerId = null; }
+      const dur = Math.floor((Date.now() - startTs) / 1000);
+      el('mkRun').classList.add('hide');
+      el('mkSummary').classList.remove('hide');
+
+      if (!ratings.length) { // ended with nothing graded
+        el('mkAvg').textContent = 'Round ended';
+        el('mkSummaryMsg').textContent = 'No questions graded this round.';
+        el('mkSummaryMeta').textContent = '';
+        el('mkBreakdown').innerHTML = '<div class="mk-empty">Nothing to show.</div>';
+        return;
+      }
+      const avg = ratings.reduce((s, r) => s + r.score, 0) / ratings.length;
+      const avg5 = avg.toFixed(1);
+      el('mkAvg').textContent = `${avg5} / 5 average`;
+      el('mkEmoji').textContent = avg >= 4.5 ? '🏆' : avg >= 3.5 ? '🎯' : avg >= 2.5 ? '💪' : '📚';
+      el('mkSummaryMsg').textContent = avg >= 4.5 ? 'Sharp. You\'re ready to perform under pressure.'
+        : avg >= 3.5 ? 'Solid round — tighten the weaker answers and you\'re there.'
+        : avg >= 2.5 ? 'Good reps. Review the lessons behind your lowest answers.'
+        : 'This is the work. Re-study the topics below and run it again.';
+      el('mkSummaryMeta').textContent = `${ratings.length} questions · ${fmt(dur)} · focus: ${focus === 'all' ? 'All topics' : (trackName[focus] || focus)}`;
+
+      el('mkBreakdown').innerHTML = ratings.map((r) => {
+        const col = r.score >= 4 ? 'var(--accent-2)' : r.score >= 3 ? 'var(--warn)' : 'var(--hot)';
+        const lbl = ({ 1: 'Struggled', 3: 'Decent', 4: 'Good', 5: 'Nailed it' })[r.score] || r.score;
+        return `<div class="mk-bd-row">
+          <span class="mk-bd-dot" style="background:${col}"></span>
+          <div class="mk-bd-q">${esc(r.q)} ${r.score <= 3 ? `<br><a href="${base}${r.url}">Review the lesson →</a>` : ''}</div>
+          <span class="mk-bd-score" style="color:${col}">${lbl}</span>
+        </div>`;
+      }).join('');
+
+      store.logMockSession({ focus, count: ratings.length, avg: +avg5, durationSec: dur });
+      store.markDailyTask('mock');
+      paintHistory();
+    }
+    function esc(s) { return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+
+    function paintHistory() {
+      const sessions = store.mockSessions();
+      if (!sessions.length) { el('mkHistory').innerHTML = '<div class="mk-empty">No rounds yet. Your scored history will appear here and feed your readiness score.</div>'; return; }
+      el('mkHistory').innerHTML = sessions.slice(0, 8).map((s) => {
+        const col = s.avg >= 4 ? 'var(--accent-2)' : s.avg >= 3 ? 'var(--warn)' : 'var(--hot)';
+        return `<div class="mk-hist">
+          <span class="mk-hist-score" style="color:${col}">${s.avg}</span>
+          <div class="mk-hist-meta">
+            <b>${s.focus === 'all' ? 'All topics' : (trackName[s.focus] || s.focus)}</b>
+            <div>${s.count} Qs · ${fmt(s.durationSec || 0)}</div>
+          </div>
+          <span class="muted" style="font-size:12px;font-family:var(--mono)">${s.date}</span>
+        </div>`;
+      }).join('');
+    }
+
+    el('mkStart').addEventListener('click', start);
+    el('mkReveal').addEventListener('click', reveal);
+    el('mkEnd').addEventListener('click', finish);
+    el('mkAgain').addEventListener('click', () => { el('mkSummary').classList.add('hide'); el('mkSetup').classList.remove('hide'); });
+    document.querySelectorAll('.mk-rate').forEach((b) => b.addEventListener('click', () => rate(+b.dataset.s)));
+    document.addEventListener('keydown', (e) => {
+      if (el('mkRun').classList.contains('hide')) return;
+      if ((e.key === ' ' || e.key === 'Enter') && el('mkGradeRow').classList.contains('hide')) { e.preventDefault(); reveal(); }
+    });
+
+    updatePoolInfo();
+    paintHistory();
+  </script>
+</BaseLayout>

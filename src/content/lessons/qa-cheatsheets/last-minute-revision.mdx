@@ -1,0 +1,113 @@
+---
+title: "Last-minute revision — night before the interview"
+track: qa-cheatsheets
+summary: "Rapid-fire Q→A one-liners across every QA topic plus a must-know answer checklist. Designed to be skimmed in 20 minutes the night before."
+order: 3
+est: 20
+difficulty: easy
+priority: must
+tags: [cheatsheet, revision, rapid-fire, interview]
+---
+
+Skim top to bottom in 20 minutes. Each answer is the short, confident version — expand in the room if asked.
+
+## Manual / fundamentals rapid-fire
+
+| Q | A |
+|---|---|
+| Severity vs priority? | Severity = technical impact; priority = business urgency to fix. Independent. |
+| Smoke vs sanity? | Smoke = broad shallow build check; sanity = narrow deep check of a fix. |
+| Verification vs validation? | Verification = building it right (reviews); validation = right product (execution). |
+| Regression vs retesting? | Regression = nothing else broke; retesting = the specific fix works. |
+| QA vs QC? | QA = process/prevention; QC = product/detection. |
+| Bug vs error vs failure? | Error (human) → defect/bug (in code) → failure (observed at runtime). |
+| When stop testing? | Exit criteria met: coverage, defect rate low, deadline, risk acceptable. |
+| What is EP / BVA? | EP = group equivalent inputs, test one each; BVA = test at and around boundaries. |
+| What goes in a bug report? | Title, steps, expected, actual, severity/priority, env, logs/screenshots. |
+| What is a test pyramid? | Many unit, fewer integration, fewest UI/E2E tests. |
+| Black-box vs white-box? | From behavior vs from internal code knowledge. |
+| How to prioritize tests with no time? | Risk-based: critical paths, high-traffic, money/security flows first. |
+| Test case vs scenario? | Case = detailed steps + expected; scenario = high-level "what to test". |
+
+## "How would you test..." rapid-fire
+
+| Q | A (mention these angles) |
+|---|---|
+| How to test a pen? | Functional (writes), usability (grip), durability (drop), boundary (ink runs out), negative (write on glass), non-functional (leak in heat). |
+| How to test a login page? | Valid/invalid creds, empty fields, SQL/XSS, lockout after N tries, password masking, remember-me, session expiry, 401 vs 403. |
+| How to test a text box? | Min/max length, special chars, Unicode, copy-paste, leading/trailing spaces, numeric vs alpha, required validation. |
+| How to test a file upload? | Allowed types, max size, empty file, wrong extension, huge file, concurrent uploads, malicious file. |
+| How to test an API? | Status codes, schema, field values/types, auth (401/403), error responses, boundaries, idempotency, response time. |
+| How to test a shopping cart? | Add/remove/update qty, price total, empty cart, out-of-stock, coupons, concurrency, persistence after logout. |
+
+## Automation rapid-fire
+
+| Q | A |
+|---|---|
+| Why not Thread.sleep? | Wastes time (always full wait) and still flakes (may be too short). Use conditional waits. |
+| Implicit vs explicit wait? | Implicit = global polling for all finds; explicit = wait for one specific condition. Don't mix. |
+| Where do assertions live in POM? | In the test/step layer, NOT in page object methods. Page objects only model elements + actions. |
+| How to handle flaky tests? | Find root cause (timing/data/order), use auto-waits not sleeps, isolate test data, retry as last resort, quarantine. |
+| Best locator strategy? | id > name > css > xpath. Prefer stable test-ids; avoid absolute xpath and index-based locators. |
+| StaleElementReferenceException fix? | DOM changed — re-find the element / wait for stability, then act. |
+| How to run tests in parallel? | TestNG `parallel`, JUnit config, pytest-xdist, Playwright workers/projects; keep tests independent. |
+| How to handle dynamic elements? | Relative xpath with contains/starts-with, stable attributes, explicit waits. |
+| Data-driven testing? | Same logic, many data sets — `@DataProvider` / `@ParameterizedTest` / `parametrize`. |
+| How to manage test data? | Setup/teardown per test, fixtures, isolated/unique data, no dependence on prod state. |
+| What is POM benefit? | Reusable, maintainable — locator changes happen in one place. |
+| CI integration? | Run on PR/merge via Jenkins/GitHub Actions; headless; report + fail the build on failure. |
+| Soft vs hard assert? | Soft collects all failures then `assertAll()`; hard stops at first failure. |
+
+## API / HTTP rapid-fire
+
+| Q | A |
+|---|---|
+| 401 vs 403? | 401 = not authenticated (who are you?); 403 = authenticated but not allowed. |
+| 200 vs 201 vs 204? | 200 OK (response body), 201 Created, 204 No Content. |
+| 400 vs 422? | 400 = malformed request; 422 = well-formed but semantically invalid. |
+| Idempotent methods? | GET, PUT, DELETE, HEAD, OPTIONS. NOT POST (and PATCH generally not). |
+| Safe methods? | GET, HEAD, OPTIONS (no side effects). |
+| PUT vs PATCH? | PUT replaces the whole resource; PATCH updates part. |
+| SOAP vs REST? | SOAP = strict XML + WSDL protocol; REST = lightweight HTTP/JSON style. |
+| What is REST? | Stateless, resource-based architecture over HTTP using standard verbs. |
+| Status for rate limiting? | 429 Too Many Requests. |
+| How to test auth? | No token → 401; wrong role → 403; expired token → 401; valid → 200. |
+
+## SQL rapid-fire
+
+| Q | A |
+|---|---|
+| WHERE vs HAVING? | WHERE filters rows before grouping; HAVING filters groups after GROUP BY. |
+| INNER vs LEFT join? | INNER = matches in both; LEFT = all left rows + matches (NULLs otherwise). |
+| 2nd highest salary? | `SELECT MAX(salary) FROM emp WHERE salary < (SELECT MAX(salary) FROM emp);` |
+| Find duplicates? | `GROUP BY col HAVING COUNT(*) > 1`. |
+| DELETE vs TRUNCATE vs DROP? | DELETE = rows (rollback-able); TRUNCATE = all rows fast; DROP = removes table. |
+| Primary vs foreign key? | PK = unique row id, not null; FK = reference to a PK in another table. |
+| UNION vs UNION ALL? | UNION removes duplicates; UNION ALL keeps them (faster). |
+
+## Must-know answer checklist
+
+```
+[ ] 401 vs 403  -> not authenticated vs not authorized
+[ ] Idempotent methods -> GET, PUT, DELETE, HEAD, OPTIONS (not POST)
+[ ] Severity vs priority + example (logo typo = low sev/high pri)
+[ ] Why not Thread.sleep -> wastes time + still flaky; use explicit waits
+[ ] Where assertions live in POM -> test layer, never in page objects
+[ ] How to handle flaky tests -> root cause, auto-waits, isolated data, retry last
+[ ] How to test a pen -> functional/usability/durability/boundary/negative
+[ ] Smoke vs sanity -> broad shallow vs narrow deep
+[ ] Verification vs validation -> building right vs right product
+[ ] WHERE vs HAVING -> rows before grouping vs groups after
+[ ] INNER vs LEFT join
+[ ] Test pyramid -> many unit, few UI
+[ ] Best locator order -> id > css > xpath; avoid absolute xpath
+[ ] Stale element fix -> re-find after DOM change
+[ ] PUT vs PATCH -> replace vs partial
+[ ] EP & BVA -> partitions + boundaries
+[ ] When to stop testing -> exit criteria / risk acceptable
+[ ] A defect you found end-to-end (have a STAR story ready)
+```
+
+<div class="callout tip"><div class="ct">Confidence move</div> When unsure, state your assumption, give the structured answer, then say how you would verify. Interviewers reward clear reasoning over memorized trivia.</div>
+
+<div class="callout key"><div class="ct">Have ready</div> One concrete STAR story: a tricky bug you caught, how you isolated it, the impact. And one automation win: what you built, why, and the result (time saved, coverage, fewer escapes).</div>

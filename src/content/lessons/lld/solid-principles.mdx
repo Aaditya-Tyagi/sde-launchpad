@@ -1,0 +1,261 @@
+---
+title: "SOLID Principles in JavaScript & TypeScript"
+track: lld
+summary: "All five SOLID principles with real JS/TS examples — what each one means, how to violate it, and how to fix the violation."
+order: 2
+est: 25
+difficulty: medium
+priority: must
+tags: [solid, srp, ocp, lsp, isp, dip, design-principles]
+whyAsked: "SOLID comes up in every LLD discussion and in code review questions. Interviewers want to see you apply principles, not just recite acronyms."
+followUps:
+  - "Give an example of SRP violation in a React component."
+  - "How does OCP apply to a component that needs to support new variants?"
+  - "What would violate LSP in a class hierarchy?"
+  - "How is DIP achieved in React?"
+  - "Can SOLID be applied to functional code?"
+resources:
+  - { label: "Refactoring Guru: SOLID", url: "https://refactoring.guru/solid" }
+---
+
+SOLID is five design principles for writing maintainable, extensible, and testable code. They were coined for OOP but apply directly to TypeScript classes and, with adaptation, to functional React.
+
+## S — Single Responsibility Principle
+
+> A module/class/function should have **one reason to change**.
+
+**Violation:**
+```ts
+// UserCard does too many things — UI, data fetching, AND formatting
+function UserCard({ userId }: { userId: string }) {
+  const [user, setUser] = useState(null);
+
+  useEffect(() => {
+    fetch(`/api/users/${userId}`)
+      .then(r => r.json())
+      .then(setUser);
+  }, [userId]);
+
+  const formatJoinDate = (date: string) =>
+    new Date(date).toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
+
+  return <div>{user?.name} — joined {formatJoinDate(user?.joinedAt)}</div>;
+}
+```
+
+**Fix:** Separate concerns:
+```ts
+// 1. Data fetching — custom hook
+function useUser(userId: string) {
+  const { data: user } = useQuery(['user', userId], () => api.getUser(userId));
+  return user;
+}
+
+// 2. Formatting — pure utility
+const formatJoinDate = (date: string) =>
+  new Date(date).toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
+
+// 3. Presentation only
+function UserCard({ userId }: { userId: string }) {
+  const user = useUser(userId);
+  if (!user) return <Skeleton />;
+  return <div>{user.name} — joined {formatJoinDate(user.joinedAt)}</div>;
+}
+```
+
+## O — Open/Closed Principle
+
+> Open for **extension**, closed for **modification**. Add new behavior without changing existing code.
+
+**Violation:**
+```ts
+// Adding a new button variant means modifying this component
+function Button({ variant }: { variant: 'primary' | 'danger' | 'ghost' }) {
+  if (variant === 'primary') return <button className="btn-primary" />;
+  if (variant === 'danger')  return <button className="btn-danger" />;
+  // Every new variant = new if-branch = modify existing code
+}
+```
+
+**Fix:** Configuration-based extension:
+```ts
+type ButtonVariant = 'primary' | 'danger' | 'ghost' | 'warning'; // extend here only
+
+const variantStyles: Record<ButtonVariant, string> = {
+  primary: 'bg-blue-600 text-white',
+  danger: 'bg-red-600 text-white',
+  ghost: 'bg-transparent border border-gray-300',
+  warning: 'bg-yellow-500 text-black', // added without touching Button
+};
+
+function Button({ variant = 'primary', ...props }: ButtonProps) {
+  return <button className={`btn ${variantStyles[variant]}`} {...props} />;
+}
+```
+
+Or via composition (polymorphism):
+```ts
+// Extend by composition — no modification to the base
+function PrimaryButton(props) { return <Button {...props} className="btn-primary" />; }
+function DangerButton(props) { return <Button {...props} className="btn-danger" />; }
+```
+
+## L — Liskov Substitution Principle
+
+> Subtypes must be substitutable for their base types **without breaking behavior**.
+
+If `class Dog extends Animal`, anywhere you use `Animal` you should be able to use `Dog` and get correct behavior.
+
+**Violation:**
+```ts
+class Rectangle {
+  constructor(protected width: number, protected height: number) {}
+  setWidth(w: number) { this.width = w; }
+  setHeight(h: number) { this.height = h; }
+  area() { return this.width * this.height; }
+}
+
+class Square extends Rectangle {
+  setWidth(w: number) {
+    this.width = w;
+    this.height = w; // square must keep sides equal — breaks Rectangle contract!
+  }
+  setHeight(h: number) {
+    this.width = h;
+    this.height = h;
+  }
+}
+
+// This function works with Rectangle but BREAKS with Square:
+function makeWider(shape: Rectangle) {
+  shape.setWidth(10);
+  // Expects area = 10 * height, but Square changes height too!
+}
+```
+
+**Fix:** Don't inherit where the contract breaks. Use composition or a common interface:
+```ts
+interface Shape {
+  area(): number;
+}
+
+class Rectangle implements Shape { /* ... */ }
+class Square implements Shape { /* ... */ }
+```
+
+## I — Interface Segregation Principle
+
+> No client should be forced to depend on methods it doesn't use. Prefer **small, focused interfaces** over fat ones.
+
+**Violation:**
+```ts
+interface Worker {
+  work(): void;
+  eat(): void;    // robots don't eat!
+  sleep(): void;  // robots don't sleep!
+}
+
+class HumanWorker implements Worker {
+  work() { /* ... */ }
+  eat() { /* ... */ }
+  sleep() { /* ... */ }
+}
+
+class RobotWorker implements Worker {
+  work() { /* ... */ }
+  eat() { throw new Error('Robots do not eat'); } // forced to implement
+  sleep() { throw new Error('Robots do not sleep'); }
+}
+```
+
+**Fix:** Split into focused interfaces:
+```ts
+interface Workable { work(): void; }
+interface Eatable  { eat(): void; }
+interface Sleepable{ sleep(): void; }
+
+class HumanWorker implements Workable, Eatable, Sleepable { /* ... */ }
+class RobotWorker  implements Workable { work() { /* ... */ } }
+```
+
+**In React:** ISP maps to prop interface design. Don't pass a giant `user` object to every component — pass only the props each component actually needs:
+```ts
+// Violates ISP — UserCard depends on the whole User
+function Avatar({ user }: { user: User }) {
+  return <img src={user.avatarUrl} alt={user.name} />;
+}
+
+// Better — only what Avatar needs
+function Avatar({ avatarUrl, name }: { avatarUrl: string; name: string }) {
+  return <img src={avatarUrl} alt={name} />;
+}
+```
+
+## D — Dependency Inversion Principle
+
+> High-level modules should not depend on low-level modules. Both should depend on **abstractions** (interfaces).
+
+**Violation:**
+```ts
+// UserService is tightly coupled to a specific HTTP implementation
+class UserService {
+  async getUser(id: string) {
+    const res = await fetch(`/api/users/${id}`); // concrete dependency
+    return res.json();
+  }
+}
+// Hard to test, impossible to swap to Axios or a mock
+```
+
+**Fix:** Depend on an interface, inject the implementation:
+```ts
+// Abstraction
+interface HttpClient {
+  get<T>(url: string): Promise<T>;
+}
+
+// High-level module depends on the abstraction
+class UserService {
+  constructor(private http: HttpClient) {}
+
+  getUser(id: string) {
+    return this.http.get<User>(`/api/users/${id}`);
+  }
+}
+
+// Concrete implementations
+class FetchClient implements HttpClient {
+  async get<T>(url: string): Promise<T> {
+    const res = await fetch(url);
+    return res.json();
+  }
+}
+
+class MockClient implements HttpClient {
+  get<T>(url: string): Promise<T> {
+    return Promise.resolve({ id: '1', name: 'Test' } as T);
+  }
+}
+
+// Production
+const service = new UserService(new FetchClient());
+// Tests
+const testService = new UserService(new MockClient());
+```
+
+**In React:** DIP is achieved via props and context — components receive callbacks/data rather than importing services directly:
+```ts
+// DIP-compliant component: gets onSave injected, not hardcoded
+function Form({ onSave }: { onSave: (data: FormData) => Promise<void> }) {
+  // ...
+}
+
+// Parent decides the implementation
+<Form onSave={(data) => api.saveUser(data)} />
+<Form onSave={(data) => mockSave(data)} />  // in tests
+```
+
+<div class="callout key">
+  <div class="ct">SOLID in 5 sentences</div>
+  <strong>S</strong>: One reason to change — split concerns into separate units. <strong>O</strong>: Add behavior via config/composition, not by editing existing code. <strong>L</strong>: Subtypes must honor the parent's contract — substitution must work. <strong>I</strong>: Small focused interfaces, not fat ones — components only depend on what they use. <strong>D</strong>: Depend on abstractions (interfaces/callbacks/context), not concrete implementations — enables testing and swapping.
+</div>

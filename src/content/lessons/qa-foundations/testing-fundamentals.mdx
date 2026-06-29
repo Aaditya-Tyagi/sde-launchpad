@@ -1,0 +1,235 @@
+---
+title: "Testing fundamentals: SDLC, STLC & Agile"
+track: qa-foundations
+summary: "The process and vocabulary every QA interview opens with — software/test life cycles, the seven principles, test levels and types, the test pyramid, shift-left/right and where testing fits in Agile."
+order: 1
+est: 28
+difficulty: easy
+priority: must
+tags: [sdlc, stlc, agile, shift-left, test-pyramid]
+whyAsked: "Before anyone trusts you to automate, they check that you understand what good testing is. Process fluency signals you'll test the right things, not just write clicking robots."
+followUps:
+  - "Difference between verification and validation?"
+  - "What is shift-left testing and why does it matter?"
+  - "Where does QA fit in a Scrum sprint?"
+  - "Explain the test pyramid and the ice-cream-cone anti-pattern."
+resources:
+  - { label: "ISTQB Foundation syllabus (CTFL v4)", url: "https://www.istqb.org/certifications/certified-tester-foundation-level" }
+  - { label: "Ministry of Testing", url: "https://www.ministryoftesting.com/" }
+  - { label: "Martin Fowler — Test Pyramid", url: "https://martinfowler.com/articles/practical-test-pyramid.html" }
+  - { label: "Google Testing Blog", url: "https://testing.googleblog.com/" }
+---
+
+Automation without test fundamentals is just code that clicks. This lesson is the base every QA role and certification expects — and it's the first thing an interviewer probes to see whether you *think* like a tester or just *operate tools*.
+
+## What testing actually is (and isn't)
+
+Testing is not "trying to break the app." It's a disciplined, risk-driven information-gathering activity: you give stakeholders evidence about the quality of a product so they can make a release decision. The mindset shift interviewers look for: you don't test to *prove the software works* — you test to *find the places it doesn't*, because that's where value is.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Testing reduces the risk of failure in production to an acceptable level. It can never make risk zero. Everything below — principles, techniques, levels — exists to spend limited time where risk is highest.
+</div>
+
+## QA vs QC vs Testing
+
+These three get used interchangeably by weak candidates. Keep them distinct:
+
+| Term | Question it answers | Nature | Examples |
+|---|---|---|---|
+| **QA** (Quality Assurance) | Are our *processes* good enough to produce quality? | Process-oriented, preventive | Defining standards, code review policy, CI gates, retrospectives |
+| **QC** (Quality Control) | Does *this build* meet quality? | Product-oriented, detective | Executing test cases, inspections, reviews of the actual artifact |
+| **Testing** | What defects exist and what's the risk? | A subset of QC — the act of evaluating by execution/analysis | Running test cases, exploratory testing |
+
+One-liner for the interview: "QA is preventive and about the process; QC is detective and about the product; testing is the execution activity inside QC."
+
+## The seven testing principles
+
+Know all seven *with an example each* — naming them is table stakes, applying them is what scores.
+
+1. **Testing shows the presence of defects, not their absence.** Passing tests never prove there are no bugs. You can only build confidence.
+2. **Exhaustive testing is impossible.** A single text field has near-infinite inputs. Use risk and techniques (next lesson) to pick a smart subset instead.
+3. **Early testing saves time and money (shift-left).** A requirements defect caught in a review costs cents; the same defect found in production can cost 100x to fix plus reputational damage.
+4. **Defects cluster.** A small number of modules typically contain most defects (a Pareto effect). Found three bugs in the payment module? Look there for a fourth.
+5. **Beware the pesticide paradox.** Re-running the same tests stops finding new bugs — the code becomes "immune." Review and refresh your test suite, add new cases, vary data.
+6. **Testing is context-dependent.** A pacemaker's firmware, a banking backend, and a casual mobile game demand wildly different rigor. There is no one-size-fits-all process.
+7. **Absence-of-errors is a fallacy.** A product with zero known bugs that doesn't meet user needs is still a failure. Correctness is necessary, not sufficient.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  When asked "how would you test X with no time," lean on principles 2, 3 and 4: prioritize by risk, test early against requirements, and focus on the modules/flows most likely to fail and most costly if they do.
+</div>
+
+## SDLC vs STLC
+
+The **SDLC** (Software Development Life Cycle) is the whole build, end to end:
+
+`Requirements → Design → Development → Testing → Deployment → Maintenance`
+
+The **STLC** (Software Testing Life Cycle) is the testing-specific cycle that runs *inside and alongside* the SDLC. It has clear phases, each with an entry/exit criterion and concrete deliverables:
+
+| STLC phase | Entry criteria | What you produce (deliverables) | Exit criteria |
+|---|---|---|---|
+| Requirement analysis | Requirements/stories available | List of testable requirements, clarifying questions, automation feasibility notes, RTM started | Requirements understood and confirmed testable |
+| Test planning | Requirements analyzed | Test plan, scope, approach, estimate, tools, roles, schedule | Test plan reviewed and signed off |
+| Test case design | Test plan approved | Test cases & scripts, test data, RTM completed | Cases reviewed and baselined |
+| Environment setup | Test cases ready, env requirements known | Configured, controlled test environment; smoke test of the env | Environment ready and stable |
+| Test execution | Cases designed, env ready, build deployed | Executed cases, defect reports, updated RTM, retests | All planned cases run; defects logged/triaged |
+| Test closure | Execution complete | Test summary report, metrics, lessons learned | Exit criteria met; sign-off |
+
+Interviewers love "what are the entry and exit criteria for test execution?" — entry: a stable build is deployed, environment is ready, and test cases plus data are prepared; exit: planned cases are executed, no open critical/high defects (or they're accepted), and coverage targets are met.
+
+## V-model vs Agile
+
+The **V-model** pairs every development phase with a matching test level on the right-hand side of a "V":
+
+```
+Requirements ───────────────► Acceptance testing (UAT)
+   Design ──────────────────► System testing
+     Architecture ─────────► Integration testing
+        Module design ────► Unit testing
+                  Coding (bottom of the V)
+```
+
+Its strength: testing is *planned* from the start (you design the acceptance tests when you write the requirements — that's shift-left baked into the model). Its weakness: it's sequential like Waterfall, so it copes badly with changing requirements; testing still happens largely after coding.
+
+**Agile** breaks the work into small increments. Testing is continuous and embedded in the team rather than a phase at the end. The trade-off table interviewers want to hear:
+
+| | V-model / Waterfall | Agile |
+|---|---|---|
+| Requirements | Fixed up front | Evolving each sprint |
+| Testing timing | After each build phase | Continuous, every sprint |
+| Tester role | Separate phase/team | Embedded team member |
+| Feedback loop | Long | Short (days) |
+| Best for | Regulated, stable scope (medical, defense) | Most product software |
+
+## Test levels (who/where you test)
+
+Levels are about the *scope of what's under test*. They map directly to the V-model and the pyramid:
+
+- **Unit / component** — a single function or class in isolation, usually by developers, with mocks/stubs for dependencies. Fast, deterministic.
+- **Integration** — interactions between units/modules/services (e.g., does the order service talk to payments correctly?). Catches interface and contract mismatches.
+- **System** — the fully integrated application as a whole against requirements. End-to-end functional and non-functional behavior.
+- **Acceptance (UAT)** — does it meet business needs and is it ready for real users? Often run by the customer/business; includes alpha/beta.
+
+## Test types (what quality aspect you test)
+
+Types are about the *characteristic* you evaluate, and cut across all levels:
+
+- **Functional** — does it do the right thing per the spec? (login works, totals add up)
+- **Non-functional** — *how well* does it behave: performance/load, security, usability, accessibility, compatibility, reliability, portability, maintainability.
+- **Structural / white-box** — based on internal structure and code coverage.
+- **Change-related** — **confirmation/re-testing** (does the specific fix work?) and **regression** (did the change break anything previously working?).
+
+And the build-gate trio:
+
+- **Smoke** — a shallow, wide check that the build is stable enough to bother testing ("build verification"). If smoke fails, reject the build.
+- **Sanity** — a narrow, deep check that a specific fix or feature works after a minor change.
+- **Regression** — re-run a suite to confirm existing functionality still works after changes; the prime candidate for automation.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Smoke vs sanity trips people up. Smoke = wide and shallow, run on every new build, often automated. Sanity = narrow and deep, run after a focused change, often manual and unscripted. Retesting confirms a fix; regression confirms nothing *else* broke.
+</div>
+
+## Verification vs validation
+
+- **Verification** — "Are we building the product *right*?" Static, no execution: reviews, walkthroughs, inspections, static analysis. Checks artifacts against specs.
+- **Validation** — "Are we building the *right* product?" Dynamic: actually running and testing the software against user needs.
+
+Memory hook: **verification = static & spec-facing; validation = dynamic & user-facing.** Both are needed — a perfectly-built product (verified) can still solve the wrong problem (fails validation).
+
+## The test pyramid (and the ice-cream-cone anti-pattern)
+
+The **test pyramid** (Mike Cohn; popularized by Martin Fowler) prescribes the *ratio* of tests by level:
+
+```
+        /\        few   ── UI / E2E  (slow, brittle, expensive)
+       /  \
+      /----\      some  ── Service / API / integration
+     /      \
+    /--------\    many  ── Unit (fast, cheap, stable)
+```
+
+Why this shape: lower tests are faster, cheaper, more stable, and pinpoint failures precisely. Push coverage down to the cheapest level that can catch the bug. A failing unit test tells you the exact function; a failing E2E test could be anything from a network blip to a CSS change.
+
+The **ice-cream cone** is the anti-pattern: a fat layer of slow UI/E2E tests on top, little integration, almost no unit tests — often propped up by manual testing at the very top. It's slow, flaky, and expensive to maintain. If an interviewer shows you a suite that's 80% Selenium UI tests, the right answer is "push logic down to unit/API tests and keep only critical-journey E2E tests."
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  E2E tests should cover a handful of critical user journeys, not every edge case. Test business logic at the unit level and contracts at the API level. "Test at the lowest level that gives confidence."
+</div>
+
+## Shift-left and shift-right
+
+- **Shift-left** — move testing activities *earlier*: review requirements for testability, define acceptance criteria before code, write unit/contract tests alongside development, run static analysis and security scans in the pipeline. Catches defects when they're cheapest.
+- **Shift-right** — extend testing *into production*: monitoring, observability, alerting, feature flags, canary/blue-green releases, A/B tests, chaos engineering, and synthetic monitoring. You can't simulate every real-world condition pre-release, so you validate in prod safely with fast rollback.
+
+Modern QA does both: prevent early, observe late.
+
+## Requirements Traceability Matrix (RTM)
+
+An **RTM** maps each requirement to the test case(s) that verify it (and often to design and defects). It answers two questions interviewers care about:
+
+1. **Coverage** — is every requirement covered by at least one test? (Gaps = untested requirements.)
+2. **Impact** — if requirement R-12 changes, which tests must I revisit?
+
+| Req ID | Requirement | Test case IDs | Status |
+|---|---|---|---|
+| R-01 | User can log in with valid credentials | TC-01, TC-02 | Pass |
+| R-02 | Account locks after 5 failed attempts | TC-09 | Fail (defect DEF-31) |
+| R-03 | Password reset email within 2 min | TC-15 | Not run |
+
+Forward traceability = requirement → tests; backward = test → requirement. Bidirectional RTM proves no requirement is untested and no test is orphaned.
+
+## Testing in Agile / Scrum
+
+- Testers are **part of the team**, not a gate at the end.
+- **Shift-left**: testing starts at refinement — you review user stories for testability and help define **acceptance criteria** before code exists (the "three amigos": business, dev, QA).
+- Each story has a **Definition of Done** that includes tests passing and acceptance criteria met.
+- You automate regression so each sprint's new work doesn't silently break prior work, and you wire it into **CI** so it runs on every change.
+- Exploratory testing fills the gaps that scripted/automated checks miss.
+
+(There's a dedicated lesson on Agile and the QA process — order 5 — that goes deeper on ceremonies, DoR/DoD and Gherkin.)
+
+## Interview questions & model answers
+
+**Q: What's the difference between verification and validation?**
+"Verification is static and asks 'are we building it right?' — reviews, inspections, static analysis against the spec. Validation is dynamic and asks 'are we building the right thing?' — actually executing the software against user needs. You need both: code can be built correctly yet solve the wrong problem."
+
+**Q: Smoke vs sanity vs regression?**
+"Smoke is a wide, shallow check that a build is stable enough to test, usually automated and run on every build. Sanity is a narrow, deep check that a specific fix or feature works after a small change. Regression re-runs a broader suite to confirm existing functionality still works after any change — it's my top automation candidate."
+
+**Q: Explain the test pyramid and why it matters.**
+"It prescribes many fast, cheap, stable unit tests at the base, fewer service/API tests in the middle, and very few slow UI/E2E tests at the top. You test at the lowest level that gives confidence because failures there are fast and pinpoint the cause. The anti-pattern is the ice-cream cone — mostly UI tests — which is slow and flaky."
+
+**Q: What is shift-left and why does it matter?**
+"Moving testing earlier — reviewing requirements, defining acceptance criteria, writing unit and contract tests during development, and running checks in CI. It matters because a defect found in requirements costs a fraction of one found in production, both in fix cost and risk."
+
+**Q: Can you test exhaustively? If not, how do you decide what to test?**
+"No — even one field has effectively infinite inputs. I prioritize by risk: likelihood of failure times business impact. I use techniques like equivalence partitioning and boundary analysis to get high coverage from few cases, and I focus on defect-prone modules and critical user journeys."
+
+**Q: Difference between QA, QC and testing?**
+"QA is preventive and process-focused — making sure the way we work produces quality. QC is detective and product-focused — checking that this build meets quality. Testing is the execution activity inside QC."
+
+**Q: Severity vs the seven principles — give me a principle you've actually applied.**
+"Defect clustering. On a checkout project we found several bugs in the promo-code module; rather than spread thin, I deepened testing there and found two more high-severity issues before release. A few modules really do hold most of the defects."
+
+**Q: Where does the RTM help?**
+"Two places: coverage — proving every requirement has at least one test, exposing gaps — and impact analysis — when a requirement changes, instantly knowing which tests to update or rerun."
+
+## Common mistakes / what weak candidates say
+
+- "Testing proves the software has no bugs." — Directly contradicts principle 1; an instant red flag.
+- Using QA, QC, and testing as synonyms.
+- Confusing smoke and sanity, or retesting and regression.
+- Describing testing as a final phase that happens "after dev is done" — signals no shift-left awareness.
+- Saying "I'd test everything" — exhaustive testing is impossible; you must prioritize.
+- Listing the seven principles by rote with no examples.
+- Drawing the pyramid but not explaining *why* (failure speed, cost, stability, locality).
+- Treating non-functional testing as an afterthought or forgetting it exists.
+
+<div class="callout tip">
+  <div class="ct">Interview-ready summary</div>
+  "Testing gathers risk information; it shows defects exist, never that they're gone. I work shift-left in Agile — reviewing stories for testability, designing cases early against acceptance criteria, automating regression in CI, and following the test pyramid so most coverage is fast unit and API tests, not brittle UI tests — while using shift-right monitoring to catch what slips through."
+</div>

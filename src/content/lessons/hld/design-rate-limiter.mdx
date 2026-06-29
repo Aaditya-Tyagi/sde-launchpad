@@ -1,0 +1,278 @@
+---
+title: "HLD: Design a Rate Limiter"
+track: hld
+summary: "Design a distributed rate limiter — token bucket, sliding window counter, Redis implementation, and where to enforce limits."
+order: 4
+est: 28
+difficulty: hard
+priority: must
+tags: [hld, rate-limiter, token-bucket, sliding-window, redis, distributed]
+whyAsked: "Rate limiter is a very common HLD question because it touches algorithms, distributed state, consistency trade-offs, and API gateway design."
+followUps:
+  - "What is the difference between token bucket and leaky bucket?"
+  - "How do you implement a sliding window counter?"
+  - "How do you rate-limit in a distributed environment where requests hit different servers?"
+  - "Where should you enforce rate limits — API gateway, middleware, or service level?"
+  - "How do you handle the race condition in a Redis-based rate limiter?"
+resources:
+  - { label: "Redis rate limiting patterns", url: "https://redis.io/learn/develop/dotnet/aspnetcore/rate-limiting/fixed-window" }
+  - { label: "Cloudflare: How they rate limit", url: "https://blog.cloudflare.com/counting-things-a-lot-of-different-things/" }
+---
+
+## Step 1: Requirements
+
+**Functional:**
+- Limit each user to N requests per time window (e.g. 100 req/min)
+- Return HTTP 429 Too Many Requests when limit exceeded
+- Include headers: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`
+- Support multiple limit types: per-user, per-IP, per-API-key, per-endpoint
+
+**Non-functional:**
+- Works across N app servers (distributed)
+- Low overhead: rate check adds < 5ms latency
+- Soft failures: if the rate limiter is down, allow traffic through (fail open) — don't take down the whole API
+
+---
+
+## Step 2: Algorithms
+
+### Token Bucket (most common in interviews)
+
+```
+Each user has a bucket with max N tokens.
+Tokens refill at R tokens/second.
+Each request consumes 1 token.
+If bucket is empty → 429.
+
+Burst allowed: user can consume all N tokens instantly (bursty traffic ok).
+```
+
+**Implementation (in-memory — single server):**
+```python
+import time
+from dataclasses import dataclass, field
+
+@dataclass
+class TokenBucket:
+    capacity: int        # max tokens
+    refill_rate: float   # tokens per second
+    tokens: float = 0.0
+    last_refill: float = field(default_factory=time.time)
+
+    def allow(self) -> bool:
+        now = time.time()
+        elapsed = now - self.last_refill
+        # Refill
+        self.tokens = min(self.capacity, self.tokens + elapsed * self.refill_rate)
+        self.last_refill = now
+        if self.tokens >= 1:
+            self.tokens -= 1
+            return True
+        return False
+```
+
+**Problem:** This is per-server. In a distributed system, requests from the same user hit different servers → each server has its own bucket → effective limit is N × (number of servers).
+
+---
+
+### Fixed Window Counter
+
+```
+Divide time into fixed windows (e.g., 60-second buckets).
+Count requests per user per window.
+If count > limit → 429.
+```
+
+**Redis implementation:**
+```python
+import redis
+import time
+
+r = redis.Redis()
+
+def is_allowed(user_id: str, limit: int, window_secs: int) -> bool:
+    window_key = int(time.time()) // window_secs
+    key = f"rl:{user_id}:{window_key}"
+    
+    # Atomic increment + set expiry
+    count = r.incr(key)
+    if count == 1:
+        r.expire(key, window_secs * 2)  # 2x window to be safe
+    
+    return count <= limit
+```
+
+**Problem:** boundary spike. If the window resets at :00 and a user sends 100 requests at :59 and 100 more at :01, they send 200 requests in 2 seconds but never exceed the per-minute limit within any single window.
+
+---
+
+### Sliding Window Counter (best for most cases)
+
+Approximates a sliding window using two fixed-window counters:
+
+```
+current_window_count + (previous_window_count × overlap_ratio)
+```
+
+```python
+def is_allowed_sliding(user_id: str, limit: int, window_secs: int) -> bool:
+    now = time.time()
+    current_window = int(now) // window_secs
+    prev_window = current_window - 1
+    
+    # Overlap ratio: how much of the previous window is in our sliding window
+    elapsed_in_current = now % window_secs
+    overlap = 1 - (elapsed_in_current / window_secs)
+    
+    current_key = f"rl:{user_id}:{current_window}"
+    prev_key = f"rl:{user_id}:{prev_window}"
+    
+    # Atomic pipeline
+    pipe = r.pipeline()
+    pipe.get(prev_key)
+    pipe.incr(current_key)
+    pipe.expire(current_key, window_secs * 2)
+    prev_count, current_count, _ = pipe.execute()
+    
+    estimated = int(prev_count or 0) * overlap + int(current_count)
+    
+    if estimated > limit:
+        # Rollback the increment
+        r.decr(current_key)
+        return False
+    return True
+```
+
+---
+
+### Sliding Window Log (most accurate, most memory)
+
+Store a sorted set of timestamps per user. Count entries in the last N seconds.
+
+```python
+def is_allowed_log(user_id: str, limit: int, window_secs: int) -> bool:
+    now = time.time()
+    window_start = now - window_secs
+    key = f"rl:log:{user_id}"
+    
+    pipe = r.pipeline()
+    # Remove timestamps outside the window
+    pipe.zremrangebyscore(key, 0, window_start)
+    # Count remaining
+    pipe.zcard(key)
+    # Add current request timestamp
+    pipe.zadd(key, {str(now): now})
+    pipe.expire(key, window_secs)
+    _, count, _, _ = pipe.execute()
+    
+    return (count + 1) <= limit
+```
+
+**Memory:** O(unique requests in window) per user — expensive at high scale. Use for low-traffic, high-accuracy scenarios.
+
+---
+
+## Step 3: Distributed rate limiter architecture
+
+```
+Client
+  │
+  ▼
+[ API Gateway / Nginx / Envoy ]
+  │  ← enforce rate limits here (before reaching app servers)
+  │
+  ▼
+[ Rate Limiter Middleware ]
+  │  reads/writes → Redis Cluster
+  │
+  ├─ Redis Node 1 (users A-M)  ← consistent hashing
+  ├─ Redis Node 2 (users N-Z)
+  └─ Redis Node 3 (replica)
+  
+  App servers (stateless — no local rate limit state)
+```
+
+**Why Redis?**
+- INCR is atomic — no race conditions for the increment operation
+- Sub-millisecond reads/writes
+- Built-in TTL for automatic key expiry
+- Redis Cluster for horizontal scaling
+
+---
+
+## Step 4: Race condition & Lua scripts
+
+`INCR` + `EXPIRE` is two commands — not atomic. If the server crashes between them, the key has no TTL and never expires (ghost user forever blocked at limit).
+
+**Fix: Lua script (executes atomically on Redis):**
+
+```lua
+-- KEYS[1] = rate limit key
+-- ARGV[1] = limit, ARGV[2] = window_secs
+
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+if count > tonumber(ARGV[1]) then
+  return 0  -- rejected
+end
+return 1    -- allowed
+```
+
+```python
+rate_limit_script = r.register_script(lua_script)
+
+def is_allowed(user_id: str, limit: int, window_secs: int) -> bool:
+    key = f"rl:{user_id}:{int(time.time()) // window_secs}"
+    result = rate_limit_script(keys=[key], args=[limit, window_secs * 2])
+    return bool(result)
+```
+
+---
+
+## Step 5: Response headers
+
+```
+HTTP/1.1 200 OK
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 43
+X-RateLimit-Reset: 1720000060   ← Unix timestamp when window resets
+Retry-After: 30                 ← only on 429; seconds to wait
+```
+
+```
+HTTP/1.1 429 Too Many Requests
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 0
+Retry-After: 30
+```
+
+---
+
+## Step 6: Where to enforce
+
+| Location | Pros | Cons |
+|---|---|---|
+| **API Gateway** (Kong, AWS API GW) | Central; protects all services | Gateway is a potential bottleneck |
+| **Reverse proxy** (nginx, Envoy) | Fast; before app server | Harder to implement per-user logic |
+| **Middleware** (Express/FastAPI) | Full access to auth context | Distributed state still needs Redis |
+| **Client SDK** | Reduces server hits | Client can be bypassed |
+
+**Best practice:** Enforce at API gateway for global protection + re-enforce in service middleware for business-logic limits (per-endpoint, per-plan tier).
+
+---
+
+## Comparison table
+
+| Algorithm | Accuracy | Memory | Burst | Implementation |
+|---|---|---|---|---|
+| Token bucket | Good | Low | Allows | Medium |
+| Fixed window | OK (boundary spike) | Very low | Not controlled | Easy |
+| Sliding window counter | Good (approx.) | Low | Not controlled | Medium |
+| Sliding window log | Exact | High | Not controlled | Hard |
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "I'd use a sliding window counter backed by Redis. Each request atomically increments a key for the current window and reads the previous window's count; the weighted sum gives an approximate request count over the true sliding window. I use a Lua script to make INCR + EXPIRE atomic. The rate limiter runs as middleware before reaching app servers and reads from a Redis cluster — consistent hashing maps each user to a shard. If Redis is unavailable, I fail open (allow traffic) rather than taking down the API."
+</div>

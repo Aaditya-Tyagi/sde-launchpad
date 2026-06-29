@@ -1,0 +1,164 @@
+---
+title: "Classic designs & recurring patterns"
+track: system-design
+summary: "Two warm-up designs (URL shortener, rate limiter) plus the reusable patterns interviewers probe: fan-out, CQRS, event sourcing, idempotency, outbox, consistent hashing, replication, sharding, hot keys, backpressure."
+order: 5
+est: 32
+difficulty: medium
+priority: deep
+tags: [url-shortener, rate-limiter, patterns, cqrs, idempotency, consistent-hashing, sharding]
+whyAsked: "These warm-ups and patterns recur across nearly every design round. Naming the right pattern fast — and its tradeoff — signals you've built real systems."
+followUps:
+  - "How do you generate short, unique, non-guessable keys?"
+  - "Fan-out on write vs read — when each?"
+  - "What is the outbox pattern and what problem does it solve?"
+  - "How does consistent hashing minimize remapping when a node is added?"
+  - "What's the hot-key problem and how do you mitigate it?"
+resources:
+  - { label: "ByteByteGo", url: "https://bytebytego.com/" }
+  - { label: "Designing Data-Intensive Applications (Kleppmann)", url: "https://dataintensive.net/" }
+---
+
+Part 1 is two designs that finish in 30 minutes but show your reasoning. Part 2 is the toolkit of **patterns** — name the right one fast and you sound like someone who's shipped systems.
+
+## Design a URL shortener (TinyURL)
+
+**Requirements.** Functional: create a short link for a long URL; redirect a short link to the long URL. Non-functional: **read-heavy** (far more redirects than creations, say 100:1), low-latency redirects (`p99 < 50ms`), links are immutable.
+
+**API.** `POST /shorten {url}` → `{shortUrl}`; `GET /{key}` → 301 redirect.
+
+**Capacity sanity check.** 100M new links/month ≈ 40 writes/s; at 100:1, ~4K redirects/s. A 7-char base-62 key gives `62^7 ≈ 3.5 trillion` keys — plenty for decades.
+
+**Key generation — the core decision.**
+
+| Approach | How | Tradeoff |
+|---|---|---|
+| Counter + base-62 | Global incrementing id, base-62 encoded | Dense & simple, but **sequential = guessable**; counter is a coordination point |
+| Hash of URL (MD5/SHA), take 7 chars | Deterministic | **Collisions** → check-and-retry; same URL → same key (maybe undesirable) |
+| Random 7 chars + collision check | Generate, insert if unused | Non-guessable; rare retry on collision |
+
+To remove the counter bottleneck, hand each app server a **range** of ids (a ticket/ID-allocation service gives out blocks of 1,000), so servers mint keys locally without per-request coordination.
+
+**Storage.** A KV mapping `key → longUrl` — perfect for NoSQL at scale or a simple indexed SQL table. It's read-heavy and immutable, so put a **cache** (Redis) in front; most redirects never touch the DB and the cache barely needs invalidation (links don't change).
+
+**Scale.** Redirects are the hot path: cache aggressively, serve from many stateless nodes behind a load balancer, optionally a CDN. Use **301** (permanent, cacheable) for max performance, or **302** if you must count every click server-side.
+
+## Design a rate limiter
+
+**Goal.** Allow at most N requests per user per window; reject/throttle the rest (`429`). Protects against abuse and overload.
+
+**Token bucket (the standard answer).** Each user has a bucket that refills at a steady rate up to a capacity. Each request consumes a token; no token → reject. It allows short **bursts** (up to capacity) while bounding the average rate — which is why it beats a fixed window (which permits a double-rate spike straddling the boundary).
+
+```
+on request(user):
+  refill bucket by (now - last_refill) × rate, capped at capacity
+  if tokens >= 1: tokens -= 1; allow
+  else: reject (429)
+```
+
+**Distributed.** With many app servers the count must be **shared** — store each bucket in **Redis** and decrement atomically (a Lua script makes refill+decrement atomic) so the limit holds fleet-wide, not per server. Tradeoff: a Redis round trip per request, mitigated by local pre-checks or sharding buckets by user.
+
+| Algorithm | Pro | Con |
+|---|---|---|
+| Fixed window | Trivial, low memory | Boundary burst (2× at the edge) |
+| Sliding window log | Exact | Stores every timestamp → memory |
+| Sliding window counter | Good accuracy, low memory | Slight approximation |
+| **Token bucket** | Allows bursts, bounds average | Needs shared atomic state |
+
+## The recurring patterns
+
+### Read-heavy vs write-heavy
+The single ratio that shapes everything. **Read-heavy** (feeds, catalogs) → cache, read replicas, CDN, denormalize/precompute. **Write-heavy** (logging, IoT, metrics) → write-optimized stores (LSM-tree: Cassandra), batching, sharding writes, async ingestion via a log. Always state the ratio early; it justifies half your decisions.
+
+### Fan-out on write vs fan-out on read
+For feeds/notifications delivered to many recipients:
+
+- **Fan-out on write (push):** when a user posts, write a copy into every follower's feed. Reads are O(1) (feed is precomputed) — great for read-heavy. Cost: a celebrity with 50M followers triggers 50M writes (the "hot fan-out" problem).
+- **Fan-out on read (pull):** store posts once; build the feed at read time by querying who you follow. Cheap writes, expensive reads.
+- **Hybrid:** push for normal users, pull for celebrities, merge at read time. This is the production answer for Twitter/Instagram. (See [news-feed](/lessons/system-design/news-feed).)
+
+### CQRS (Command Query Responsibility Segregation)
+Separate the **write model** from the **read model**. Writes go to a normalized store optimized for correctness; a denormalized read model (often a different store, populated async) serves queries fast. Use it when read and write patterns diverge sharply. Cost: eventual consistency between the two and more moving parts — don't reach for it on a CRUD app.
+
+### Event sourcing
+Instead of storing current state, store the **immutable sequence of events** that produced it; current state is a fold over the log. Gives you a full audit trail, time-travel, and easy rebuilds of derived views. Cost: querying current state requires replay or snapshots, schema evolution of old events is tricky, and it pairs naturally (and complexly) with CQRS. Reach for it where the *history is the product* (ledgers, audit, ordering systems), not by default.
+
+### Idempotency
+An operation is **idempotent** if doing it twice equals doing it once. Essential because networks retry: at-least-once delivery, client retries on timeout, and queue redelivery all replay requests. Techniques: **idempotency keys** (client sends a unique key; server records "already processed key X" and returns the prior result), natural upserts, or conditional writes. "Make the write idempotent so retries are safe" is a sentence you should reach for constantly.
+
+### The outbox pattern
+The **dual-write problem**: you must update the DB *and* publish an event (e.g. save an order + emit `OrderPlaced` to Kafka). If you write the DB then crash before publishing, the event is lost; events and state diverge — and you can't put both in one transaction across two systems.
+
+**Fix:** in the *same DB transaction* that writes the order, also insert a row into an **outbox** table. A separate relay process (or CDC tailing the WAL/binlog, e.g. Debezium) reads new outbox rows and publishes them, marking them sent. Now the event is published **iff** the state changed — atomic, exactly-once-ish from the producer side.
+
+```
+BEGIN TX
+  INSERT INTO orders ...
+  INSERT INTO outbox (event='OrderPlaced', payload=...)
+COMMIT
+        │
+   relay/CDC ──► Kafka ──► consumers
+```
+
+### Consistent hashing
+Naive `hash(key) % N` remaps **almost every key** when N changes (add/remove a node) — catastrophic for a cache (mass misses) or a shard set (mass data movement). **Consistent hashing** places nodes and keys on a ring; a key belongs to the next node clockwise. Adding/removing a node only remaps keys in **one arc** — roughly `K/N` keys, not all of them. **Virtual nodes** (each physical node placed at many ring positions) smooth out load imbalance. This is the standard answer for distributing cache/shard data with minimal churn.
+
+### Leader-follower replication
+One **leader** (primary) takes writes and ships a change log to **followers** (replicas) that serve reads. **Synchronous** replication (wait for a follower to ack) → no data loss on leader failure but higher write latency; **asynchronous** → fast writes but a failed leader can lose un-replicated writes, and reads from followers lag. Failover promotes a follower (risking split-brain if mishandled). Multi-leader and quorum (Dynamo-style) are the alternatives when one leader isn't enough — covered in [databases](/lessons/system-design/databases).
+
+### Sharding strategies
+Splitting data across machines by a **shard key**:
+
+- **Range** (by key range): efficient range scans, but risk of hot ranges (e.g. recent timestamps all hit one shard).
+- **Hash** (hash the key): even distribution, but kills range queries.
+- **Directory/lookup** (a service maps key → shard): flexible rebalancing, but the directory is a dependency/SPOF.
+
+**Rebalancing** when adding capacity is the hard part — consistent hashing or pre-splitting into many small partitions (then moving whole partitions) avoids reshuffling everything.
+
+### The hot-key problem
+One key (a celebrity, a viral product, a trending hashtag) gets disproportionate traffic and overwhelms its single shard/cache node. Mitigations: **replicate the hot key** across nodes and read from a random copy; add a **local in-process cache** in front of Redis for the hottest keys; **shard the key** itself (`key#1`…`key#N`); or special-case celebrities (the hybrid fan-out). Recognizing that a uniform scheme breaks for skewed access is a senior tell.
+
+### Deduplication
+Removing duplicate work/records caused by retries or at-least-once delivery. Techniques: a **dedup key** + a seen-set (Redis with TTL), idempotent upserts, or a probabilistic **Bloom filter** for "have I seen this?" at huge scale (small memory, no false negatives, tolerable false positives). Closely related to idempotency.
+
+### Backpressure
+When a producer outruns a consumer, unbounded buffering causes OOM and cascading failure. **Backpressure** signals the producer to slow down: bounded queues that block/reject when full, TCP flow control, Node streams pausing on a full buffer, or `429`/`503` with `Retry-After` at the API edge. The principle: **fail fast and shed load** rather than buffer infinitely. (Node specifics in [node internals](/lessons/system-design/nodejs-internals).)
+
+## Interview questions & model answers
+
+**Q: How do you generate short, unique, non-guessable keys?**
+"7 base-62 chars gives 3.5 trillion keys. I'd use either a global counter base-62 encoded — but hand out id *ranges* to each server to avoid per-request coordination — or random keys with a collision check. If non-guessability matters I prefer random; sequential counters are enumerable."
+
+**Q: Fan-out on write vs read?**
+"Push (write) precomputes each follower's feed so reads are O(1) — ideal for read-heavy feeds, but a celebrity post is millions of writes. Pull (read) is cheap to write but expensive to read. Production answer is hybrid: push for normal users, pull for celebrities, merge at read time."
+
+**Q: What does the outbox pattern solve?**
+"The dual-write problem — you can't atomically update the DB and publish to Kafka across two systems. I insert an outbox row in the same DB transaction as the state change, then a relay or CDC publishes those rows. The event fires if and only if the data committed, so state and events never diverge."
+
+**Q: Why consistent hashing over modulo?**
+"`hash % N` remaps nearly all keys when N changes — for a cache that's a full cold-start, for shards it's moving all the data. Consistent hashing only remaps the arc around the changed node, about K/N keys. Virtual nodes even out the load. So adding capacity is cheap and incremental."
+
+**Q: Sync vs async replication?**
+"Sync waits for a replica to ack before confirming the write — zero data loss on leader failure but higher latency and reduced availability if a replica is slow. Async confirms immediately — low latency but a failed leader can lose the tail of un-replicated writes, and follower reads lag. I often use semi-sync: at least one replica acks synchronously."
+
+**Q: How do you handle a hot key?**
+"Detect the skew, then replicate the hot key across nodes and read a random copy, add a small local cache in front of the shared cache, or shard the key into N sub-keys. For social feeds the structural fix is special-casing celebrities with pull-based fan-out instead of pushing to millions."
+
+**Q: How do you make a payment endpoint safe to retry?**
+"Idempotency keys: the client sends a unique key per logical payment; the server records the key with the result, so a retry returns the original outcome instead of charging again. Combined with at-least-once delivery, this is what makes the whole flow safe under network failures."
+
+## Common mistakes / what weak candidates do
+
+- **Picking sequential keys** for a shortener without noting they're enumerable, or making the counter a single bottleneck.
+- **Using a fixed-window rate limiter** without knowing the boundary-burst flaw, or keeping the count per-server (so the global limit isn't enforced).
+- **Choosing fan-out on write** and forgetting the celebrity problem.
+- **Doing dual writes** (DB then Kafka) and assuming they're atomic — the classic data-loss bug the outbox fixes.
+- **Using `hash % N`** for sharding/caching and not realizing a node change reshuffles everything.
+- **Ignoring idempotency** under retries, then double-charging or double-sending.
+- **Assuming uniform load** and missing the hot-key / hot-shard skew.
+- **Buffering without backpressure**, turning a slow consumer into an OOM crash.
+
+<div class="callout key">
+  <div class="ct">The reusable ideas</div>
+  URL shortener → <b>id generation + read-heavy caching</b>. Rate limiter → <b>token bucket + shared atomic state in Redis</b>. The patterns are a vocabulary: name <b>fan-out, CQRS, event sourcing, idempotency, the outbox, consistent hashing, leader-follower, sharding, hot keys, dedup, and backpressure</b> at the right moment, always with its tradeoff, and you sound like someone who has actually operated systems — not just read about them.
+</div>

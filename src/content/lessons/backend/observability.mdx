@@ -1,0 +1,209 @@
+---
+title: "Observability: Logs, Metrics, Traces & OpenTelemetry"
+track: backend
+summary: "Tell monitoring apart from observability, master the three pillars — structured logs, metrics (RED/USE, cardinality traps), and distributed traces with W3C context propagation — instrument once with OpenTelemetry, and run the SLI/SLO/error-budget loop that gates releases and kills alert fatigue."
+order: 9
+est: 30
+difficulty: medium
+priority: must
+tags: [observability, logging, metrics, tracing, opentelemetry, slo, prometheus]
+whyAsked: "Once your system is a dozen services, you can't debug by SSHing into a box. Observability is how a senior engineer answers 'why is p99 latency up?' at 2am. It shows whether you think in telemetry, alert on symptoms not causes, and reason about reliability with SLOs and error budgets instead of vibes."
+followUps:
+  - "Monitoring vs observability — what's the difference?"
+  - "What are the three pillars and what does each answer?"
+  - "What is high-cardinality and why does it blow up metrics?"
+  - "What problem does OpenTelemetry solve?"
+  - "What's an error budget and how does it gate a release?"
+resources:
+  - { label: "OpenTelemetry docs", url: "https://opentelemetry.io/docs/" }
+  - { label: "Google SRE Book — Monitoring Distributed Systems", url: "https://sre.google/sre-book/monitoring-distributed-systems/" }
+  - { label: "Google SRE Book — Service Level Objectives", url: "https://sre.google/sre-book/service-level-objectives/" }
+---
+
+When a single monolith breaks, you read a stack trace. When one request fans out across a dozen services, queues, and caches, you need **telemetry** — and the ability to ask questions you didn't anticipate. This lesson is the backend-dev view of running systems in production; it pairs with [distributed systems](/lessons/backend/distributed-systems) (the failures you're observing) and [cloud & deployment](/lessons/backend/cloud-and-deployment) (where it all runs).
+
+## Monitoring vs observability
+
+They're related but not the same, and conflating them is a junior tell.
+
+| | Monitoring | Observability |
+|---|---|---|
+| **Question** | "Is the thing I expected to fail failing?" | "Why is *this* behaving strangely?" |
+| **Failure modes** | Known-knowns — dashboards & alerts built in advance | Unknown-unknowns — explore after the fact |
+| **Shape** | Predefined metrics, thresholds, alerts | Rich, high-dimensional telemetry you can slice arbitrarily |
+| **Example** | "Alert when CPU > 90%" | "Why are only Android users in eu-west seeing 5xx on checkout?" |
+
+Monitoring is a **subset** of observability. You still build dashboards for the failures you can predict — but in a distributed system, most painful incidents are novel combinations you never dashboarded. Observability is the property that you can answer those new questions **from data you already collect**, without shipping new code. That's why microservices need it: the number of interaction paths explodes, and you can't pre-imagine every one.
+
+## The three pillars
+
+Logs, metrics, and traces. Each answers a different question; you need all three, stitched by a shared **trace ID**.
+
+| Pillar | Answers | Shape | Cost driver |
+|---|---|---|---|
+| **Logs** | "What exactly happened in this one event?" | Discrete, high-detail records | Volume (bytes) |
+| **Metrics** | "How is the system behaving in aggregate?" | Numeric time series | Cardinality (label combos) |
+| **Traces** | "Where did this request spend its time / fail?" | Causal span tree across services | Span count × sampling |
+
+### Logs — structured over plain text
+
+Plain-text logs (`User 123 failed login from 1.2.3.4`) are unparseable at scale. Emit **structured JSON** so every field is queryable:
+
+```json
+{
+  "ts": "2026-06-14T10:32:01Z",
+  "level": "ERROR",
+  "service": "checkout",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "user_id": "u_123",
+  "event": "payment_declined",
+  "reason": "insufficient_funds"
+}
+```
+
+- **Levels** — `DEBUG` (dev only), `INFO` (lifecycle), `WARN` (recoverable), `ERROR` (failed operation), `FATAL` (process dying). Filter aggressively in prod.
+- **Correlation** — stamp every line with the `trace_id` (and `span_id`) so you can reconstruct a single request's path across services. This is the join key between the pillars.
+- **What NOT to log** — passwords, tokens, full card numbers, PII (emails, government IDs), session cookies. Logs leak, get shipped to third parties, and live for months. Redact at the source.
+- **Cost & sampling** — logs are the most expensive pillar by volume. Sample `INFO`/`DEBUG`, keep `ERROR` at 100%, and set retention tiers (hot 7d, cold 90d).
+
+### Metrics — aggregatable numbers
+
+A metric is a number you can roll up over time and dimensions. Know the four instrument types cold:
+
+| Type | Meaning | Example |
+|---|---|---|
+| **Counter** | Monotonic, only goes up (reset on restart) | `http_requests_total` |
+| **Gauge** | Goes up and down — a snapshot | `queue_depth`, `memory_bytes` |
+| **Histogram** | Bucketed distribution; percentiles computed server-side | `request_duration_seconds` |
+| **Summary** | Client-computed quantiles (can't aggregate across instances) | legacy p99 |
+
+Prefer **histograms** over summaries for latency — you can aggregate buckets across instances to get a real fleet-wide p99; summaries can't be merged.
+
+Two frameworks interviewers love:
+
+- **RED** for request-driven services — **R**ate (requests/sec), **E**rrors (failures/sec), **D**uration (latency distribution). The view from the *caller's* side.
+- **USE** for resources (CPU, disk, pools) — **U**tilization (% busy), **S**aturation (queued/waiting work), **E**rrors. The view of a *resource's* health.
+
+**The cardinality trap.** A time series exists per unique combination of label values. Adding a label like `user_id` or `request_id` to a metric multiplies series by the number of users — millions of series, an OOM'd Prometheus, and a huge bill. Keep labels **low-cardinality** (status code, route template, region) and push high-cardinality detail into logs/traces instead. `route="/orders/:id"` is fine; `route="/orders/8a7f..."` is a footgun.
+
+**Pull vs push.** Prometheus **pulls** (scrapes) targets — the monitoring system controls rate and instantly sees a dead target (scrape fails). **Push** (StatsD, OTLP push) suits short-lived jobs and serverless that vanish before a scrape. Pull is the default for long-running services.
+
+### Traces — following one request across services
+
+A **trace** is the story of one request; it's a tree of **spans**, each a timed unit of work with a parent. The root span is the inbound request; child spans are downstream calls (DB query, cache, RPC to another service).
+
+The magic is **context propagation**: the entry service mints a trace ID and passes it on every outbound call via the **W3C `traceparent`** header, so each service adds spans to the *same* trace:
+
+```
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+             ^v ^---------- trace-id -----------^ ^-- span-id --^ ^flags
+```
+
+Now a trace UI shows a waterfall: the 800ms request spent 30ms in the gateway, 12ms in auth, and **740ms blocked on a single slow DB span** — root-cause in seconds instead of guessing across logs.
+
+**Sampling** controls cost: you can't keep every span at scale.
+- **Head sampling** — decide at the start (e.g. keep 1%). Cheap, simple, but you might drop the one trace that errored.
+- **Tail sampling** — buffer the whole trace, then decide *after* seeing the outcome — keep all errors and slow traces, sample the boring fast ones. More valuable, more infra (a collector that holds spans).
+
+<div class="callout tip">
+  <div class="ct">The join key</div>
+  The single most useful thing you can do is propagate one <b>trace ID</b> through logs, metrics exemplars, and spans. Then "this slow trace" links straight to "these log lines" — the three pillars stop being silos.
+</div>
+
+## OpenTelemetry: instrument once, export anywhere
+
+The old world locked you in: a Datadog agent, a New Relic SDK, a Jaeger client — re-instrument to switch vendors. **OpenTelemetry (OTel)** is the vendor-neutral CNCF standard that decouples *generating* telemetry from *storing* it.
+
+- **SDK / API** — you instrument your code once against OTel. Auto-instrumentation hooks common libraries (HTTP servers, DB drivers, gRPC) with near-zero code; manual instrumentation adds custom spans/attributes for business logic.
+- **OTLP** — the OpenTelemetry Protocol, the wire format for logs, metrics, and traces.
+- **Collector** — a standalone process that **receives** (OTLP), **processes** (batch, redact, tail-sample), and **exports** to one or many backends. Your app talks only to the collector; swapping Jaeger → Tempo, or adding Prometheus + Datadog, is a collector config change — no app redeploy.
+
+A tiny manual span (Python-ish):
+
+```python
+from opentelemetry import trace
+tracer = trace.get_tracer("checkout")
+
+with tracer.start_as_current_span("charge_card") as span:
+    span.set_attribute("payment.provider", "stripe")
+    span.set_attribute("amount.cents", amount)
+    result = stripe.charge(amount)        # child spans auto-created
+    span.set_attribute("payment.status", result.status)
+```
+
+The payoff: one instrumentation investment, and the backend (Jaeger, Grafana Tempo, Prometheus, Datadog, Honeycomb) becomes a pluggable choice.
+
+## SLIs, SLOs, SLAs & error budgets
+
+Reliability needs numbers, not "it feels up." This is the SRE vocabulary.
+
+| Term | What it is | Example |
+|---|---|---|
+| **SLI** | A measured *indicator* of service health | % of requests < 300ms and 2xx |
+| **SLO** | Your internal *objective* (a target on the SLI) | 99.9% of requests succeed over 28 days |
+| **SLA** | A *contract* with customers + penalties | 99.5% uptime or credits owed |
+
+Set SLOs *tighter* than SLAs so you breach the internal target long before the customer-facing one.
+
+**Error budget** = `100% − SLO`. A 99.9% SLO permits **0.1%** failures — about **43 minutes/month**. That budget is a currency:
+
+- Budget remaining → ship fast, take risks, run chaos experiments.
+- Budget exhausted → **freeze feature releases**, redirect to reliability work until it recovers.
+
+This turns "should we ship?" from an argument into a data-driven gate, and aligns dev (wants velocity) with ops (wants stability) on one shared number.
+
+## Alerting: symptoms, not causes
+
+| Approach | Alerts on | Problem it avoids |
+|---|---|---|
+| **Cause-based** | "CPU is 95%" | Pages even when users are fine; noisy |
+| **Symptom-based** | "Checkout error rate > 1%" / "p99 > 1s" | Pages only when users actually hurt |
+
+Alert on **symptoms users feel**, page-worthy and actionable; use causes for diagnosis, not paging. The **four golden signals** (Google SRE) are the canonical symptom set: **Latency, Traffic, Errors, Saturation** — instrument every service for these and you've covered most incidents.
+
+**Alert fatigue** is the silent killer: too many noisy, non-actionable pages train on-call to ignore them, so the real one gets missed. Every alert must be actionable, tied to an SLO, and link to a **runbook** (step-by-step remediation). Round it out with **dashboards** for the at-a-glance view and **blameless postmortems** after incidents — focus on systemic fixes, not who to blame, so people report honestly and the same outage doesn't recur.
+
+<div class="callout tip">
+  <div class="ct">The 2am test</div>
+  A good alert wakes you only when users are hurting, tells you which SLO it threatens, and links a runbook. If you can't write the runbook, the alert probably shouldn't page.
+</div>
+
+## Interview questions & model answers
+
+**Q: Monitoring vs observability — what's the difference?**
+"Monitoring is checking known failure modes — dashboards and threshold alerts you build in advance for things you predict will break. Observability is the property that you can ask *new* questions about unknown-unknowns from telemetry you already collect, without shipping new code. Monitoring is a subset. Distributed systems need observability because most real incidents are novel combinations you never dashboarded."
+
+**Q: What are the three pillars and what does each answer?**
+"Logs — what exactly happened in one event, high-detail, structured JSON. Metrics — how the system behaves in aggregate, cheap numeric time series for dashboards and alerts. Traces — where a single request spent its time or failed, a span tree across services. You stitch them with a shared trace ID so 'this slow trace' links to 'these log lines.'"
+
+**Q: What's the cardinality explosion and how do you avoid it?**
+"A metric stores one time series per unique label-value combination. Put a high-cardinality field like user_id or request_id in a label and you get millions of series — it OOMs Prometheus and explodes cost. Keep labels low-cardinality: status code, route *template*, region. High-cardinality detail belongs in logs or trace attributes, not metric labels."
+
+**Q: What problem does OpenTelemetry solve?**
+"Vendor lock-in. Before OTel, switching observability vendors meant re-instrumenting against their proprietary SDK. OTel is a vendor-neutral standard: you instrument once with its SDK, emit OTLP, and a Collector receives, processes, and exports to any backend — Jaeger, Tempo, Prometheus, Datadog. Changing or adding a backend is a collector config change, not an app rewrite."
+
+**Q: RED vs USE — when each?**
+"RED for request-driven services — Rate, Errors, Duration, the caller's-eye view of an endpoint. USE for resources — Utilization, Saturation, Errors, the health of a CPU, disk, or connection pool. RED tells you users are hurting; USE often tells you why. The four golden signals — latency, traffic, errors, saturation — are the same idea generalized."
+
+**Q: What's an error budget and how does it gate a release?**
+"Error budget is 100% minus your SLO — a 99.9% SLO allows 0.1% failure, roughly 43 minutes a month. While budget remains you ship aggressively. When it's spent you freeze feature releases and do reliability work until it recovers. It turns the velocity-vs-stability fight into one shared number both dev and ops agree on."
+
+**Q: Head vs tail sampling for traces?**
+"Head sampling decides at the request's start — keep 1%, say — cheap but you might drop the trace that errored. Tail sampling buffers the whole trace and decides after seeing the outcome, so you keep all errors and slow traces and sample the boring fast ones. Tail is far more useful for debugging but needs a collector holding spans in memory."
+
+## Common mistakes / what weak candidates do
+
+- **Equating monitoring with observability** — thinking a CPU dashboard means the system is observable.
+- **Plain-text logs** that can't be parsed or correlated, with no trace ID to stitch a request.
+- **Logging secrets or PII** — passwords, tokens, card numbers in logs that get shipped to third parties.
+- **High-cardinality metric labels** (user_id, request_id) that blow up the time-series database and the bill.
+- **Confusing counter / gauge / histogram**, or using summaries where you need cross-instance percentiles.
+- **No context propagation** — traces stop at the first service boundary because the `traceparent` header isn't forwarded.
+- **Cause-based paging** (CPU high) that fires when users are fine, breeding alert fatigue until real pages get ignored.
+- **No SLOs or error budgets** — arguing about reliability with vibes instead of a measured target.
+- **Vendor-coupled instrumentation** instead of OpenTelemetry, so switching backends means re-instrumenting everything.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Monitoring catches known failures; <b>observability</b> lets me ask new questions about unknown-unknowns from telemetry I already have. Three pillars: structured <b>logs</b> (what happened), <b>metrics</b> (aggregate health — RED for services, USE for resources, watch cardinality), <b>traces</b> (where a request went, via W3C trace-context). I instrument once with <b>OpenTelemetry</b> and export anywhere through the Collector. I run reliability on <b>SLOs and error budgets</b> that gate releases, and I alert on <b>symptoms users feel</b>, not causes."
+</div>

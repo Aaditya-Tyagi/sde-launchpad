@@ -1,0 +1,278 @@
+---
+title: "Output Questions: Hoisting & Scope"
+track: js-output
+summary: "Predict the output — var/let/const hoisting, TDZ, function declaration vs expression, and block scope gotchas."
+order: 1
+est: 25
+difficulty: medium
+priority: must
+tags: [hoisting, scope, var, let, const, tdz, function-declaration]
+whyAsked: "Hoisting output questions appear in virtually every JS screen. They test whether you truly understand how the engine processes declarations before running code."
+followUps:
+  - "Why does accessing a let variable before its line throw but var doesn't?"
+  - "What is the Temporal Dead Zone?"
+  - "What's the difference between a function declaration and a function expression for hoisting?"
+  - "Why can you call a function before it's defined when using function declarations?"
+resources:
+  - { label: "javascript.info: Variable scope & hoisting", url: "https://javascript.info/closure#variable-scope" }
+---
+import JsPlayground from '../../../components/JsPlayground.astro';
+
+For each block below, predict the output **before** running it. Each question is a real interview pattern.
+
+---
+
+## Q1 — var hoisting: declaration but not initialization
+
+<JsPlayground code={`console.log(a);   // ?
+var a = 5;
+console.log(a);   // ?`} height={100} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+undefined
+5
+```
+`var` declarations are hoisted to the top of their function/global scope but their *value* is not. The engine treats it as:
+```js
+var a;          // hoisted — exists but is undefined
+console.log(a); // undefined
+a = 5;
+console.log(a); // 5
+```
+</details>
+
+---
+
+## Q2 — let/const: Temporal Dead Zone
+
+<JsPlayground code={`console.log(x);   // ?
+let x = 10;`} height={80} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+ReferenceError: Cannot access 'x' before initialization
+```
+`let` and `const` are hoisted but placed in the **Temporal Dead Zone** — they exist but are inaccessible until the declaration line is evaluated. Accessing them before that line throws a `ReferenceError`.
+</details>
+
+---
+
+## Q3 — function declaration vs expression
+
+<JsPlayground code={`console.log(foo());   // ?
+console.log(bar);     // ?
+// console.log(bar()); // would throw — uncomment to see
+
+function foo() { return 'foo'; }
+var bar = function() { return 'bar'; };`} height={110} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+"foo"
+undefined
+```
+- **Function declarations** are fully hoisted — both the name and the body. You can call `foo()` before its definition.
+- **Function expressions** (`var bar = function…`) hoist only the `var bar` — the variable is `undefined` until that line runs. Calling `bar()` before line 5 throws `TypeError: bar is not a function`.
+</details>
+
+---
+
+## Q4 — var in a block scope
+
+<JsPlayground code={`{
+  var x = 1;
+  let y = 2;
+}
+console.log(x);   // ?
+console.log(typeof y); // ?`} height={110} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+1
+"undefined"
+```
+`var` ignores block scope — `x` leaks out of the block into the surrounding function/global scope. `let` is block-scoped, so `y` doesn't exist outside the `{}`. `typeof` on an undeclared variable returns `"undefined"` (not a ReferenceError — a special case).
+</details>
+
+---
+
+## Q5 — hoisting order: function vs var with same name
+
+<JsPlayground code={`console.log(typeof foo);   // ?
+var foo = 'variable';
+function foo() { return 'function'; }
+console.log(typeof foo);   // ?`} height={100} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+"function"
+"string"
+```
+When a variable and a function declaration share the same name, the **function declaration wins** during hoisting — it takes precedence over `var`. So before any code runs, `foo` is the function. After `foo = 'variable'` runs on line 2, `foo` becomes the string.
+</details>
+
+---
+
+## Q6 — function declaration inside a block (non-strict mode)
+
+<JsPlayground code={`console.log(typeof f);   // ?
+
+if (true) {
+  console.log(typeof f); // ?
+  function f() { return 1; }
+  console.log(typeof f); // ?
+}
+
+console.log(typeof f);   // ?`} height={150} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+"undefined"   (outer, before block)
+"function"    (inside block, after hoisting within block)
+"function"    (inside block, after declaration)
+"function"    (outer, after block — hoisted out in non-strict mode)
+```
+In non-strict mode, function declarations inside blocks have complex legacy behavior: the declaration is hoisted to the top of the block, but the name is also created in the outer scope (as `undefined` initially), and when execution passes the declaration line, the outer binding is updated. This is an engine-specific quirk — in strict mode, block-scoped functions stay in the block. **Avoid block-level function declarations.**
+</details>
+
+---
+
+## Q7 — var in a for loop
+
+<JsPlayground code={`for (var i = 0; i < 3; i++) {
+  setTimeout(() => console.log(i), 0);
+}
+// What are the three outputs?`} height={100} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+3
+3
+3
+```
+`var` is function-scoped — there is **one shared `i`** across all iterations. By the time the `setTimeout` callbacks fire (after the loop completes), `i` is `3`. All three closures close over the same binding.
+</details>
+
+---
+
+## Q8 — let fixes the loop bug
+
+<JsPlayground code={`for (let j = 0; j < 3; j++) {
+  setTimeout(() => console.log(j), 0);
+}
+// What are the three outputs?`} height={100} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+0
+1
+2
+```
+`let` is block-scoped and creates a **fresh binding per iteration**. Each callback closes over its own independent `j`.
+</details>
+
+---
+
+## Q9 — hoisting with re-declaration
+
+<JsPlayground code={`var a = 1;
+{
+  var a = 2;  // re-declaration
+  console.log(a); // ?
+}
+console.log(a);   // ?`} height={110} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+2
+2
+```
+Both `var a` declarations are in the same function/global scope — `var` allows re-declaration and they both refer to the same variable. The inner block updates the shared `a` to `2`, so both logs print `2`.
+</details>
+
+---
+
+## Q10 — const in a block
+
+<JsPlayground code={`const x = 1;
+{
+  const x = 2;
+  console.log(x); // ?
+}
+console.log(x);   // ?`} height={110} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+2
+1
+```
+`const` is block-scoped — the inner `const x = 2` is a completely separate binding from the outer `const x = 1`. No error; each block has its own `x`.
+</details>
+
+---
+
+## Q11 — function parameter shadowing
+
+<JsPlayground code={`var x = 'global';
+
+function test(x) {
+  console.log(x);   // ?
+}
+
+test('local');
+console.log(x);     // ?`} height={120} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+"local"
+"global"
+```
+The parameter `x` shadows the outer `x` within the function body. The global `x` is untouched.
+</details>
+
+---
+
+## Q12 — class declaration hoisting
+
+<JsPlayground code={`const obj = new MyClass(); // ?
+class MyClass {
+  constructor() { this.val = 42; }
+}
+console.log(new MyClass().val); // ?`} height={110} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+ReferenceError: Cannot access 'MyClass' before initialization
+```
+`class` declarations are hoisted but placed in the **TDZ**, just like `let`/`const`. You cannot use a class before its declaration. (The second `console.log` never runs.)
+</details>
+
+<div class="callout key">
+  <div class="ct">The pattern to remember</div>
+  Hoisting order of precedence: <strong>function declarations</strong> beat <strong>var</strong>. Both are hoisted, but function declarations bring their body; `var` brings `undefined`. `let`, `const`, and `class` are in the TDZ. `var` escapes blocks; everything else doesn't.
+</div>

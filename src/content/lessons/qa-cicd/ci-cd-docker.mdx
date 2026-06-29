@@ -1,0 +1,333 @@
+---
+title: "CI/CD, Docker & cloud grids"
+track: qa-cicd
+summary: "Make your suite run automatically on every push — pipeline stages, GitHub Actions deep dive (matrix, caching, artifacts, secrets, sharding), gating deploys on tests, Docker for consistent environments, and Selenium/Playwright containers for parallel cross-browser."
+order: 2
+est: 28
+difficulty: medium
+priority: deep
+tags: [cicd, github-actions, docker, grid, playwright, selenium]
+whyAsked: "~89% of QA roles expect CI/CD. Tests that don't run in a pipeline barely count in 2026 — interviewers want to see you can wire a suite into CI, gate merges on it, and run it in containers."
+followUps:
+  - "Walk me through a pipeline that runs your tests."
+  - "Why run tests in Docker?"
+  - "How do you run tests in parallel across browsers?"
+  - "How do you handle flaky tests in CI?"
+  - "Image vs container — what's the difference?"
+resources:
+  - { label: "GitHub Actions docs", url: "https://docs.github.com/actions" }
+  - { label: "Playwright CI guide", url: "https://playwright.dev/docs/ci" }
+  - { label: "Playwright sharding", url: "https://playwright.dev/docs/test-sharding" }
+  - { label: "Docker get started", url: "https://docs.docker.com/get-started/" }
+  - { label: "Selenium Grid (Docker)", url: "https://github.com/SeleniumHQ/docker-selenium" }
+---
+
+Automation delivers value only when it runs **continuously and reliably** without anyone remembering to click "run." CI/CD is how. This lesson is the one most automation interviews dig into hardest.
+
+## What CI/CD is — and why tests live in the pipeline
+
+- **Continuous Integration (CI)** — every push/PR is automatically built and tested in a clean, shared environment. The goal: catch integration problems within minutes of the commit that caused them, not days later.
+- **Continuous Delivery / Deployment (CD)** — every change that passes the pipeline is automatically released to staging (delivery) or all the way to production (deployment).
+
+Tests live *in* the pipeline because that's the only place they reliably gate change. A test on someone's laptop protects nothing; a test that blocks the merge button protects everyone. The pipeline is the **enforcement point** for quality — it runs the same suite, the same way, every time, and turns "did you remember to test?" into "you literally can't merge until tests pass."
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  CI shifts feedback <em>left</em> and shrinks the gap between writing a bug and finding it. The earlier a defect is caught, the cheaper it is to fix — a failing unit test in CI costs minutes; the same bug in production costs an incident.
+</div>
+
+## Pipeline stages — where each test layer runs
+
+A mature pipeline is a sequence of stages, fastest/cheapest first so failures surface early ("fail fast"):
+
+```text
+1. Build / lint      -> compile, type-check, static analysis (seconds)
+2. Unit tests        -> fast, isolated, run on EVERY push (seconds-1min)
+3. Integration tests -> services + DB via docker compose (minutes)
+4. Deploy to staging -> only if everything above is green
+5. E2E / UI tests    -> Playwright/Selenium against staging (minutes-tens of min)
+6. Deploy to prod    -> gated on E2E
+7. Smoke tests in prod -> a tiny critical-path check post-deploy
+```
+
+This maps directly onto the **testing pyramid**: many fast unit tests run first and on every commit; fewer, slower E2E tests run later against a deployed environment; a handful of smoke tests verify prod after release. Heavy suites that take an hour run on a schedule (nightly), not on every PR.
+
+## GitHub Actions deep dive
+
+Workflows are YAML files in `.github/workflows/`. The vocabulary: a **workflow** contains **jobs** (run in parallel by default, on separate runners); each job has **steps** (run sequentially on one runner).
+
+**Triggers (`on`)** decide when it runs:
+
+```yaml
+on:
+  push:
+    branches: [main]
+  pull_request:               # run on every PR
+  schedule:
+    - cron: "0 2 * * *"       # nightly at 02:00 UTC (full regression)
+  workflow_dispatch:          # manual "Run workflow" button, with inputs
+```
+
+**Matrix** runs the same job across combinations — perfect for cross-browser:
+
+```yaml
+strategy:
+  fail-fast: false            # don't cancel other browsers when one fails
+  matrix:
+    browser: [chromium, firefox, webkit]
+```
+
+**Caching** skips re-downloading dependencies; `setup-node`/`setup-python` cache for you, or use `actions/cache`. **Artifacts** (`upload-artifact`) persist reports/traces/screenshots after the run. **Secrets** (`${{ secrets.X }}`) inject credentials without hard-coding them — set them in repo/org settings, never in YAML.
+
+### A complete, working GitHub Actions workflow
+
+This runs lint, unit tests, then sharded cross-browser E2E with caching, secrets, artifacts, and a merged report — a realistic Playwright setup.
+
+```yaml
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 2 * * *"        # nightly full run
+  workflow_dispatch:
+
+concurrency:                    # cancel superseded runs on the same ref
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm           # caches ~/.npm keyed on package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test:unit
+
+  e2e:
+    needs: lint-and-unit       # gate E2E on unit tests passing
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shardIndex: [1, 2, 3, 4]
+        shardTotal: [4]
+    env:
+      BASE_URL: ${{ secrets.STAGING_URL }}
+      TEST_USER: ${{ secrets.TEST_USER }}
+      TEST_PASS: ${{ secrets.TEST_PASS }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - run: npx playwright install --with-deps   # browsers + OS libs
+      - name: Run E2E (sharded)
+        run: npx playwright test --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+      - name: Upload blob report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blob-report-${{ matrix.shardIndex }}
+          path: blob-report
+          retention-days: 7
+
+  merge-reports:
+    needs: e2e
+    if: always()               # publish report even when E2E failed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with: { path: all-blob-reports, pattern: blob-report-* }
+      - run: npx playwright merge-reports --reporter html ./all-blob-reports
+      - uses: actions/upload-artifact@v4
+        with: { name: html-report, path: playwright-report }
+```
+
+Key moves in there: `needs:` enforces order/gating; the **shard matrix** splits E2E into 4 parallel runners; `if: always()` ensures artifacts/reports upload even on failure (you need the trace when it's red); `concurrency` cancels stale runs to save minutes; secrets supply the URL and login.
+
+## Parallel & sharded test runs
+
+Two distinct ideas, often combined:
+
+- **Parallelism within a runner** — Playwright runs files across worker processes; TestNG/JUnit run methods/classes in parallel threads. Cuts wall-clock time on one machine.
+- **Sharding across runners** — split the whole suite into N pieces, each on its own CI runner (the matrix above). 4 shards roughly quarter the runtime. Then merge the partial reports into one.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Parallelism only works if tests are <strong>independent</strong> — no shared mutable state, no ordering dependencies, isolated test data per test. If tests fail only when parallel, that's a design smell, not a CI bug.
+</div>
+
+## Gating deploys on tests (quality gates)
+
+A **quality gate** is a pass/fail condition that blocks the pipeline. Wire deploys behind tests so nothing broken ships:
+
+- Branch protection: require the CI status check to pass before a PR can merge.
+- `needs:` (Actions) / `dependsOn` so the deploy job only runs if test jobs succeeded.
+- Additional gates: coverage threshold, no new critical SAST/dependency vulnerabilities, performance budget.
+
+The deploy-to-prod step should depend on E2E against staging passing; a post-deploy **smoke test** then verifies prod and can trigger an automatic rollback if it fails.
+
+## Flaky-test handling in CI
+
+Flaky tests (pass/fail non-deterministically) destroy trust — people start ignoring red builds. Strategy:
+
+- **Auto-retry** failed tests a bounded number of times (`retries: 2` in Playwright, `rerunFailingTestsCount` in JUnit) — *only in CI*, never locally where it hides bugs.
+- **Quarantine**: tag known-flaky tests and run them in a non-blocking lane so they stop gating merges while you fix them — don't just delete them.
+- **Track flakiness** over time (dashboards / a flaky-test report) and treat chronic offenders as bugs with owners.
+- Fix root causes: replace hard `sleep()`s with explicit/auto waits, stabilize locators, isolate test data.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Retries are a stopgap, not a cure. A test that needs 3 retries to pass is still broken — it's masking either a flaky test or a real intermittent product bug. Retry to keep the pipeline moving, but log retries and fix the root cause.
+</div>
+
+## Docker fundamentals
+
+"Works on my machine" dies with containers. Docker packages your app/tests with their exact OS, runtime, browsers, and dependencies so they run identically everywhere.
+
+- **Image** — an immutable, layered template (a recipe + its baked ingredients). Built from a `Dockerfile`.
+- **Container** — a running instance of an image (the cake from the recipe). You can run many containers from one image. Images are to containers what a class is to an object.
+
+Why QA cares: pinned, reproducible environments (same browser version every run), easy parallelism (spin up N identical containers), and spinning up real dependencies (a Postgres DB) for integration tests without polluting your machine.
+
+### Dockerfile for a test project
+
+```dockerfile
+# Playwright ships official images with browsers + OS deps preinstalled
+FROM mcr.microsoft.com/playwright:v1.50.0-jammy
+
+WORKDIR /tests
+COPY package*.json ./
+RUN npm ci
+COPY . .
+CMD ["npx", "playwright", "test"]
+```
+
+Order matters: copy `package*.json` and `npm ci` *before* copying source so Docker's layer cache reuses the installed deps when only test code changes — much faster rebuilds.
+
+### docker compose for app + db + tests
+
+```yaml
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: secret
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 5
+
+  app:
+    build: ./app
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgres://postgres:secret@db:5432/postgres
+
+  tests:
+    build: ./tests
+    depends_on:
+      - app
+    environment:
+      BASE_URL: http://app:3000     # service name resolves over the network
+    command: npx playwright test
+```
+
+`docker compose up --abort-on-container-exit` brings up DB → app → tests in order (via `depends_on` + healthchecks) and exits with the tests' status — exactly what CI needs. Services reach each other by **service name** on the compose network.
+
+## Selenium Grid, Selenium-Docker & Playwright containers
+
+For parallel cross-browser at scale:
+
+- **Selenium Grid 4** — a hub/router distributes tests to multiple browser **nodes**. The official `docker-selenium` images let you stand up a grid via compose: a `selenium-hub` plus `node-chrome`, `node-firefox`, `node-edge`. Your tests point a RemoteWebDriver at the hub URL; the grid runs them in parallel across the nodes.
+- **Selenium standalone containers** — `selenium/standalone-chrome` etc. for a single-browser node, often with `seleniarm` images for Apple Silicon.
+- **Playwright** bundles its browsers, so you usually don't need a grid — its official image + sharding gives parallel cross-browser in CI directly. Use a grid mainly in Selenium-based suites or when you need real device/browser coverage.
+- **Cloud farms** (BrowserStack, Sauce Labs, LambdaTest) run across dozens of real browsers/devices/OSes in parallel without you maintaining grid infra — point your driver at their endpoint.
+
+```yaml
+# minimal Selenium Grid via docker compose
+services:
+  selenium-hub:
+    image: selenium/hub:4.27
+    ports: ["4444:4444"]
+  chrome:
+    image: selenium/node-chrome:4.27
+    depends_on: [selenium-hub]
+    environment:
+      - SE_EVENT_BUS_HOST=selenium-hub
+      - SE_EVENT_BUS_PUBLISH_PORT=4442
+      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+  firefox:
+    image: selenium/node-firefox:4.27
+    depends_on: [selenium-hub]
+    environment:
+      - SE_EVENT_BUS_HOST=selenium-hub
+      - SE_EVENT_BUS_PUBLISH_PORT=4442
+      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+```
+
+## Headless in CI
+
+CI runners have no display, so browsers run **headless** (no GUI). Headless is faster and the default in CI; you may run **headed** locally for debugging. If a real browser needs a display (older Selenium/Chrome setups), use `xvfb` (a virtual framebuffer) — Playwright's `--with-deps` and official images handle this for you. Watch for headless-only failures: different default window size, missing fonts, or timing differences vs. headed.
+
+## Reporting & artifacts publishing
+
+- Publish the **HTML/Allure report** and **traces/videos/screenshots** as build artifacts (`upload-artifact`) so anyone can download the evidence for a failure — `if: always()` so they upload even when red.
+- Post pass/fail summaries to **Slack/Teams** and/or surface results as a **PR status check** so the team sees outcomes without digging through logs.
+- **Allure** aggregates history and flakiness trends across runs; GitHub's job summary can render a quick pass/fail table inline.
+
+## Interview questions & model answers
+
+**Q1. Walk me through a pipeline that runs your tests.**
+On every PR, the pipeline checks out code, installs and caches deps, runs lint and unit tests first (fast, fail-early). If green, it deploys to staging, then runs sharded cross-browser E2E against staging in parallel. Reports/traces upload as artifacts even on failure. The PR can't merge unless the status check passes (branch protection). On merge to main it deploys to prod and runs a small smoke suite; nightly, a scheduled run executes the full regression.
+
+**Q2. Image vs container?**
+An image is an immutable, layered template built from a Dockerfile — the recipe with ingredients baked in. A container is a running instance of that image. One image can spawn many containers, which is what makes Docker great for parallel test execution: spin up N identical containers from one image.
+
+**Q3. Why run tests in Docker?**
+Reproducibility — the container pins the OS, browser versions, and dependencies so the suite behaves identically on my laptop and in CI, killing "works on my machine." It also makes parallelism easy (many identical containers) and lets me spin up real dependencies like a Postgres DB for integration tests via docker compose, isolated and disposable.
+
+**Q4. How do you run tests in parallel across browsers?**
+Two layers: parallelism within a runner (Playwright workers / TestNG threads) and sharding across CI runners using a matrix, each shard on its own machine, then merge the partial reports. For cross-browser specifically, a Playwright project/matrix over chromium/firefox/webkit, or a Selenium Grid with chrome/firefox/edge nodes, or a cloud farm. The prerequisite is test independence — no shared state or ordering.
+
+**Q5. How do you gate a deploy on tests?**
+Branch protection requires the CI check to pass before merge, and the deploy job uses `needs:`/`dependsOn` so it only runs after test jobs succeed. Deploy-to-prod depends on E2E against staging passing, and a post-deploy smoke test verifies prod — failing it can trigger rollback. Extra gates: coverage threshold and no new critical security vulnerabilities.
+
+**Q6. How do you handle flaky tests in CI?**
+Short term: bounded auto-retries in CI only (e.g. retries: 2) so one flake doesn't block everyone, with retries logged. Medium term: quarantine known-flaky tests into a non-blocking lane so they stop gating merges while owners fix them. Long term: track flakiness on a dashboard and fix root causes — replace hard sleeps with explicit waits, stabilize locators, isolate test data. Retries are a stopgap, not a fix.
+
+**Q7. What are secrets and how do you use them in CI?**
+Encrypted values (API keys, test credentials, tokens) stored in the CI provider's settings, injected as masked environment variables (`${{ secrets.X }}`) at runtime — never hard-coded in YAML or committed. They're masked in logs. For pull requests from forks, secrets are restricted to prevent exfiltration.
+
+**Q8. Why and how do tests run headless in CI?**
+CI runners have no display, and headless is faster, so browsers run without a GUI — the default in CI. Playwright's official images / `--with-deps` handle the needed OS libraries; older Selenium setups use xvfb as a virtual display. I run headed locally to debug. I watch for headless-only failures from different default viewport size, missing fonts, or timing.
+
+## Common mistakes
+
+- **No caching** — reinstalling deps/browsers every run wastes minutes and money. Cache `~/.npm`, Maven, pip, and the browser binaries.
+- **Hard-coding credentials in the workflow** — use secrets; a committed token is a breach. Rotate immediately if leaked.
+- **Not uploading artifacts on failure** — without `if: always()` you lose the trace/video exactly when you need it.
+- **Running heavy E2E on every commit** — slows everyone down. Run units per-push, full regression nightly/scheduled.
+- **Tests that only pass serially** — shared state breaks under parallelism/sharding. Make tests independent before parallelizing.
+- **Ignoring flaky reds** — retries forever without fixing root cause erodes trust until people merge over failures.
+- **`latest` Docker/image tags** — non-reproducible builds. Pin versions (`postgres:16`, `playwright:v1.50.0`).
+- **Copying source before installing deps in a Dockerfile** — busts the layer cache so every code change reinstalls everything.
+
+<div class="callout key">
+  <div class="ct">Milestone</div>
+  Get YOUR framework green in GitHub Actions on every push — sharded across browsers, deps cached, report uploaded as an artifact, and the status check required for merge. Put the workflow file and a passing badge in your README.
+</div>

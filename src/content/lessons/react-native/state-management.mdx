@@ -1,0 +1,211 @@
+---
+title: "State Management: Redux Toolkit vs Zustand vs Context"
+track: react-native
+summary: "When to reach for each solution, how Redux Toolkit modernizes Redux, how Zustand works, and the real performance gotchas with Context API."
+order: 6
+est: 26
+difficulty: medium
+priority: must
+tags: [redux, redux-toolkit, zustand, context, state-management, performance]
+whyAsked: "State management is asked in virtually every React/RN interview because it directly reflects how you structure applications. Interviewers want to know you can reason about tradeoffs, not just use a library."
+followUps:
+  - "What problems does Redux Toolkit solve over vanilla Redux?"
+  - "Why does a Context value change re-render ALL consumers?"
+  - "How does Zustand avoid the Context re-render problem?"
+  - "When would you choose Zustand over Redux Toolkit?"
+  - "How would you split Context to prevent unnecessary re-renders?"
+resources:
+  - { label: "Redux Toolkit docs", url: "https://redux-toolkit.js.org" }
+  - { label: "Zustand docs", url: "https://zustand.dev" }
+  - { label: "react.dev: Context", url: "https://react.dev/learn/passing-data-deeply-with-context" }
+---
+
+## The options landscape
+
+| Library | Bundle size | Boilerplate | DevTools | Re-render control | Best for |
+|---|---|---|---|---|---|
+| **Context API** | 0kb (built-in) | Minimal | None | Poor | Low-frequency state, theme, auth |
+| **Zustand** | ~1kb | Minimal | Redux DevTools | Excellent (selector-based) | Most app state |
+| **Redux Toolkit** | ~11kb | Moderate | Excellent | Good (with selectors) | Large teams, complex async, strict patterns |
+| **Jotai / Recoil** | ~3-6kb | Low | Good | Excellent (atomic) | Fine-grained, derived state |
+
+## Context API — what it is and what it's not
+
+Context is a **dependency injection** mechanism, not a state management library. It lets you pass values through the component tree without prop drilling.
+
+**The critical performance issue:**
+
+```js
+const ThemeContext = createContext(null);
+
+function ThemeProvider({ children }) {
+  const [theme, setTheme] = useState('dark');
+  const [fontSize, setFontSize] = useState(16);
+
+  // Every re-render of ThemeProvider creates a new context value object
+  // → ALL consumers re-render, even if only fontSize changed
+  return (
+    <ThemeContext.Provider value={{ theme, setTheme, fontSize, setFontSize }}>
+      {children}
+    </ThemeContext.Provider>
+  );
+}
+```
+
+Any `setState` in the Provider causes a new `value` object, which triggers **every consumer to re-render** — regardless of whether the piece of state they care about changed.
+
+**Fix 1: Split contexts**
+
+```js
+// Separate contexts for separate concerns
+const ThemeValueContext  = createContext(null); // reads
+const ThemeActionContext = createContext(null); // setters (never changes)
+
+function ThemeProvider({ children }) {
+  const [theme, setTheme] = useState('dark');
+  const actions = useMemo(() => ({ setTheme }), []); // stable reference
+
+  return (
+    <ThemeActionContext.Provider value={actions}>
+      <ThemeValueContext.Provider value={theme}>
+        {children}
+      </ThemeValueContext.Provider>
+    </ThemeActionContext.Provider>
+  );
+}
+```
+
+**Fix 2: Memoize the value object**
+
+```js
+const value = useMemo(() => ({ theme, fontSize }), [theme, fontSize]);
+// Still re-renders all consumers when either changes — better, but not granular
+```
+
+**Use Context for:** auth state, theme, locale, current user — things that are genuinely global, change infrequently, and are consumed across the entire tree.
+
+## Redux Toolkit (RTK)
+
+RTK is the official modern way to write Redux. It eliminates the boilerplate of hand-writing action types, action creators, and immutable reducers.
+
+```js
+import { createSlice, configureStore, createAsyncThunk } from '@reduxjs/toolkit';
+
+// createSlice: defines state + reducers + auto-generates action creators
+const postsSlice = createSlice({
+  name: 'posts',
+  initialState: { items: [], status: 'idle', error: null },
+  reducers: {
+    addPost(state, action) {
+      state.items.push(action.payload); // Immer allows "mutations" — produces new state
+    },
+    removePost(state, action) {
+      state.items = state.items.filter(p => p.id !== action.payload);
+    },
+  },
+  extraReducers(builder) {
+    builder
+      .addCase(fetchPosts.pending, (state) => { state.status = 'loading'; })
+      .addCase(fetchPosts.fulfilled, (state, action) => {
+        state.status = 'succeeded';
+        state.items = action.payload;
+      })
+      .addCase(fetchPosts.rejected, (state, action) => {
+        state.status = 'failed';
+        state.error = action.error.message;
+      });
+  },
+});
+
+// Async thunk — standardized async action
+const fetchPosts = createAsyncThunk('posts/fetchAll', async (userId) => {
+  const res = await fetch(`/api/users/${userId}/posts`);
+  return res.json();
+});
+
+// Store setup
+const store = configureStore({
+  reducer: { posts: postsSlice.reducer },
+});
+
+// Auto-generated actions
+const { addPost, removePost } = postsSlice.actions;
+```
+
+```js
+// In components — use typed hooks
+const posts = useSelector(state => state.posts.items);
+const status = useSelector(state => state.posts.status);
+const dispatch = useDispatch();
+
+// Selector with Reselect (avoid re-renders for derived data)
+import { createSelector } from '@reduxjs/toolkit';
+const selectActivePosts = createSelector(
+  state => state.posts.items,
+  items => items.filter(p => p.active) // only recomputes when items changes
+);
+```
+
+**Use RTK when:** large team, complex async flows, need Redux DevTools time-travel, existing Redux codebase.
+
+## Zustand — minimal and powerful
+
+Zustand stores are outside React's component tree — components subscribe to **slices** of the store and only re-render when their selected slice changes.
+
+```js
+import { create } from 'zustand';
+
+// Define the store
+const usePostStore = create((set, get) => ({
+  posts: [],
+  status: 'idle',
+
+  // Actions are just functions that call set()
+  addPost: (post) => set(state => ({ posts: [...state.posts, post] })),
+  removePost: (id) => set(state => ({ posts: state.posts.filter(p => p.id !== id) })),
+
+  fetchPosts: async (userId) => {
+    set({ status: 'loading' });
+    try {
+      const res = await fetch(`/api/users/${userId}/posts`);
+      const posts = await res.json();
+      set({ posts, status: 'succeeded' });
+    } catch (err) {
+      set({ status: 'failed' });
+    }
+  },
+}));
+
+// In component — selector prevents re-renders for unrelated state
+function PostList() {
+  // Only re-renders when posts array changes — not when status changes
+  const posts = usePostStore(state => state.posts);
+  const fetchPosts = usePostStore(state => state.fetchPosts);
+  // ...
+}
+```
+
+**The key difference from Context:** a Zustand subscriber only re-renders when the specific slice it selected changes, not when any part of the store changes.
+
+**Use Zustand when:** you want minimal boilerplate, fine-grained subscriptions, or a simpler alternative to Redux for small-to-medium apps.
+
+## The decision tree
+
+```
+Is the state local to one component?
+  → useState / useReducer
+
+Is the state shared across a subtree, changes rarely, and is simple?
+  → Context (theme, locale, auth)
+
+Do you need fine-grained subscriptions, minimal boilerplate, or no Redux overhead?
+  → Zustand
+
+Do you have a large team, need time-travel debugging, complex async patterns, or an existing Redux codebase?
+  → Redux Toolkit
+```
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Context is DI, not a state library — any update rerenders every consumer, so use it only for low-frequency globals like auth and theme. Redux Toolkit modernizes Redux with createSlice (Immer + auto action creators), configureStore, and createAsyncThunk. Zustand stores live outside React; components subscribe to slices with selectors and only re-render when that slice changes — the key advantage over Context. My decision order: local → useState; shared subtree infrequent → Context; granular shared state → Zustand; large team/complex async → Redux Toolkit."
+</div>

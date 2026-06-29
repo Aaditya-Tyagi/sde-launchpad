@@ -1,0 +1,170 @@
+---
+title: "How would you test X & test system design"
+track: qa-career
+summary: "The SDET test-design / system-design round — a repeatable framework for 'how would you test X', 8 fully worked examples, plus 'design a test automation framework' and 'design a test strategy' walkthroughs."
+order: 4
+est: 32
+difficulty: hard
+priority: deep
+tags: [interview, test-design, system-design, sdet, strategy]
+whyAsked: "The scenario/design round separates candidates who memorise from candidates who think. A repeatable framework lets you answer any 'how would you test X' confidently and look senior."
+followUps:
+  - "How would you test a payment gateway?"
+  - "Design a test automation framework from scratch."
+  - "Design a test strategy for a new product."
+resources:
+  - { label: "Test Automation University (free)", url: "https://testautomationu.applitools.com/" }
+  - { label: "ISTQB glossary", url: "https://glossary.istqb.org/" }
+---
+
+The scenario round ("how would you test a login page?", "design a test framework") rewards **structured thinking**, not memorised lists. Interviewers want to see you clarify, cover functional and non-functional dimensions, think about edges and failure modes, and prioritise by risk. This lesson gives you one repeatable framework, then applies it to eight real prompts, then walks through the two big "design" questions.
+
+## The repeatable framework
+
+For any "how would you test X," walk these steps out loud — the *structure* is what scores points.
+
+1. **Clarify & scope.** Never start listing tests immediately. Ask: What exactly is X? Who are the users? What platforms? What are the requirements and constraints? What's in/out of scope? (Even if you then state assumptions, showing you'd clarify is senior behaviour.)
+2. **Functional / positive.** Does it do what it's supposed to for valid inputs? The happy paths and core features.
+3. **Non-functional.** How *well* does it do it? Performance, load/stress, security, usability/accessibility, compatibility, reliability, localisation.
+4. **Edge & boundary.** Limits and corners: empty/min/max values, boundaries, large inputs, special characters, concurrency, time zones.
+5. **Negative / error handling.** Invalid inputs, missing data, failures — does it fail gracefully with the right errors?
+6. **Integration & end-to-end.** How does X behave with the systems around it — backend, third parties, other features, data consistency across the flow?
+7. **Then prioritise.** State which areas are highest risk and would get the most thorough coverage, and what you'd automate vs keep manual.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Clarify → Functional → Non-functional → Edge → Negative → Integration → Prioritise. Memorise this spine. Any prompt — a pen, an API, a payment gateway — fills into it. The interviewer is grading the spine, not whether you list every single case.
+</div>
+
+## Worked example 1 — Test a login page
+
+- **Clarify:** Web/mobile? Email or username? SSO/social login? MFA? Password rules?
+- **Functional:** valid login → correct redirect; invalid password; invalid username; empty fields; remember-me persists session; logout; forgot-password flow; MFA if present.
+- **Non-functional (security is the headline here):** password masking; HTTPS only; no credentials in URL or logs; SQL injection and XSS attempts; brute-force lockout / rate limiting; session timeout; secure + HttpOnly cookie flags; password stored hashed (back-end check).
+- **Edge/boundary:** case sensitivity of username/email; leading/trailing spaces; very long inputs; special/unicode characters; max-length password; concurrent sessions across devices.
+- **Negative:** wrong credentials show a generic error (not "user exists / wrong password" — that leaks info); locked/disabled account; expired password.
+- **Integration:** auth service, session store, redirect target, "forgot password" email delivery, back-button after logout doesn't restore session.
+- **Prioritise:** security + core login/logout first; automate the functional and negative paths as regression; pen-test security separately.
+
+## Worked example 2 — Test a file-upload feature
+
+- **Clarify:** Allowed file types/sizes? Single or multiple? Where stored? Virus scanning? Who can upload?
+- **Functional:** upload a valid file of each allowed type; progress indicator; success confirmation; file appears/downloadable; replace/delete; multiple-file upload if supported.
+- **Non-functional:** large-file performance and timeout behaviour; concurrent uploads; storage limits; security — malicious file (executable disguised as image), virus scan, content-type spoofing, path-traversal filenames; access control (can user A see user B's file?).
+- **Edge/boundary:** 0-byte file; exactly-at-limit and just-over-limit size; max filename length; special characters/unicode in filename; duplicate filenames; unsupported extension.
+- **Negative:** unsupported type rejected with clear error; oversized file rejected; network drop mid-upload → graceful failure/resume; corrupt file.
+- **Integration:** storage backend (S3/disk), virus scanner, CDN delivery, DB metadata consistency, quota accounting.
+- **Prioritise:** security (malicious files, access control) and size/type validation are highest risk; automate type/size validation and happy path.
+
+## Worked example 3 — Test an e-commerce checkout
+
+- **Clarify:** Guest vs logged-in checkout? Payment methods? Coupons? Multiple currencies/regions? Inventory model?
+- **Functional:** add to cart → cart totals correct; update quantity; apply/remove coupon; shipping options + cost; tax calculation; address validation; place order; order confirmation + email; order appears in history.
+- **Non-functional:** performance under load (flash-sale spike); security (no price tampering via client, PCI for card data, no card data in logs); reliability of payment; accessibility.
+- **Edge/boundary:** empty cart; max quantity; out-of-stock during checkout; coupon at expiry boundary; minimum order value; currency rounding; very large order.
+- **Negative:** payment declined; expired card; coupon invalid/expired; inventory sold out between cart and pay; session timeout mid-checkout; double-click "Place order."
+- **Integration:** payment gateway, inventory service, tax/shipping services, email, order/fulfilment system — and **data consistency**: order placed = payment captured = inventory decremented = exactly once.
+- **Prioritise:** the money paths — correct totals, no double-charge, inventory not oversold, payment failure handled. Automate the totals/coupon math and happy path; test payment-failure flows carefully (often with a sandbox).
+
+## Worked example 4 — Test a REST API
+
+- **Clarify:** Endpoints? Auth scheme? Rate limits? Contract/OpenAPI spec? Versioning?
+- **Functional (CRUD lifecycle):** POST create → 201 + id; GET → 200 + correct schema/values; PUT/PATCH → 200 + change reflected; DELETE → 204; GET deleted → 404.
+- **Non-functional:** response time / latency under load; rate limiting (429 + Retry-After); security (auth/authz, input sanitisation); pagination/sorting/filtering correctness at scale.
+- **Edge/boundary:** empty body; max payload; boundary field values; pagination first/last/empty page; special characters; large result sets.
+- **Negative:** malformed JSON → 400; missing required fields → 400; no/invalid/expired token → 401; accessing others' resources → 403; non-existent id → 404; wrong method → 405.
+- **Integration & contract:** schema/contract validation against the spec; idempotency of PUT/DELETE and safe retries; downstream service behaviour; data consistency in the DB.
+- **Prioritise:** auth/authz, schema/contract validation, and the CRUD happy path are highest value; automate the whole lot in CI — APIs are cheap and stable to automate.
+
+## Worked example 5 — Test a notification system
+
+- **Clarify:** Channels (push/email/SMS/in-app)? Real-time or batched? User preferences/opt-out? Volume?
+- **Functional:** notification fires on the right event; correct recipient, channel, content, and timing; user preferences honoured (opt-in/out per channel); read/unread state; deep-link/action works.
+- **Non-functional:** performance at high volume (fan-out to millions); latency (real-time should be near-instant); reliability (delivery guarantees, retries); security (no leaking another user's data; correct recipient only).
+- **Edge/boundary:** user with notifications disabled; offline device → queue and deliver on reconnect; many events at once (batching/throttling); duplicate suppression; time-zone-correct scheduling; very long content/truncation.
+- **Negative:** invalid recipient/token; channel provider down → retry/fallback; event fires but user deleted; quiet-hours respected.
+- **Integration:** event source, message queue, channel providers (APNs/FCM/email/SMS gateway), preference service, and **exactly-once / no-duplicate** delivery.
+- **Prioritise:** correct recipient + no duplicates + preferences honoured are highest risk (privacy + spam); automate event-to-notification mapping and preference logic; load-test fan-out separately.
+
+## Worked example 6 — Test an autocomplete search
+
+- **Clarify:** Data source size? Debounce? Min characters to trigger? Ranking rules? Fuzzy matching?
+- **Functional:** typing shows relevant suggestions; results update as you type; selecting a suggestion populates/navigates; keyboard navigation (arrows/enter/esc); highlight of matched text; min-character threshold.
+- **Non-functional:** latency (suggestions feel instant); debounce/throttle (not a request per keystroke); performance with a huge dataset; accessibility (ARIA, screen-reader announcements).
+- **Edge/boundary:** empty query; single character; very long query; no matches (empty state); special characters/emoji; leading/trailing spaces; rapid typing then deleting; results capping (top N).
+- **Negative:** backend slow/down → graceful fallback, no crash; stale responses out of order (a later keystroke's results must win, not an earlier slow response); injection attempts in the query.
+- **Integration:** search backend/index, ranking service, analytics; race-condition handling on concurrent requests.
+- **Prioritise:** relevance + the out-of-order/stale-response race + debounce are the interesting risks; automate suggestion correctness and keyboard nav.
+
+## Worked example 7 — Test a payment gateway
+
+- **Clarify:** Which methods (card/wallet/bank/UPI)? Currencies? 3-D Secure? Refunds? Who integrates (we own it or third-party)?
+- **Functional:** successful payment each method; correct amount/currency; 3-D Secure/OTP flow; payment confirmation + receipt; refund (full/partial); recurring/subscription if applicable.
+- **Non-functional:** security is paramount — PCI-DSS, no card data stored/logged in plaintext, TLS, tokenisation; performance under load; reliability/availability.
+- **Edge/boundary:** minimum/maximum amount; zero/negative amount rejected; currency rounding; expiry-date boundary on card; partial refund up to (not over) original; concurrent payments.
+- **Negative (the heart of payment testing):** declined card; insufficient funds; expired/invalid card; wrong CVV; **network failure mid-transaction → no debit without confirmation, and no double-charge**; timeout; duplicate submission; idempotency on retry; refund exceeding original rejected.
+- **Integration & consistency:** bank/processor (use sandbox), ledger/accounting consistency, webhooks for async status, reconciliation, order system. **Exactly-once** is the core property — money must never be charged twice or lost.
+- **Prioritise:** double-charge prevention, idempotency, declined/failure handling, and amount/currency correctness are top risk. Test in a sandbox; automate the deterministic paths; carefully script failure injection.
+
+## Worked example 8 — Test an ATM (hardware + software)
+
+- **Clarify:** Functions offered? Card type? Cash denominations? Network model?
+- **Functional:** card read; PIN (correct/incorrect/lockout after N tries); withdraw (valid, insufficient funds, exceeds daily limit, no cash available); balance enquiry; deposit; mini-statement; receipt; card eject.
+- **Non-functional:** response time; security (PIN encryption, anti-skimming, screen timeout, camera); reliability (24/7 operation); hardware (card reader, cash dispenser, printer).
+- **Edge/boundary:** request more than balance/limit; non-multiple of note denomination; exactly daily limit; out-of-cash; out-of-paper for receipt.
+- **Negative:** power failure mid-dispense → account not debited without cash dispensed; network drop; three wrong PINs → card retained/blocked; user walks away → timeout retracts card.
+- **Integration & consistency:** bank core system, account debit, transaction log/audit — debit and dispense must be atomic.
+- **Prioritise:** transaction atomicity (no debit without dispense), security, and limit enforcement.
+
+## Design a test automation framework
+
+Treat this like a software design question. Structure your answer:
+
+1. **Requirements & scope.** Ask: UI, API, or both? Tech stack/language? Team's coding skill? CI in place? Target apps? Reporting needs? This drives every choice.
+2. **Tool & language choice (justify it).** e.g. "Playwright + TypeScript for a web app: auto-waiting reduces flakiness, fast, built-in parallelism and tracing." Match the team's stack.
+3. **Architecture / layers.**
+   - **Test layer** — test cases, assertions only.
+   - **Page/business layer** — Page Object Model, reusable flows.
+   - **Core/utilities** — driver/browser management (thread-safe), waits, config reader, logging, API client.
+   - **Test data** — externalised JSON/CSV/DB, factories/builders, set up via API for speed.
+   - **Config** — per-environment (URLs, timeouts, browsers), secrets from CI/vault.
+   - **Reporting** — Allure/HTML, screenshots/traces on failure.
+4. **Design patterns.** POM, Factory (driver creation), Singleton (config), Builder (data), Strategy (browser/env). State *why*.
+5. **Cross-cutting concerns.** Parallel execution (thread-safe, isolated data), retries for genuine non-determinism only, cross-browser via grid/cloud, logging.
+6. **CI/CD integration.** Run on PR/merge, parallel/sharded, publish reports as artifacts, fail build on failure, smoke on PR + full suite nightly.
+7. **Maintainability.** Treat test code as production code: reviews, linting, no locators in tests, prune dead tests, stable `data-testid` hooks with dev collaboration.
+8. **Trade-offs.** Acknowledge them: BDD only if stakeholders need it; record-and-playback rejected for maintainability; UI tests minimised in favour of the pyramid.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  For "design a framework," lead with clarifying questions and *justified* tool choices, then layers with separation of concerns, then CI and maintainability. Naming patterns and explaining *why* you'd use them is what makes you sound senior.
+</div>
+
+## Design a test strategy for product X
+
+Higher-level than a framework — this is about *what* and *how much* to test, and managing risk.
+
+1. **Understand the product & risk.** Users, business-critical flows, the cost of failure (a payment bug ≠ a tooltip bug). Identify high-risk areas — that's where coverage concentrates.
+2. **Scope & test levels.** Decide the mix across unit, integration/API, UI/E2E (the pyramid), plus manual exploratory. Push checks as low as possible.
+3. **Test types.** Functional, regression, smoke, plus the non-functional that matter for this product: performance/load (high-traffic?), security (handles money/PII?), compatibility (broad device base?), accessibility, localisation.
+4. **Automation strategy.** What to automate (stable, high-value, repetitive — regression/smoke/API) vs keep manual (exploratory, volatile UI), and the framework/tooling.
+5. **Environments & data.** Test environments mirroring prod, test-data management/seeding, handling third-party dependencies (sandboxes, mocks, contract tests).
+6. **CI/CD & cadence.** Where tests run in the pipeline, gating rules, smoke-on-PR vs full-nightly, release criteria.
+7. **Process & ownership.** Entry/exit criteria, defect triage/severity, who owns what (devs write unit tests, SDET owns framework, etc.), metrics (escaped defects, coverage of critical paths, flakiness, pipeline pass rate).
+8. **Risk-based prioritisation.** Be explicit that you can't test everything — you focus effort by likelihood × impact and communicate residual risk so the business decides on release.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  In both design questions, never dump a generic checklist. Start with clarifying questions, tie every choice to the product's risk profile, and name trade-offs. Candidates who say "it depends — here's what I'd ask, and here's how the answer changes my approach" outscore those who recite a fixed list.
+</div>
+
+## Interview Q&A
+
+**Q1. The interviewer says "how would you test a coffee machine" — where do you start?**
+With clarifying questions, not a list: what type (drip, espresso, pod), who uses it, what features (temperature, sizes, milk)? Then I run the spine — functional (brews correctly each mode), non-functional (heat-up time, safety, durability, power use), edge (empty water/beans, max capacity), negative (no water → safe error, overfill), integration (descale cycle, app control if smart). Finishing with what I'd prioritise by risk (safety first).
+
+**Q2. They push back: "you can't test everything — what do you cut?"**
+Exactly — exhaustive testing is impossible, so I prioritise by risk: likelihood × impact. I cover critical, high-traffic, money/safety/data paths thoroughly; deprioritise low-impact, rarely-used corners; and explicitly communicate what's not covered so the release decision is informed. I'd lean on automation for regression to free time for high-value exploratory testing.
+
+**Q3. How do you decide the unit/API/UI split when designing a strategy?**
+The pyramid: many cheap, fast unit tests; a solid API/integration layer; few slow, brittle UI/E2E tests for true end-to-end journeys. I push each check to the lowest level that can catch the bug — validating business logic at the API level instead of through the UI. The split shifts by product, but the shape (wide base, narrow top) holds.

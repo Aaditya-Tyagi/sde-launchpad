@@ -1,0 +1,129 @@
+---
+title: "API Design: REST, gRPC & GraphQL"
+track: backend
+summary: "Design APIs interviewers respect: resource modeling, the right status codes, idempotency, pagination, versioning, error envelopes, and when to reach for gRPC or GraphQL over REST. Contract-first thinking and the resilience patterns that wrap every call."
+order: 1
+est: 30
+difficulty: medium
+priority: must
+tags: [api, rest, grpc, graphql, idempotency, versioning, pagination]
+whyAsked: "API design is the surface every backend service exposes. It shows whether you think in contracts, model resources cleanly, and handle the hard parts — idempotency, pagination, versioning, errors — that separate a hobby endpoint from a production API."
+followUps:
+  - "REST vs gRPC vs GraphQL — when each?"
+  - "How do you make a POST safe to retry?"
+  - "How do you paginate a large, changing list?"
+  - "How do you evolve an API without breaking clients?"
+  - "What goes in a good error response?"
+resources:
+  - { label: "REST API design (Microsoft)", url: "https://learn.microsoft.com/en-us/azure/architecture/best-practices/api-design" }
+  - { label: "gRPC docs", url: "https://grpc.io/docs/" }
+  - { label: "Google API Design Guide", url: "https://cloud.google.com/apis/design" }
+---
+
+An API is a **contract**. The job is to model resources cleanly, choose the right protocol for the communication pattern, and design the hard parts — idempotency, pagination, versioning, errors — so clients can depend on you for years. This lesson is the backend-dev view; the [system-design version](/lessons/system-design/api-and-communication) covers the same ground from a whiteboard angle.
+
+## Pick the style by the communication pattern
+
+| Style | Transport / format | Strengths | Weaknesses | Reach for it when |
+|---|---|---|---|---|
+| **REST** | HTTP + JSON | Ubiquitous, cacheable, simple, tooling everywhere | Over/under-fetching; many round trips for nested data | Public APIs, CRUD, broad client reach |
+| **gRPC** | HTTP/2 + Protobuf (binary) | Fast, compact, codegen, streaming, strong typing | Not browser-native (needs a proxy), binary is harder to debug | Internal service-to-service, low latency, polyglot |
+| **GraphQL** | HTTP + query language | Client picks exact fields, one round trip for nested data, strong schema | Caching is hard, server complexity, query-cost risk (N+1) | Many varied clients, deeply nested data, mobile |
+
+They are not mutually exclusive — **gRPC internally, REST or GraphQL at the edge** is the common production shape.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  <b>REST</b> for public/CRUD APIs, <b>gRPC</b> for internal high-throughput service-to-service, <b>GraphQL</b> when diverse clients need flexible nested data and you'd otherwise ship a dozen bespoke endpoints.
+</div>
+
+## REST done right
+
+REST is "use HTTP as intended." The senior signals:
+
+**Resource modeling.** Nouns, not verbs: `GET /users/123/orders`, never `/getUserOrders`. Methods carry the semantics — `GET` (read, safe), `POST` (create), `PUT` (replace, idempotent), `PATCH` (partial), `DELETE` (idempotent).
+
+**Status codes** — use the real ones, not `200` for everything:
+- `2xx` — `200 OK`, `201 Created` (+ `Location` header), `202 Accepted` (async), `204 No Content`.
+- `4xx` — `400` bad request, `401` unauthenticated, `403` forbidden, `404` not found, `409` conflict, `422` validation, `429` rate-limited.
+- `5xx` — `500` server error, `503` unavailable (+ `Retry-After`).
+
+**Error envelope.** Return a consistent, machine-readable shape so clients can branch on a code, not parse prose:
+
+```json
+{
+  "error": {
+    "code": "INSUFFICIENT_FUNDS",
+    "message": "Balance 12.00 is below the 50.00 charge",
+    "requestId": "req_9f2a...",
+    "details": [{ "field": "amount", "issue": "exceeds_balance" }]
+  }
+}
+```
+
+**Idempotency.** `GET`/`PUT`/`DELETE` are idempotent by definition; `POST` is not. For unsafe-to-retry operations (payments, orders) accept an **`Idempotency-Key`** header. The server stores the key with its result, so a retried request returns the original outcome instead of charging twice. This is the single most-probed API-design detail.
+
+**Pagination.** **Cursor-based** for large or changing lists (`?cursor=&limit=`) — stable as the head moves, O(1) resume. Offset/page only for small, stable datasets (offset re-scans rows and can skip or duplicate items when the list mutates mid-paging).
+
+**Versioning.** Prefer **additive, backward-compatible** changes so you rarely version at all (add fields, never remove or repurpose them). When a breaking change is unavoidable: URL versioning (`/v1/`) is the most visible and cacheable; header versioning is cleaner but less obvious. Deprecate on a published timeline.
+
+**Caching & conditional requests.** `ETag` + `If-None-Match` to return `304 Not Modified`; `Cache-Control` for freshness. Ties into [caching strategies](/lessons/backend/caching).
+
+## gRPC: the internal workhorse
+
+gRPC is **contract-first** — you write a `.proto`, generate typed clients/servers in every language, and get binary Protobuf over HTTP/2.
+
+```protobuf
+service OrderService {
+  rpc GetOrder(GetOrderRequest) returns (Order);
+  rpc StreamOrderEvents(OrderQuery) returns (stream OrderEvent); // server streaming
+}
+message GetOrderRequest { string order_id = 1; }
+```
+
+Wins: 5-10x smaller payloads than JSON, codegen kills hand-written client bugs, four streaming modes (unary, server-, client-, bidi-stream), and HTTP/2 multiplexing. Costs: not browser-native (needs gRPC-Web + a proxy), binary frames are harder to eyeball, and you must manage `.proto` evolution (field numbers are forever — only add, never reuse a number).
+
+## GraphQL: client-shaped responses
+
+One endpoint, the client sends a query describing exactly the fields it wants — solving REST's **over-fetching** (endpoint returns more than the view needs) and **under-fetching** (view needs several calls → waterfall). The price: caching is harder (queries are POSTs), and a naive resolver triggers the **N+1 problem** (one query per nested item). Tame it with **DataLoader** batching, and cap blast radius with **depth/complexity limits** and **persisted queries**.
+
+## Contract-first and the resilience wrapper
+
+Whatever the style, design the **contract before the code** — an OpenAPI/Protobuf/SDL schema reviewed up front catches breaking changes, generates clients and mocks, and lets frontend and backend build in parallel. And every remote call needs the resilience trio (covered deeply in [distributed systems](/lessons/backend/distributed-systems)):
+
+- **Timeout** — never an unbounded call; one hung dependency exhausts your pool.
+- **Retry** with exponential backoff + jitter — only on idempotent ops, capped.
+- **Circuit breaker** — stop hammering a failing dependency; fail fast and recover.
+
+## Interview questions & model answers
+
+**Q: REST vs gRPC vs GraphQL — when each?**
+"REST for public/CRUD APIs — ubiquitous, cacheable, simple. gRPC for internal service-to-service — binary Protobuf over HTTP/2 is fast and strongly typed with codegen and streaming, but not browser-native. GraphQL when many varied clients need flexible nested data and REST would over/under-fetch, at the cost of harder caching and query-cost control. Often gRPC internally, REST or GraphQL at the edge."
+
+**Q: How do you make a POST safe to retry?**
+"An idempotency key. The client sends a unique key per logical operation; the server stores the key with its result, so a retry returns the original outcome instead of acting twice. Combined with bounded retries and timeouts, that makes the call safe under network failures."
+
+**Q: Offset vs cursor pagination?**
+"Cursor for large or changing lists — you page relative to a stable marker, so inserts and deletes at the head don't skip or duplicate rows, and resume is O(1). Offset re-scans `OFFSET` rows each page (slow at depth) and can skip/duplicate when the list mutates. Offset is fine only for small, stable data."
+
+**Q: How do you evolve an API without breaking clients?**
+"Additive, backward-compatible changes — add optional fields, never remove or repurpose existing ones. In Protobuf that means new field numbers only. When a breaking change is unavoidable, version it (URL `/v1/` for visibility) and deprecate the old version on a published timeline with telemetry on who still uses it."
+
+**Q: What makes a good error response?**
+"A real status code (422 for validation, 409 for conflict — not 200-with-an-error-body), plus a stable machine-readable `code` clients can branch on, a human message for logs, a request ID for tracing, and field-level details for validation. Consistent envelope across every endpoint."
+
+## Common mistakes / what weak candidates do
+
+- **`200` for everything**, including errors — defeats clients and caches.
+- **Verbs in REST paths** (`/getUser`, `/createOrder`) and ignoring method semantics.
+- **Treating `POST` as idempotent** — retries double-charge without an idempotency key.
+- **Offset pagination on large/changing lists** — slow and lossy.
+- **Breaking changes without versioning** — removing or repurposing a field silently breaks clients.
+- **Prose-only errors** with no stable code or request ID.
+- **Reaching for GraphQL** without addressing caching, N+1, and query-cost limits.
+- **Designing code-first** and reverse-engineering the contract, so clients can't build in parallel.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "An API is a contract. <b>REST</b> for public/CRUD, <b>gRPC</b> for internal high-throughput, <b>GraphQL</b> for flexible nested data. Do REST right — real status codes, a stable error envelope, <b>idempotency keys</b> on unsafe retries, <b>cursor pagination</b>, and additive versioning so I rarely break clients. Design contract-first, and wrap every call in <b>timeout + retry-with-backoff + circuit breaker.</b>"
+</div>

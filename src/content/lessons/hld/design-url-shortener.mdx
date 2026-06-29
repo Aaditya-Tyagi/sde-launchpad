@@ -1,0 +1,233 @@
+---
+title: "HLD: Design a URL Shortener"
+track: hld
+summary: "Design bit.ly — hash generation, redirect performance, custom aliases, analytics, and storage at scale."
+order: 3
+est: 28
+difficulty: medium
+priority: must
+tags: [hld, url-shortener, hashing, redirect, cache, analytics]
+whyAsked: "URL shortener is the canonical HLD starter — deceptively simple, with real depth in hash collision handling, redirect latency, and analytics at scale."
+followUps:
+  - "How do you handle hash collisions?"
+  - "How do you make redirects as fast as possible?"
+  - "How would you support custom aliases?"
+  - "How do you count clicks without slowing down redirects?"
+  - "How do you handle link expiry?"
+resources:
+  - { label: "System Design Interview Vol.1 — Ch.8", url: "https://bytebytego.com" }
+---
+
+## Step 1: Requirements
+
+**Functional:**
+- Shorten a long URL → get a short code (e.g. `bit.ly/a3Bx9`)
+- Redirect short URL → original URL (301 vs 302?)
+- Custom aliases (`bit.ly/my-campaign`)
+- Link expiry (optional TTL)
+- Click analytics: total clicks, unique visitors, country, referrer
+
+**Non-functional:**
+- Reads >> writes (100:1 ratio typical)
+- Redirect latency < 10ms p99
+- 100M new URLs/day
+- Links live indefinitely by default
+- Availability > 99.99% for redirects
+
+**Estimation:**
+```
+Writes: 100M URLs/day ÷ 86,400s ≈ 1,200 writes/sec
+Reads:  100:1 ratio → 120,000 reads/sec
+Storage: 100M × 365 × 10 years × ~500 bytes/record ≈ 180 TB
+Short code space: base62 (a-zA-Z0-9), 7 chars → 62^7 ≈ 3.5 trillion codes (plenty)
+```
+
+---
+
+## Step 2: Short code generation
+
+Two approaches:
+
+### Option A: Hash-based (MD5 / SHA256 → truncate)
+
+```python
+import hashlib, base64
+
+def shorten(long_url: str) -> str:
+    hash_bytes = hashlib.md5(long_url.encode()).digest()
+    # Base64-encode, take first 7 chars, make URL-safe
+    code = base64.urlsafe_b64encode(hash_bytes).decode()[:7]
+    return code  # e.g. "a3Bx9yZ"
+```
+
+**Problem:** hash collisions. Two different URLs could produce the same 7-char prefix.
+
+**Fix:** on collision, append a counter suffix and re-hash:
+```python
+def shorten_safe(long_url: str, db) -> str:
+    suffix = 0
+    while True:
+        code = md5_encode(long_url + str(suffix))[:7]
+        if not db.exists(code):
+            return code
+        suffix += 1
+```
+
+**Downside:** multiple DB lookups on collision. At large scale collisions are rare but non-zero.
+
+---
+
+### Option B: Counter-based (preferred at scale)
+
+Use a distributed **ID generator** (e.g. Twitter Snowflake, or a simple Redis INCR) to generate a unique integer, then encode it in base62:
+
+```python
+BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+def to_base62(num: int) -> str:
+    if num == 0:
+        return BASE62[0]
+    result = []
+    while num > 0:
+        result.append(BASE62[num % 62])
+        num //= 62
+    return ''.join(reversed(result))
+
+# Redis: id = INCR url_counter  → to_base62(id) = short code
+```
+
+**Advantages:** no collision possible, monotonically increasing, no DB lookups during generation.
+
+**Range-based ID allocation:** to avoid Redis being a single point of failure, each app server pre-allocates a range of IDs (e.g. 1,000,000 at a time) from a dedicated ID service. It burns through the range locally, then fetches the next.
+
+---
+
+## Step 3: Data model
+
+```sql
+-- URLs table
+CREATE TABLE urls (
+  code        VARCHAR(10) PRIMARY KEY,  -- the short code
+  long_url    TEXT NOT NULL,
+  created_by  UUID REFERENCES users(id),
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
+  expires_at  TIMESTAMPTZ,
+  is_custom   BOOLEAN DEFAULT FALSE
+);
+CREATE INDEX idx_urls_long_url ON urls(long_url);  -- for dedup check
+
+-- Clicks table (write-heavy, append-only)
+CREATE TABLE clicks (
+  id          BIGSERIAL,
+  code        VARCHAR(10) NOT NULL,
+  clicked_at  TIMESTAMPTZ DEFAULT NOW(),
+  ip_hash     VARCHAR(64),    -- hashed for privacy
+  country     VARCHAR(2),
+  referrer    TEXT,
+  user_agent  TEXT
+) PARTITION BY RANGE (clicked_at);  -- partition by month
+```
+
+---
+
+## Step 4: Architecture
+
+```
+Client
+  │ GET /a3Bx9
+  ▼
+[ CDN / Edge ]
+  │ Cache-hit: 301 redirect immediately (< 5ms)
+  │ Cache-miss:
+  ▼
+[ Load Balancer ]
+  │
+  ▼
+[ Redirect Service (stateless, horizontally scaled) ]
+  │
+  ├─ 1. Check Redis cache: GET url:a3Bx9
+  │       hit  → 301 redirect to cached long URL
+  │       miss ↓
+  ├─ 2. Read from DB: SELECT long_url FROM urls WHERE code='a3Bx9'
+  │       hit  → write to Redis (TTL 24h) → 301 redirect
+  │       miss → 404
+  │
+  └─ 3. Fire-and-forget analytics event → Kafka topic "clicks"
+         (does NOT block the redirect response)
+  
+[ Kafka "clicks" topic ]
+  └─ Analytics Consumer → aggregates into ClickSummary table (PostgreSQL / ClickHouse)
+```
+
+---
+
+## Step 5: 301 vs 302 redirect
+
+| | 301 (Permanent) | 302 (Temporary) |
+|---|---|---|
+| Browser caches? | Yes — browser skips server on repeat visits | No — browser always hits server |
+| Analytics accuracy | Loses repeat-visit data | Captures every click |
+| Server load | Lower (browser caches) | Higher (every hit reaches server) |
+
+**Decision:** use **302** if you need click analytics on every visit. Use **301** if you want maximum redirect speed and browser caching, but accept losing analytics after first visit.
+
+Hybrid: use 302 with CDN caching for a short TTL (5 minutes). You count all clicks, the CDN reduces server load.
+
+---
+
+## Step 6: Caching strategy for redirects
+
+```
+URL lookup is 95%+ of traffic → cache aggressively.
+
+L1: CDN edge cache
+  - Cache 302 redirect responses with short Surrogate-Control TTL
+  - Invalidate on URL deletion
+
+L2: Redis in-process cache (within app servers)
+  - Key: "url:{code}", Value: long_url
+  - TTL: 24 hours
+  - Eviction: LRU
+
+Read path:
+  Redis hit → 302 redirect           (~2ms)
+  Redis miss, DB hit → cache + 302   (~15ms)
+  DB miss → 404                      (~15ms)
+```
+
+---
+
+## Step 7: Analytics at scale
+
+**Problem:** 120K redirects/sec → inserting a row per click into a SQL table immediately will cause write bottleneck.
+
+**Solution: async analytics pipeline**
+
+```
+Redirect service
+  └─ Produces "click" event to Kafka (non-blocking)
+
+Kafka consumers:
+  ├─ Real-time counter: INCR in Redis  → "a3Bx9:clicks:total"
+  ├─ Hourly aggregator: batch INSERT into ClickHouse (columnar, analytics optimized)
+  └─ Geo enrichment: IP → country via MaxMind, then store enriched event
+```
+
+**ClickHouse** (or Redshift, BigQuery) for analytics — columnar storage makes aggregations like `SELECT country, COUNT(*) FROM clicks WHERE code='a3Bx9' GROUP BY country` 10–100x faster than row-based Postgres.
+
+---
+
+## Edge cases
+
+| Case | Solution |
+|---|---|
+| Same long URL submitted twice | Check `idx_urls_long_url` before inserting; return existing code |
+| Custom alias already taken | Return 409 Conflict |
+| Expired link | Check `expires_at` in lookup; return 410 Gone |
+| Malicious URLs | Block list check + Google Safe Browsing API on creation |
+| Link deletion | Soft-delete (set `deleted_at`), purge from CDN + Redis |
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "I'd use counter-based ID generation with base62 encoding — no collision risk. The redirect service is stateless behind a load balancer; it reads from a Redis cache first (TTL 24h) and falls back to Postgres. Analytics are non-blocking — every redirect fires an event to Kafka, and consumers aggregate to ClickHouse. I'd use 302 (not 301) so every click is tracked. The bottleneck at 120K RPS is the Redis cache — it's purpose-built for this and handles millions of reads/sec."
+</div>

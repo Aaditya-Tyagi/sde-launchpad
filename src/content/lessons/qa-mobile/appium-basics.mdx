@@ -1,0 +1,312 @@
+---
+title: "Mobile automation with Appium"
+track: qa-mobile
+summary: "Automate native, hybrid and mobile-web Android/iOS apps with Appium — architecture, capabilities, locators, contexts, gestures, waits, and a full working Java test."
+order: 1
+est: 22
+difficulty: medium
+priority: know
+tags: [mobile, appium, android, ios, uiautomator2, xcuitest]
+whyAsked: "Mobile testing demand keeps rising. Even solid fundamentals in Appium widen your job pool and show you can transfer Selenium skills to a harder domain."
+followUps:
+  - "Native vs hybrid vs mobile-web — how does testing differ?"
+  - "Emulator vs real device — trade-offs?"
+  - "How does Appium locate elements? Which strategy do you prefer and why?"
+  - "How do you perform a swipe or scroll in Appium 2?"
+resources:
+  - { label: "Appium docs", url: "https://appium.io/docs/en/latest/" }
+  - { label: "Appium Inspector", url: "https://github.com/appium/appium-inspector" }
+  - { label: "UiAutomator2 driver", url: "https://github.com/appium/appium-uiautomator2-driver" }
+  - { label: "XCUITest driver", url: "https://github.com/appium/appium-xcuitest-driver" }
+  - { label: "W3C WebDriver Actions", url: "https://www.w3.org/TR/webdriver/#actions" }
+---
+
+Appium automates native, hybrid and mobile-web apps on Android and iOS using the same **W3C WebDriver protocol** you already know from Selenium — so your locator, wait and Page Object skills transfer. You write tests in any language (Java, Python, JS, C#, Ruby) and Appium translates them into platform-native automation calls.
+
+## Architecture — how a command travels
+
+Appium is a **client/server** system. Nothing about your test runs on the device directly.
+
+```
+Test code (Java client)
+      │  HTTP + JSON  (W3C WebDriver protocol)
+      ▼
+Appium server (Node.js)  ──loads──►  a driver
+      │                               (UiAutomator2 / XCUITest / Espresso ...)
+      ▼
+Device / emulator: the driver drives the platform's native automation framework
+      │
+      ▼
+   The app under test
+```
+
+1. Your test (the **client**) sends an HTTP request like `POST /session/{id}/element` with a JSON body describing the locator.
+2. The **Appium server** receives it and routes it to the right **driver** based on your capabilities.
+3. The driver translates the W3C command into the platform's native UI-automation API:
+   - **Android → UiAutomator2** (Google's UI Automator, wrapped by the driver).
+   - **iOS → XCUITest** (Apple's XCTest framework).
+4. The native framework finds/acts on the element on the device and the result bubbles back up.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Appium is a protocol translator. "UiAutomator2" and "XCUITest" are the actual engines; Appium gives them one common WebDriver API so the same test shape works on both platforms.
+</div>
+
+## Setup
+
+```bash
+# 1. Node 18+ then install Appium 2 globally
+npm i -g appium
+
+# 2. Install the drivers you need (Appium 2 ships NO drivers by default)
+appium driver install uiautomator2     # Android
+appium driver install xcuitest         # iOS  (macOS + Xcode only)
+appium driver list --installed
+
+# 3. Verify your environment
+npm i -g appium-doctor && appium-doctor --android
+
+# 4. Start the server (defaults to http://127.0.0.1:4723)
+appium
+```
+
+Android needs the **Android SDK** (`ANDROID_HOME`), platform-tools (`adb`) and a configured emulator or a USB-connected device with USB debugging on. iOS needs **macOS, Xcode and the command-line tools**; real iOS devices additionally need code-signing (WebDriverAgent must be signed with a valid Apple developer account).
+
+## Desired Capabilities / Options
+
+Capabilities tell the server what to automate. In Appium 2 / Selenium 4 the modern, type-safe way is the **Options** classes (`UiAutomator2Options`, `XCUITestOptions`). Vendor-specific keys take the `appium:` prefix on the wire.
+
+```java
+// Android
+UiAutomator2Options options = new UiAutomator2Options()
+    .setPlatformName("Android")
+    .setAutomationName("UiAutomator2")
+    .setDeviceName("Pixel_7_API_34")
+    .setApp("/abs/path/to/app-debug.apk")     // OR setAppPackage + setAppActivity
+    .setAppPackage("com.example.app")
+    .setAppActivity(".MainActivity")
+    .setNoReset(false)                         // wipe app data between sessions
+    .setNewCommandTimeout(Duration.ofSeconds(120));
+```
+
+```java
+// iOS
+XCUITestOptions options = new XCUITestOptions()
+    .setPlatformName("iOS")
+    .setAutomationName("XCUITest")
+    .setDeviceName("iPhone 15")
+    .setPlatformVersion("17.5")
+    .setApp("/abs/path/to/MyApp.app")          // .app for simulator, .ipa for device
+    .setBundleId("com.example.MyApp");
+```
+
+Common capabilities worth knowing: `app` (install + launch a build), `appPackage`/`appActivity` (Android, launch an already-installed app), `bundleId` (iOS equivalent), `noReset`/`fullReset` (state handling), `udid` (target a specific real device), `newCommandTimeout` (server kills the session if idle this long), `language`/`locale` (localization testing), `autoGrantPermissions` (Android) / `autoAcceptAlerts` (iOS).
+
+<div class="callout warn">
+  <div class="ct">Watch out: noReset vs fullReset</div>
+  <code>noReset=true</code> keeps app data between sessions (fast, but tests can leak state). <code>fullReset=true</code> uninstalls and reinstalls every time (clean, but slow). Default behaviour clears app data without reinstalling. Pick deliberately — flaky "works locally" bugs often trace back to leftover state.
+</div>
+
+## The Appium Inspector
+
+The **Appium Inspector** is a standalone GUI that connects to a running Appium session, renders the live UI hierarchy, and lets you click any element to see its attributes (resource-id, accessibility id, class, text, bounds) and the suggested locators. Use it to discover stable locators and to debug "element not found" — if the Inspector can't see it, your test won't either (e.g. the element is inside a WebView, or rendered with a custom canvas).
+
+## Locator strategies for mobile
+
+Order of preference — top is most stable/portable, bottom is most brittle:
+
+```java
+// 1. Accessibility ID — PREFERRED. Maps to content-desc (Android) / accessibility
+//    identifier (iOS). Cross-platform, set by devs, also aids real accessibility.
+driver.findElement(AppiumBy.accessibilityId("login_button"));
+
+// 2. ID — Android resource-id (com.example:id/login) or iOS name. Fast, stable.
+driver.findElement(AppiumBy.id("com.example.app:id/login"));
+
+// 3. Android UiAutomator — powerful UiSelector queries, incl. scrolling search
+driver.findElement(AppiumBy.androidUIAutomator(
+    "new UiSelector().text(\"Sign in\")"));
+
+// 4. iOS Predicate String — fast native query
+driver.findElement(AppiumBy.iOSNsPredicateString(
+    "type == 'XCUIElementTypeButton' AND name == 'login'"));
+
+// 5. iOS Class Chain — hierarchical, faster than xpath for deep trees
+driver.findElement(AppiumBy.iOSClassChain(
+    "**/XCUIElementTypeButton[`name == \"login\"`]"));
+
+// 6. XPath — last resort. Slow on mobile (whole tree serialized) and brittle.
+driver.findElement(AppiumBy.xpath("//android.widget.Button[@text='Sign in']"));
+```
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Push your devs to add accessibility ids. One locator strategy then works on both platforms, your tests double as an accessibility check, and you escape XPath entirely. XPath on mobile is genuinely slow because the driver must serialize the entire view hierarchy on every query.
+</div>
+
+## Native vs hybrid vs mobile-web — and context switching
+
+- **Native** — built with platform SDKs (Kotlin/Swift). Full device access; locate with native strategies.
+- **Hybrid** — native shell hosting web content in a `WebView`. You must **switch context** from native into the webview to use web locators (CSS/web XPath).
+- **Mobile web** — a site in Chrome/Safari. Test like web but on a mobile viewport; you still launch through Appium (set `browserName`).
+
+```java
+// Hybrid: list contexts, switch into the WebView, do web automation, switch back
+Set<String> contexts = driver.getContextHandles();   // [NATIVE_APP, WEBVIEW_com.example]
+for (String ctx : contexts) {
+    if (ctx.contains("WEBVIEW")) { driver.context(ctx); break; }
+}
+driver.findElement(AppiumBy.cssSelector("#email")).sendKeys("a@b.com");
+driver.context("NATIVE_APP");   // back to native
+```
+
+Android webview context switching needs a matching **ChromeDriver** (Appium 2 can auto-download it). iOS uses the system WebKit debugger. Always wait for the webview context to appear — it is not present until the WebView has loaded.
+
+## Gestures — W3C Actions and `mobile:` commands
+
+The legacy `TouchAction` API is **deprecated**. Use either the **W3C Actions API** (portable, low-level) or driver-specific **`mobile:` execute commands** (concise, recommended for common gestures).
+
+```java
+// Tap at coordinates via W3C Actions
+PointerInput finger = new PointerInput(PointerInput.Kind.TOUCH, "finger");
+Sequence tap = new Sequence(finger, 1)
+    .addAction(finger.createPointerMove(Duration.ZERO, Viewport, x, y))
+    .addAction(finger.createPointerDown(PointerInput.MouseButton.LEFT.asArg()))
+    .addAction(finger.createPointerUp(PointerInput.MouseButton.LEFT.asArg()));
+driver.perform(List.of(tap));
+```
+
+```java
+// Long press via W3C: down, pause, up
+Sequence longPress = new Sequence(finger, 1)
+    .addAction(finger.createPointerMove(Duration.ZERO, Viewport, x, y))
+    .addAction(finger.createPointerDown(PointerInput.MouseButton.LEFT.asArg()))
+    .addAction(new Pause(finger, Duration.ofSeconds(2)))
+    .addAction(finger.createPointerUp(PointerInput.MouseButton.LEFT.asArg()));
+driver.perform(List.of(longPress));
+```
+
+```java
+// Much simpler: mobile: execute commands (driver-specific)
+driver.executeScript("mobile: scrollGesture", Map.of(
+    "left", 100, "top", 300, "width", 400, "height", 800,
+    "direction", "down", "percent", 1.0));
+
+driver.executeScript("mobile: swipeGesture", Map.of(
+    "left", 100, "top", 600, "width", 400, "height", 400,
+    "direction", "up", "percent", 0.75));
+
+driver.executeScript("mobile: longClickGesture", Map.of(
+    "elementId", ((RemoteWebElement) el).getId(), "duration", 2000));
+```
+
+On iOS the equivalents are `mobile: swipe`, `mobile: scroll`, `mobile: tap`, `mobile: pinch`. Prefer scrolling **to an element** (Android `scrollIntoView` via UiAutomator, or `mobile: scroll` with a predicate on iOS) over blind coordinate swipes.
+
+## Waits
+
+Mobile UIs animate and load asynchronously — **never** use `Thread.sleep`. Use explicit waits.
+
+```java
+WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(15));
+WebElement btn = wait.until(
+    ExpectedConditions.elementToBeClickable(AppiumBy.accessibilityId("login_button")));
+btn.click();
+```
+
+You may also set an implicit wait once (`driver.manage().timeouts().implicitlyWait(...)`), but don't mix implicit and explicit waits on the same element — the timeouts compound unpredictably. Explicit waits with `ExpectedConditions` are the professional default.
+
+## A full working test (Java + TestNG)
+
+```java
+public class LoginTest {
+    private AppiumDriver driver;
+
+    @BeforeClass
+    public void setUp() throws MalformedURLException {
+        UiAutomator2Options options = new UiAutomator2Options()
+            .setDeviceName("Pixel_7_API_34")
+            .setApp(System.getProperty("user.dir") + "/apps/app-debug.apk")
+            .setAppPackage("com.example.app")
+            .setAppActivity(".MainActivity")
+            .setAutoGrantPermissions(true)
+            .setNewCommandTimeout(Duration.ofSeconds(120));
+
+        driver = new AndroidDriver(new URL("http://127.0.0.1:4723"), options);
+    }
+
+    @Test
+    public void successfulLogin() {
+        WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(15));
+
+        driver.findElement(AppiumBy.accessibilityId("username_field"))
+              .sendKeys("demo_user");
+        driver.findElement(AppiumBy.accessibilityId("password_field"))
+              .sendKeys("Secret123!");
+        driver.findElement(AppiumBy.accessibilityId("login_button")).click();
+
+        WebElement welcome = wait.until(ExpectedConditions.visibilityOfElementLocated(
+            AppiumBy.accessibilityId("welcome_banner")));
+
+        Assert.assertTrue(welcome.isDisplayed(), "User should reach the home screen");
+    }
+
+    @AfterClass
+    public void tearDown() {
+        if (driver != null) driver.quit();   // always quit to free the session
+    }
+}
+```
+
+Run the Appium server first (`appium`), have an emulator booted, then run the test class with Maven/Gradle.
+
+## Emulator/simulator vs real device
+
+- **Emulators/simulators** — cheap, fast, easy to spin up in CI, parallelizable. Best for early/functional testing. They cannot reproduce real sensors, true performance, OEM skins or flaky networks. iOS simulators run `.app` builds and are far faster than booting a real iPhone.
+- **Real devices** — catch performance, battery, camera/GPS/biometrics, push notifications, OEM customizations and real network behaviour. Use a small in-house set plus a **cloud farm** (BrowserStack App Automate, Sauce Labs, LambdaTest) for breadth across OS versions and screen sizes without owning the hardware.
+
+## Appium 2 — drivers and plugins
+
+Appium 2 split the monolith: the core is just a protocol router, and **drivers** (uiautomator2, xcuitest, espresso, mac2, windows) plus **plugins** are installed and versioned independently via `appium driver`/`appium plugin`. Useful plugins: **images** (find elements by image match), **relaxed-caps**, **execute-driver**. This means you must explicitly install your drivers (a common first-run surprise for people upgrading from Appium 1).
+
+## Interview questions & model answers
+
+**Q1. Explain Appium's architecture end to end.**
+Appium is client/server. The test client sends HTTP requests in the W3C WebDriver JSON protocol to the Appium server (Node.js). The server loads a platform driver based on the capabilities and translates each command into the native automation framework — UiAutomator2 on Android, XCUITest on iOS — which acts on the app on the device/emulator. Results flow back up the same path. Appium is essentially a protocol translator over native engines.
+
+**Q2. Why is accessibility id the preferred locator on mobile?**
+It's cross-platform (maps to content-desc on Android and accessibility identifier on iOS), it's explicitly set by developers so it's stable across UI refactors, it's fast, and it doubles as a real accessibility attribute. The same locator string then works in both Android and iOS test code. XPath, by contrast, is slow on mobile because the driver serializes the entire view hierarchy per query, and it breaks on any layout change.
+
+**Q3. How do you automate a hybrid app's WebView?**
+Get the context handles, find the `WEBVIEW_*` context, switch into it with `driver.context(...)`, then use standard web locators (CSS). Switch back to `NATIVE_APP` for native steps. On Android a matching ChromeDriver is required (Appium 2 can auto-manage it); always wait for the webview context to appear before switching.
+
+**Q4. TouchAction is deprecated — how do you swipe or long-press now?**
+Two modern options: the W3C Actions API using `PointerInput`/`Sequence` (portable, low-level — move, pointer down, pause, pointer up), or driver-specific `mobile:` execute commands like `mobile: swipeGesture`, `mobile: scrollGesture`, `mobile: longClickGesture` on Android and `mobile: swipe`/`mobile: scroll` on iOS. I prefer `mobile:` commands for common gestures because they're concise and reliable, and W3C Actions when I need precise multi-touch control.
+
+**Q5. noReset vs fullReset — what's the difference and when do you use each?**
+`noReset=true` preserves app data/state between sessions — fast, good when login state is expensive to recreate, but risks cross-test contamination. `fullReset=true` uninstalls and reinstalls the app each session — fully clean but slow. The default clears app data without reinstalling. I default to a clean state per suite for isolation and only use `noReset` for speed when I've controlled state another way.
+
+**Q6. Why is XPath discouraged on mobile and what do you use instead?**
+Because each XPath query forces the driver to dump and serialize the full UI tree, which is slow and gets worse on deep hierarchies, and the expressions break on layout changes. Use accessibility id or platform id first; for dynamic searches use `androidUIAutomator` (with `scrollIntoView`) on Android and `iOSNsPredicateString` or `iOSClassChain` on iOS — all native and far faster.
+
+**Q7. How do you handle waits in Appium?**
+Explicit waits with `WebDriverWait` + `ExpectedConditions` (visibility, clickability). Never `Thread.sleep`, because it's both slow and flaky. Avoid mixing implicit and explicit waits on the same element since their timeouts compound. I also set a reasonable `newCommandTimeout` so the server doesn't kill long-running sessions.
+
+**Q8. What changed in Appium 2 that affects your setup?**
+Appium 2 modularized the project: the core is just the protocol server, and drivers (uiautomator2, xcuitest, etc.) and plugins are installed/updated separately via `appium driver install` / `appium plugin install`. Vendor capabilities now require the `appium:` prefix, and the language clients moved to the Options classes (`UiAutomator2Options`, `XCUITestOptions`). The biggest gotcha is that no drivers ship by default — a fresh install can't automate anything until you install one.
+
+## Common mistakes
+
+- **Using `Thread.sleep` instead of explicit waits** — the #1 source of mobile flakiness and slow suites.
+- **Forgetting to install drivers in Appium 2** — `appium` runs but every session fails until `appium driver install uiautomator2`/`xcuitest`.
+- **Relying on XPath** — slow and brittle; push for accessibility ids instead.
+- **Not switching context for hybrid apps** — native locators silently fail to find WebView elements that are clearly visible.
+- **Mixing implicit and explicit waits** — compounding timeouts cause unpredictable delays.
+- **Ignoring state with `noReset`** — leftover login/app data makes tests pass locally and fail in CI (or vice versa).
+- **Not calling `driver.quit()`** — leaked sessions tie up the server and devices, breaking later runs.
+- **Hardcoding coordinates for gestures** — different screen sizes break absolute taps/swipes; prefer element-relative or percentage-based gestures.
+- **Skipping the Appium Inspector** — guessing at locators wastes hours the Inspector would save in minutes.
+
+<div class="callout tip">
+  <div class="ct">Scope it right</div>
+  One working Appium test on an emulator, plus the ability to explain the architecture and locator trade-offs above, is enough to credibly claim mobile automation in an interview. Depth beats breadth here.
+</div>

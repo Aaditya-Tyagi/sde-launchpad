@@ -1,0 +1,68 @@
+---
+import BaseLayout from '../../../layouts/BaseLayout.astro';
+import { getCollection } from 'astro:content';
+import { TRACKS } from '../../../data/curriculum';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const PROGRAM = 'qa';
+const programTracks = TRACKS.filter((t) => t.program === PROGRAM);
+const lessons = (await getCollection('lessons')).filter((l) => !l.data.draft);
+const byTrack = (tid: string) => lessons.filter((l) => l.data.track === tid).sort((a, b) => a.data.order - b.data.order);
+---
+<BaseLayout title="Learn · QA · Automation Launchpad" active="tracks" program={PROGRAM}>
+  <div class="wrap" style="padding-top:28px">
+    <h1>QA learning tracks</h1>
+    <p class="sub">Everything from testing fundamentals to AI-assisted automation, with explanations, code and cheat sheets. Pick a track or use ⌘K to jump anywhere.</p>
+    {programTracks.map((t) => {
+      const items = byTrack(t.id);
+      return (
+        <section style="margin-top:30px">
+          <div class="row" style="justify-content:space-between;align-items:baseline">
+            <h2>{t.icon} {t.name}</h2>
+            <span class="muted" style="font-size:13px" data-track-prog={t.id}></span>
+          </div>
+          <p class="sub" style="margin-top:4px">{t.blurb}</p>
+          <div class="grid cols-2" style="margin-top:14px">
+            {items.map((l) => (
+              <a class="tcard" href={`${base}/lessons/${l.id}`} style="padding:14px 16px">
+                <div class="row" style="justify-content:space-between;align-items:flex-start">
+                  <h3 style="margin:0;font-size:15.5px">{l.data.title}</h3>
+                  <span class="mastery" data-mastery={l.id}><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+                </div>
+                <p style="margin-top:6px;font-size:13px">{l.data.summary}</p>
+                <div class="row" style="margin-top:10px;gap:6px">
+                  {l.data.priority && <span class={`pill p-${l.data.priority}`}>{l.data.priority}</span>}
+                  {l.data.difficulty && <span class={`pill p-${l.data.difficulty}`}>{l.data.difficulty}</span>}
+                  <span class="tag">⏱ {l.data.est}m</span>
+                  <span class="tag" data-done-tag={l.id}></span>
+                </div>
+              </a>
+            ))}
+            {items.length === 0 && <p class="muted">Lessons coming in this track.</p>}
+          </div>
+        </section>
+      );
+    })}
+  </div>
+  <script define:vars={{ trackIds: programTracks.map((t) => t.id), lessonsByTrack: Object.fromEntries(programTracks.map((t) => [t.id, lessons.filter((l) => l.data.track === t.id).map((l) => l.id)])) }}>
+    const store = window.SDE2;
+    try { localStorage.setItem('launchpad:lastPath', 'qa'); } catch (e) {}
+    function paint() {
+      const done = store.allDone();
+      document.querySelectorAll('[data-mastery]').forEach((el) => {
+        const m = store.mastery(el.dataset.mastery);
+        el.querySelectorAll('.dot').forEach((d, i) => d.classList.toggle('on', i < m));
+      });
+      document.querySelectorAll('[data-done-tag]').forEach((el) => {
+        el.textContent = done[el.dataset.doneTag] ? '✓ done' : '';
+        el.style.color = 'var(--accent-2)';
+      });
+      trackIds.forEach((tid) => {
+        const ids = lessonsByTrack[tid] || [];
+        const d = ids.filter((id) => done[id]).length;
+        const lbl = document.querySelector(`[data-track-prog="${tid}"]`);
+        if (lbl) lbl.textContent = ids.length ? `${d}/${ids.length} done` : '';
+      });
+    }
+    store.onChange(paint); paint();
+  </script>
+</BaseLayout>

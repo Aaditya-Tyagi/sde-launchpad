@@ -1,0 +1,52 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+<BaseLayout title="Mistakes Log · SDE-2 Launchpad" active="mistakes">
+  <div class="wrap" style="padding-top:28px;max-width:760px">
+    <h1>Mistakes log</h1>
+    <p class="sub">Every problem or question you miss goes here with the one insight that would have unblocked you. Re-read it before every interview — this is the highest-ROI document in your whole prep.</p>
+
+    <div class="panel" style="margin-top:18px">
+      <div class="grid cols-2">
+        <div class="field"><label>Problem / question</label><input id="mProblem" type="text" placeholder="e.g. Course Schedule (detect cycle)" /></div>
+        <div class="field"><label>Tags (comma-separated)</label><input id="mTags" type="text" placeholder="graphs, topo-sort" /></div>
+      </div>
+      <div class="field" style="margin-top:10px"><label>What went wrong</label><input id="mWhat" type="text" placeholder="Tried DFS without tracking the recursion stack → false cycles." /></div>
+      <div class="field" style="margin-top:10px"><label>Key insight (the fix)</label><input id="mInsight" type="text" placeholder="Use 3 states: unvisited / in-progress / done. A back-edge to in-progress = cycle." /></div>
+      <div class="row" style="margin-top:12px"><button class="btn btn-primary" id="addBtn">＋ Add to log</button><span class="muted" style="font-size:12.5px" id="count"></span></div>
+    </div>
+
+    <div class="row" style="margin-top:18px"><input id="search" type="text" placeholder="🔎 Filter your log…" style="max-width:320px" /></div>
+    <div id="list" style="margin-top:12px"></div>
+  </div>
+
+  <script>
+    const store = window.SDE2;
+    const el = (id) => document.getElementById(id);
+    function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+    function render() {
+      const q = (el('search').value || '').toLowerCase();
+      const items = store.mistakes().filter((m) => !q || (m.problem + ' ' + (m.what || '') + ' ' + (m.insight || '') + ' ' + (m.tags || []).join(' ')).toLowerCase().includes(q));
+      el('count').textContent = store.mistakes().length + ' logged';
+      if (!items.length) { el('list').innerHTML = `<div class="panel" style="text-align:center;color:var(--muted)">${store.mistakes().length ? 'No matches.' : 'Nothing logged yet. Add your first miss above.'}</div>`; return; }
+      el('list').innerHTML = items.map((m) => `
+        <div class="panel" style="margin-bottom:10px">
+          <div class="row" style="justify-content:space-between">
+            <b style="font-size:15px">${esc(m.problem)}</b>
+            <button class="btn" data-del="${m.id}" style="padding:2px 8px">✕</button>
+          </div>
+          ${m.what ? `<div style="margin-top:6px;font-size:14px"><span style="color:var(--hot)">Went wrong:</span> ${esc(m.what)}</div>` : ''}
+          ${m.insight ? `<div style="margin-top:4px;font-size:14px"><span style="color:var(--accent-2)">Insight:</span> ${esc(m.insight)}</div>` : ''}
+          <div class="row" style="margin-top:8px;gap:6px">${(m.tags || []).filter(Boolean).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}<span class="muted" style="font-size:11px;margin-left:auto">${esc(m.date)}</span></div>
+        </div>`).join('');
+      document.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => { if (confirm('Delete this entry?')) { store.delMistake(b.dataset.del); render(); } }));
+    }
+    el('addBtn').addEventListener('click', () => {
+      const problem = el('mProblem').value.trim(); if (!problem) { el('mProblem').focus(); return; }
+      store.addMistake({ problem, what: el('mWhat').value.trim(), insight: el('mInsight').value.trim(), tags: el('mTags').value.split(',').map((s) => s.trim()).filter(Boolean) });
+      ['mProblem', 'mWhat', 'mInsight', 'mTags'].forEach((i) => el(i).value = ''); render();
+    });
+    el('search').addEventListener('input', render);
+    store.onChange(render); render();
+  </script>
+</BaseLayout>

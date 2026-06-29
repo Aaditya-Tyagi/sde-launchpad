@@ -1,0 +1,197 @@
+---
+title: "Sliding Window"
+track: dsa
+summary: "Fixed and variable windows over a sequence — turn O(n·k) substring/subarray scans into O(n)."
+order: 3
+est: 28
+difficulty: medium
+priority: must
+tags: [sliding-window, strings, arrays]
+whyAsked: "Any 'longest/shortest/contains substring or subarray with property X' question is a window problem. Recognizing it instantly is the signal interviewers want."
+followUps:
+  - "How do you decide when to shrink the window?"
+  - "Fixed vs variable window — how does the code differ?"
+  - "Why can't sliding window handle subarrays with negative numbers?"
+  - "How do you track 'all required characters present' efficiently?"
+resources:
+  - { label: "NeetCode: Sliding Window", url: "https://neetcode.io/practice" }
+---
+import ArrayViz from '../../../components/ArrayViz.astro';
+
+A sliding window maintains a contiguous range `[left, right]` and slides it across the sequence, expanding and contracting so each element is visited at most a constant number of times → O(n).
+
+## When to reach for it — recognition triggers
+
+- "**Longest / shortest / maximum / minimum** contiguous subarray or substring with property X".
+- "**Window of size k**" or "every k consecutive elements".
+- "Contains all characters of T" / "at most K distinct" / "no repeats".
+- The property is **monotonic as the window grows** (adding elements only makes it more/less valid) — this is what makes shrinking correct.
+- Brute force enumerates all subarrays in O(n²) and the subarrays are contiguous.
+
+<div class="callout key">
+  <div class="ct">Pattern trigger</div>
+  "Longest/shortest contiguous run with property X" → sliding window. Grow with <code>right</code>; shrink with <code>left</code> when invalid; track the best as you go. Contiguous + monotonic property is the prerequisite.
+</div>
+
+## Variable window — expand then shrink (the template)
+
+The right pointer grows the window; when the window violates the constraint, the left pointer shrinks it until valid again.
+
+<ArrayViz algo="sliding-window" />
+
+```js
+// Generic variable-window template
+function variableWindow(arr) {
+  let left = 0, best = 0;
+  const state = new Map();             // whatever you need to test validity
+  for (let right = 0; right < arr.length; right++) {
+    // 1. include arr[right] in the window
+    add(state, arr[right]);
+    // 2. shrink from the left while the window is invalid
+    while (!valid(state)) {
+      remove(state, arr[left]);
+      left++;
+    }
+    // 3. window [left..right] is now valid → update the answer
+    best = Math.max(best, right - left + 1);
+  }
+  return best;
+}
+```
+
+The key insight: each pointer only moves **forward**, never back. Even though it looks like a nested process, total work is at most 2n moves → O(n).
+
+## Fixed window — slide a constant size k
+
+When the window size is fixed, add the entering element and remove the leaving one each step:
+
+```js
+// Max sum of any window of size k.  O(n) time, O(1) space
+function maxSum(nums, k) {
+  let sum = 0;
+  for (let i = 0; i < k; i++) sum += nums[i];   // first window
+  let best = sum;
+  for (let i = k; i < nums.length; i++) {
+    sum += nums[i] - nums[i - k];   // add new, drop old
+    best = Math.max(best, sum);
+  }
+  return best;
+}
+```
+
+## Worked examples
+
+### Longest Substring Without Repeating Characters
+
+Track the last index of each char; when a repeat appears inside the window, jump `left` past it.
+
+```js
+// O(n) time, O(min(n, alphabet)) space
+function lengthOfLongest(s) {
+  const lastSeen = new Map();
+  let left = 0, best = 0;
+  for (let right = 0; right < s.length; right++) {
+    const c = s[right];
+    if (lastSeen.has(c) && lastSeen.get(c) >= left) {
+      left = lastSeen.get(c) + 1;   // shrink past the duplicate in one jump
+    }
+    lastSeen.set(c, right);
+    best = Math.max(best, right - left + 1);
+  }
+  return best;
+}
+```
+
+Idea: the `>= left` check is critical — a stale index outside the current window must be ignored.
+**Time** O(n) · **Space** O(min(n, alphabet)).
+
+### Longest Repeating Character Replacement
+
+Find the longest window where, after replacing at most `k` characters, all are the same. A window is valid when `windowSize - maxFreq <= k`.
+
+```js
+// O(n) time, O(1) space (26 letters)
+function characterReplacement(s, k) {
+  const count = new Map();
+  let left = 0, maxFreq = 0, best = 0;
+  for (let right = 0; right < s.length; right++) {
+    const c = s[right];
+    count.set(c, (count.get(c) || 0) + 1);
+    maxFreq = Math.max(maxFreq, count.get(c));
+    while (right - left + 1 - maxFreq > k) {   // too many chars to replace
+      count.set(s[left], count.get(s[left]) - 1);
+      left++;
+    }
+    best = Math.max(best, right - left + 1);
+  }
+  return best;
+}
+```
+
+Idea: `windowSize - maxFreq` is the number of chars we'd have to replace. We never need to decrement `maxFreq` because we only care about the longest window ever seen — a smaller `maxFreq` can't grow the answer.
+**Time** O(n) · **Space** O(1).
+
+### Minimum Window Substring — variable window with a need-map
+
+Find the smallest window of `s` containing all characters of `t` (with multiplicity). Expand to satisfy, then shrink to minimize.
+
+```js
+// O(|s| + |t|) time, O(|t|) space
+function minWindow(s, t) {
+  if (t.length > s.length) return '';
+  const need = new Map();
+  for (const c of t) need.set(c, (need.get(c) || 0) + 1);
+  let required = need.size;            // distinct chars still needed
+  let left = 0, formed = 0;
+  let best = [Infinity, 0, 0];         // [length, l, r]
+  const window = new Map();
+  for (let right = 0; right < s.length; right++) {
+    const c = s[right];
+    window.set(c, (window.get(c) || 0) + 1);
+    if (need.has(c) && window.get(c) === need.get(c)) formed++;
+    while (formed === required) {       // valid → try to shrink
+      if (right - left + 1 < best[0]) best = [right - left + 1, left, right];
+      const lc = s[left];
+      window.set(lc, window.get(lc) - 1);
+      if (need.has(lc) && window.get(lc) < need.get(lc)) formed--;
+      left++;
+    }
+  }
+  return best[0] === Infinity ? '' : s.slice(best[1], best[2] + 1);
+}
+```
+
+Idea: `formed` counts how many *distinct* required chars are fully satisfied. We only shrink while the window is valid, capturing the smallest valid window each time.
+**Time** O(|s| + |t|) · **Space** O(|t|).
+
+## Complexity & why it beats brute force
+
+Enumerating all subarrays/substrings is O(n²) (or O(n²·k) if you re-scan each). The window amortizes: every element enters the window once (via `right`) and leaves at most once (via `left`), so the total pointer movement is O(n). Space is whatever the validity check needs — usually O(alphabet) or O(distinct).
+
+## Edge cases & common bugs
+
+- **Negative numbers** break the "sum subarray" window — growing the window can *decrease* the sum, so shrinking logic is no longer monotonic. Use a prefix-sum map instead.
+- **Stale indices** (Longest Substring) — always verify the last-seen index is `>= left` before jumping.
+- **Off-by-one window size** — it's `right - left + 1`, not `right - left`.
+- **Empty / `k > n`** — guard before building the first fixed window.
+- **Shrink condition placement** — shrink *after* including `right`, and update the answer at the right moment (after shrink for "longest valid", inside the valid loop for "shortest valid").
+- **Forgetting to update the answer** when the loop exits with a still-valid window.
+
+## Interview tips & questions
+
+- Interviewers probe: "When do you shrink versus when do you record the answer?" — longest problems record *after* restoring validity; shortest problems record *while* valid.
+- "Why not sliding window for subarray-sum-with-negatives?" — name the monotonicity requirement.
+- Mention the O(1) space win for fixed-alphabet count maps.
+
+| Problem | Difficulty | Window |
+|---|---|---|
+| [Best Time to Buy/Sell Stock](https://leetcode.com/problems/best-time-to-buy-and-sell-stock/) | Easy | variable (min-so-far) |
+| [Longest Substring Without Repeating](https://leetcode.com/problems/longest-substring-without-repeating-characters/) | Medium | variable |
+| [Longest Repeating Char Replacement](https://leetcode.com/problems/longest-repeating-character-replacement/) | Medium | variable + count |
+| [Permutation in String](https://leetcode.com/problems/permutation-in-string/) | Medium | fixed window + count match |
+| [Minimum Window Substring](https://leetcode.com/problems/minimum-window-substring/) | Hard | variable + need-map |
+
+<div class="callout tip">
+  <div class="ct">Template</div>
+  Variable: for each <code>right</code>, add element; <code>while (invalid) shrink left</code>; update best. Fixed: build first k, then each step <code>sum += in - out</code>.
+</div>

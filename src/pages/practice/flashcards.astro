@@ -1,0 +1,112 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { getCollection } from 'astro:content';
+import { TRACKS } from '../../data/curriculum';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const lessons = (await getCollection('lessons')).filter((l) => !l.data.draft);
+const cards = lessons.map((l) => ({
+  id: l.id,
+  title: l.data.title,
+  track: TRACKS.find((t) => t.id === l.data.track)?.name || l.data.track,
+  summary: l.data.summary,
+  why: l.data.whyAsked || '',
+  url: `/lessons/${l.id}`,
+}));
+---
+<BaseLayout title="Flashcards · SDE-2 Launchpad" active="flash">
+  <div class="wrap" style="padding-top:28px;max-width:760px">
+    <h1>Spaced-repetition flashcards</h1>
+    <p class="sub">Recall beats re-reading. Cards you add resurface on a schedule (SM-2): the better you know one, the longer until you see it again. Grade yourself honestly.</p>
+
+    <div class="panel" style="margin-top:18px;text-align:center" id="emptyState">
+      <p class="muted">No cards due right now.</p>
+      <p class="muted" style="font-size:13px;margin-top:6px">Add cards from any lesson with <b>＋ Add to flashcards</b>, or seed a set below.</p>
+      <div class="row" style="justify-content:center;margin-top:14px">
+        <button class="btn btn-primary" id="seedAll">Add all lessons as cards</button>
+        <a class="btn" href={`${base}/tracks`}>Browse lessons</a>
+      </div>
+    </div>
+
+    <div class="panel hide" id="cardArea" style="margin-top:18px">
+      <div class="row" style="justify-content:space-between">
+        <span class="tag" id="cardTrack"></span>
+        <span class="muted" style="font-size:12.5px" id="cardCount"></span>
+      </div>
+      <div style="min-height:130px;display:flex;flex-direction:column;justify-content:center;text-align:center;padding:20px 6px">
+        <div style="font-size:13px;color:var(--faint);text-transform:uppercase;letter-spacing:.5px" id="cardSide">Question</div>
+        <div style="font-size:20px;font-weight:700;margin-top:10px" id="cardFront"></div>
+        <div class="hide" id="cardBack" style="margin-top:14px;color:var(--muted);font-size:15px"></div>
+      </div>
+      <div class="center" id="showRow">
+        <button class="btn btn-primary" id="flipBtn">Show answer</button>
+      </div>
+      <div class="hide" id="gradeRow">
+        <p class="muted center" style="font-size:12.5px;margin-bottom:8px">How well did you recall it?</p>
+        <div class="row" style="justify-content:center">
+          <button class="btn grade" data-q="0" style="border-color:var(--hot);color:var(--hot)">Again</button>
+          <button class="btn grade" data-q="3">Hard</button>
+          <button class="btn grade" data-q="4" style="border-color:var(--accent);color:var(--accent)">Good</button>
+          <button class="btn grade" data-q="5" style="border-color:var(--accent-2);color:var(--accent-2)">Easy</button>
+        </div>
+        <p class="center" style="margin-top:12px"><a id="openLesson" href="#" style="font-size:13px">Open full lesson →</a></p>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:14px">
+      <div class="row" style="justify-content:space-between">
+        <span class="muted" style="font-size:13px">Your deck</span>
+        <span class="muted" style="font-size:13px" id="deckStats"></span>
+      </div>
+    </div>
+  </div>
+
+  <script define:vars={{ cards, base }}>
+    const store = window.SDE2;
+    const byId = Object.fromEntries(cards.map((c) => [c.id, c]));
+    let queue = [], idx = 0, flipped = false;
+
+    const el = (id) => document.getElementById(id);
+    function buildQueue() {
+      const due = store.dueCards().filter((id) => byId[id]);
+      queue = due; idx = 0; flipped = false;
+    }
+    function paintStats() {
+      const all = store.allCards().filter((id) => byId[id]);
+      const due = store.dueCards().filter((id) => byId[id]);
+      el('deckStats').textContent = `${all.length} cards · ${due.length} due today`;
+    }
+    function show() {
+      paintStats();
+      if (!queue.length || idx >= queue.length) {
+        el('cardArea').classList.add('hide');
+        el('emptyState').classList.remove('hide');
+        const all = store.allCards().filter((id) => byId[id]);
+        el('emptyState').querySelector('p').textContent = all.length ? '🎉 All caught up — no cards due. Come back tomorrow.' : 'No cards yet.';
+        return;
+      }
+      el('emptyState').classList.add('hide');
+      el('cardArea').classList.remove('hide');
+      const c = byId[queue[idx]];
+      el('cardTrack').textContent = c.track;
+      el('cardCount').textContent = `Card ${idx + 1} / ${queue.length}`;
+      el('cardFront').textContent = c.title;
+      el('cardBack').innerHTML = `<b>In one line:</b> ${c.summary}` + (c.why ? `<br><br><span style="color:var(--faint)">Why it's asked:</span> ${c.why}` : '');
+      el('openLesson').href = base + c.url;
+      flipped = false;
+      el('cardBack').classList.add('hide');
+      el('cardSide').textContent = 'Question';
+      el('showRow').classList.remove('hide');
+      el('gradeRow').classList.add('hide');
+    }
+    el('flipBtn').addEventListener('click', () => {
+      flipped = true; el('cardBack').classList.remove('hide'); el('cardSide').textContent = 'Answer';
+      el('showRow').classList.add('hide'); el('gradeRow').classList.remove('hide');
+    });
+    document.querySelectorAll('.grade').forEach((b) => b.addEventListener('click', () => {
+      store.scheduleSrs(queue[idx], Number(b.dataset.q)); idx++; show();
+    }));
+    el('seedAll').addEventListener('click', () => { cards.forEach((c) => store.trackSrs(c.id)); buildQueue(); show(); });
+
+    buildQueue(); show();
+  </script>
+</BaseLayout>

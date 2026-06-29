@@ -1,0 +1,135 @@
+---
+title: "The feed problem: applying the framework"
+track: system-design
+summary: "A deep concept walkthrough of the feed: fan-out on write vs read, the hybrid for celebrities, ranking, cursor pagination, caching, and the client-side concerns (virtualization, optimistic UI)."
+order: 7
+est: 28
+difficulty: medium
+priority: deep
+tags: [feed, fan-out, pagination, caching, ranking, virtualization]
+whyAsked: "The feed is the canonical design — it exercises fan-out strategy, the hot-key/celebrity problem, ranking, pagination, caching, and list performance all at once. It's the best vehicle for showing the framework in action."
+followUps:
+  - "Fan-out on write vs read — and what do you do for celebrities?"
+  - "Why cursor pagination instead of offset?"
+  - "How do you rank the feed without making reads slow?"
+  - "How do you keep scrolling smooth with thousands of items?"
+  - "How do you handle a new post arriving while the user scrolls?"
+resources:
+  - { label: "GreatFrontend", url: "https://www.greatfrontend.com/system-design" }
+  - { label: "ByteByteGo", url: "https://bytebytego.com/" }
+---
+
+The feed is the design that pulls every concept together. Rather than re-deriving a full Twitter system (the [hld](/lessons/hld) track has the complete end-to-end design), this is a **teaching walkthrough**: how to *apply the framework* to the feed problem and reason about the one decision that defines it — **fan-out**.
+
+## 1. Requirements (where the decision is born)
+
+- **Functional:** post; view a home feed of people you follow, newest/ranked first; like/comment.
+- **Non-functional:** **read-heavy** (~100:1 reads:writes), feed loads `p99 < 200ms`, eventual consistency fine (a post appearing a few seconds late is OK), some accounts have **tens of millions of followers** (this single fact reshapes the design).
+
+That last point — celebrities — is the crux. Note it loudly; it's why the naive answer fails.
+
+## 2. The core decision: fan-out on write vs read
+
+When user A posts, how does it reach A's followers' feeds?
+
+**Fan-out on write (push).** At post time, write a copy of the post id into **every follower's precomputed feed** (a per-user list, usually in Redis).
+- *Read:* O(1) — the feed is already assembled; just read the list. Perfect for read-heavy.
+- *Write:* O(followers) — a celebrity with 50M followers triggers **50M writes** per post. Bursty, expensive, and slow to fully propagate ("fan-out storm").
+
+**Fan-out on read (pull).** Store each post once. At read time, fetch the recent posts of everyone the user follows and merge them.
+- *Write:* O(1) — just store the post.
+- *Read:* expensive — query N followees, merge and sort, on every feed load. Painful given reads dominate 100:1.
+
+```
+PUSH (write):  post → [fan out copies] → follower1_feed, follower2_feed, ... (cheap reads)
+PULL (read):   post → stored once;   feed = merge(recent posts of all followees) at read time
+```
+
+**The hybrid (the real answer).**
+- **Push** for normal users (most accounts) — their followers' feeds are precomputed, so reads stay O(1).
+- **Pull** for celebrities — *don't* fan out their posts to 50M feeds. Instead, at read time, take a user's precomputed feed (from the people they follow who use push) and **merge in** the recent posts of the few celebrities they follow.
+- This caps the worst-case write (no 50M-write storms) and keeps reads fast (only a handful of celebrity timelines to merge).
+
+This is a direct application of the **hot-key problem** from [classics](/lessons/system-design/classics): a celebrity is a hot key, and the fix is to *not* treat them like everyone else.
+
+| | Push | Pull | Hybrid |
+|---|---|---|---|
+| Read cost | O(1) | high (merge N) | O(1) + few merges |
+| Write cost | O(followers) | O(1) | bounded (skip celebs) |
+| Celebrity safe? | no (storm) | yes | **yes** |
+| Verdict | small/medium accounts | write-heavy / few reads | **production default** |
+
+## 3. Ranking without slowing reads
+
+A chronological feed is just a sorted merge. A **ranked** feed (engagement-predicted order) adds a scoring step. To keep reads fast, **precompute**: a background pipeline scores candidate posts (recency, affinity, predicted engagement) and writes the ranked list into the user's feed cache, so the read path stays a cheap list fetch. Heavy ranking happens off the read path — same instinct as CQRS: a read-optimized materialized view fed asynchronously.
+
+## 4. API & pagination: cursor, not offset
+
+`GET /feed?cursor=abc&limit=20` → items + a `nextCursor`.
+
+Use **cursor-based** pagination. Why not `offset`/`page`? The feed changes under you — new posts arrive at the head — so `offset=20` shifts and you get **duplicates or skipped items**. A cursor anchors to a stable position (e.g. an opaque encoding of the last item's id/score), so paging stays consistent even as the head changes, and it's O(1) to resume instead of scanning past N rows.
+
+## 5. Caching & storage
+
+- **Per-user feed cache** in Redis (a list/sorted-set of post ids) — the precomputed result of fan-out. Reads hit this, not the DB.
+- **Post store** (the source of truth) keyed by post id; **hydrate** the feed by batch-fetching post bodies for the ids (one `IN (...)` query, avoiding N+1).
+- **Media** in object storage + CDN, never in the DB.
+- **Eventual consistency** is acceptable — a post taking a second to appear in all feeds is fine, which is exactly what lets fan-out be async.
+
+## 6. The client side (frontend concerns)
+
+Walk it with the [frontend framework](/lessons/system-design/frontend-framework).
+
+**Loading on scroll.** An **IntersectionObserver** on a sentinel near the list bottom triggers the next page fetch — jank-free vs scroll listeners. Show a skeleton while fetching; stop when the API signals no more items.
+
+**Virtualization — the client performance core.** A feed may hold thousands of items but the user sees ~10. Rendering all of them destroys memory and scroll FPS. **Windowing** renders only visible items (plus a buffer) and recycles DOM nodes (`react-window`, RN `FlashList`).
+
+**State.** *Server state*: cache pages keyed by cursor (navigating back doesn't refetch; dedupe in-flight) via React Query/SWR. *UI state*: open menus, optimistic like counts.
+
+**Interactions & real-time.**
+- **Optimistic updates:** on Like, bump the count and flip the icon immediately, fire the request, **roll back** on failure — the UI feels instant.
+- **New posts while scrolling:** don't shove the viewport down. Show a "▲ New posts" pill that prepends them when tapped, preserving scroll position (which cursor pagination makes safe).
+
+**Edge states:** loading skeletons, an empty state ("No posts yet"), an error state with retry, graceful slow-network handling — every async region needs all three.
+
+## 7. Capacity sanity check
+
+100M DAU, 10 feed reads/day → ~1B reads/day ≈ ~12K QPS avg, ~30K peak — served almost entirely from the Redis feed cache, not the DB. Writes: ~10M posts/day ≈ ~120 QPS, but each normal post fans out to its followers (the real write amplification), which is why fan-out is async via a queue and celebrities are excluded. The numbers confirm: optimize the read path with precomputed cached feeds; keep fan-out off the request path.
+
+## Interview questions & model answers
+
+**Q: Fan-out on write vs read — which do you pick?**
+"Hybrid. Push for normal users so their followers' feeds are precomputed and reads are O(1) — right for a read-heavy system. But pushing a celebrity's post to 50M feeds is a write storm, so for celebrities I pull: store once and merge their recent posts into a follower's feed at read time. That caps write cost and keeps reads fast."
+
+**Q: Why is the celebrity case special?**
+"It's the hot-key problem. A uniform push scheme assumes bounded follower counts; a celebrity breaks that with tens of millions of writes per post. Special-casing them with pull avoids the storm — recognizing that the uniform scheme fails under skew is the key insight."
+
+**Q: Why cursor pagination, not offset?**
+"The feed mutates at the head, so offset shifts between requests, causing duplicate or skipped items. A cursor anchors to a stable position so paging stays consistent, and it resumes in O(1) instead of scanning past N rows."
+
+**Q: How do you rank without slowing reads?**
+"Precompute. A background pipeline scores posts (recency, affinity, predicted engagement) and writes the ranked list into the user's feed cache, so the read path stays a cheap list fetch. Heavy scoring is off the read path — a read-optimized materialized view, CQRS-style."
+
+**Q: How do you keep scrolling smooth with thousands of items?**
+"Virtualization — render only the ~10 visible items plus a buffer and recycle DOM nodes, paired with cursor pagination loaded via an IntersectionObserver sentinel, stable keys, and memoized rows. Never render the full list."
+
+**Q: A new post arrives while the user is reading — what happens?**
+"I don't jump the viewport. I show a 'New posts' pill and prepend them only when the user taps it, preserving scroll position — which cursor pagination makes safe since older items keep their anchors."
+
+**Q: How does a post actually get into a follower's feed?**
+"On post, enqueue a fan-out job (async, off the request path). A worker writes the post id into each follower's Redis feed list — except celebrities, who are merged at read time. On feed read, I fetch the id list from cache and batch-hydrate the post bodies with a single `IN` query to avoid N+1."
+
+## Common mistakes / what weak candidates do
+
+- **Choosing pure fan-out on write** and forgetting the celebrity write storm.
+- **Choosing pure fan-out on read** in a 100:1 read-heavy system, making the hot path expensive.
+- **Using offset pagination** for a feed that changes at the head.
+- **Doing ranking on the read path**, blowing the latency budget.
+- **Fanning out synchronously** in the request instead of via a queue.
+- **N+1 hydration** — one query per post id instead of a batched `IN`.
+- **Rendering the whole list** client-side instead of virtualizing; forgetting optimistic UI and loading/empty/error states.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Feeds are read-heavy, so I precompute: <b>hybrid fan-out</b> — push to normal followers' cached feeds for O(1) reads, pull-and-merge for celebrities to avoid write storms (the hot-key fix). Fan-out is async via a queue, ranking is precomputed into a materialized feed, pagination is cursor-based so the head can change safely, and feeds are served from Redis with batched hydration. On the client: virtualization, cursor-loaded pages via an IntersectionObserver, optimistic likes, a 'new posts' pill, and loading/empty/error states throughout."
+</div>

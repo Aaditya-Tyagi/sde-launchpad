@@ -1,0 +1,224 @@
+---
+title: "Pick one language (and set up your toolchain)"
+track: qa-programming
+summary: "Java vs Python vs JavaScript/TypeScript for automation — honest tradeoffs, ecosystem reality, the job market, and a full toolchain setup for the path you pick."
+order: 1
+est: 18
+difficulty: easy
+priority: must
+tags: [setup, java, python, javascript, typescript]
+whyAsked: "Employers want depth in one language, not a tour of three. Choosing well and explaining the tradeoff shows engineering judgment, not just tool familiarity."
+followUps:
+  - "Why did you choose your language for automation?"
+  - "Which language pairs best with Playwright? With Selenium + REST Assured?"
+  - "How would you justify Python over Java to a Java-heavy team?"
+resources:
+  - { label: "Test Automation University", url: "https://testautomationu.applitools.com/" }
+  - { label: "Playwright", url: "https://playwright.dev/" }
+  - { label: "Selenium docs", url: "https://www.selenium.dev/documentation/" }
+  - { label: "pytest docs", url: "https://docs.pytest.org/" }
+  - { label: "REST Assured", url: "https://rest-assured.io/" }
+---
+
+The single biggest beginner mistake is dabbling in three languages and being weak in all of them. Pick **one**, go deep, ship a portfolio repo in it. An interviewer would much rather hear "I know Java deeply and can read Python" than "I've touched all three."
+
+This lesson is about making that choice with your eyes open, then getting a real toolchain running so you can write code *today*.
+
+## The honest comparison
+
+There is no objectively "best" language for automation — there is the one that matches your target jobs and your learning speed. Here is the real tradeoff, not the marketing version.
+
+| Dimension | Java | Python | JavaScript / TypeScript |
+|---|---|---|---|
+| Ramp-up speed | Slowest (verbose, static types, build tools) | Fastest (clean syntax, REPL) | Fast, but async + JS quirks bite beginners |
+| Job listings (esp. India/enterprise) | **Most SDET/automation roles** | Strong and growing | Growing, concentrated in product/web companies |
+| UI automation | Selenium, Playwright-Java | Selenium, Playwright | **Playwright, Cypress (native)** |
+| API automation | REST Assured (excellent) | requests + pytest (excellent) | Playwright APIRequest, supertest |
+| Unit/test runner | JUnit 5, TestNG | pytest (best DX of the three) | Jest, Playwright Test, Vitest |
+| Build/dependency | Maven / Gradle | pip / Poetry / uv | npm / pnpm |
+| Best when... | The team's app + existing suite is Java | You want speed and breadth (UI+API+data) | The team is JS/front-end heavy |
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Match your target companies' stack. Open 15 job posts for the roles you want and count which language appears most. That count is your answer — not a blog post's opinion.
+</div>
+
+## Decision guidance: which should I pick?
+
+- **Targeting enterprise / service companies / most "SDET" or "Automation Engineer" listings (very common in India):** pick **Java**. It dominates Selenium + REST Assured + TestNG shops, and many existing suites you'll inherit are Java.
+- **Want the fastest path to writing real tests, or you'll do a mix of UI + API + data/back-end checks:** pick **Python**. pytest is the most pleasant test runner around, and `requests` makes API testing trivial.
+- **The team is React/Node front-end heavy, or the role is "QA in a product engineering team":** pick **TypeScript** with **Playwright Test**. You share a language and repo with the devs, which is a real day-to-day advantage.
+
+A reasonable safe default if you have no target yet: **Java if you're in an enterprise/India-heavy market, Python otherwise.** Both have massive ecosystems and you won't be stuck.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Don't pick a language because a YouTuber loves it. Pick it because the jobs you're applying to use it. The "wrong" choice for your market costs you interviews even if your code is good.
+</div>
+
+## Ecosystem at a glance (what you'll actually import)
+
+```text
+Java path:    JUnit 5 / TestNG  +  Selenium / Playwright-Java  +  REST Assured  +  Maven
+Python path:  pytest            +  Playwright / Selenium       +  requests       +  pip/uv
+JS/TS path:   Playwright Test / Cypress / Jest  +  supertest    +  npm
+```
+
+- **TestNG vs JUnit 5 (Java):** TestNG has long been popular in automation for its data providers, groups, and parallel config via XML. JUnit 5 has caught up (parameterized tests, parallel execution, tags) and is the modern default for new projects. Either is fine; know that TestNG still shows up a lot in legacy automation suites.
+- **pytest (Python):** fixtures, parametrize, and plugins (`pytest-xdist` for parallel, `pytest-html` for reports) make it the gold standard for Python test DX.
+- **Playwright Test (JS/TS):** runner, browser automation, assertions, parallelism, and tracing in one tool — the reason TS is so attractive for new UI suites.
+
+## Set up your toolchain today
+
+Pick your path and run the setup. The goal: a green test running locally before you close this lesson.
+
+### Java path
+
+```bash
+# 1) Install a JDK (21 LTS) and Maven. On macOS with Homebrew:
+brew install openjdk@21 maven
+java -version    # confirm 21
+mvn -version
+
+# 2) Create a Maven project
+mvn archetype:generate -DgroupId=com.example.qa \
+  -DartifactId=qa-starter -DarchetypeArtifactId=maven-archetype-quickstart \
+  -DinteractiveMode=false
+cd qa-starter
+```
+
+Add JUnit 5 to `pom.xml` dependencies, then write your first test:
+
+```java
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+class FirstTest {
+    @Test
+    void addsNumbers() {
+        assertEquals(4, 2 + 2);
+    }
+}
+```
+
+```bash
+mvn test     # should print BUILD SUCCESS
+```
+
+Use **IntelliJ IDEA** (Community Edition is free) — its Java + Maven support is unmatched.
+
+### Python path
+
+```bash
+# 1) Install Python 3.12+ and create a virtual environment
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+
+# 2) Install pytest (and Playwright if you want UI later)
+pip install pytest requests
+```
+
+```python
+# test_first.py  — pytest auto-discovers files named test_*.py
+def test_adds_numbers():
+    assert 2 + 2 == 4
+```
+
+```bash
+pytest -q       # should print 1 passed
+```
+
+Use **PyCharm** or **VS Code** (with the Python extension).
+
+### JavaScript / TypeScript path
+
+```bash
+# 1) Install Node.js 20+ (LTS), then scaffold Playwright Test
+npm init -y
+npm init playwright@latest      # generates config + example spec
+npx playwright test             # runs the example suite
+```
+
+```ts
+import { test, expect } from '@playwright/test';
+
+test('adds numbers', () => {
+  expect(2 + 2).toBe(4);
+});
+```
+
+Use **VS Code** with the Playwright Test extension (gives you a run/debug gutter).
+
+## Don't skip Git — your repo is your portfolio
+
+Every test you write goes in a repo, and that repo is what you show interviewers.
+
+```bash
+git init
+git add .
+git commit -m "First passing test"
+# create a repo on GitHub, then:
+git remote add origin https://github.com/<you>/qa-starter.git
+git push -u origin main
+```
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  You're "ready to start automating" the moment you can: read a file, loop over data, call a function, and define a class. You do not need to master the language first — you'll learn it fastest by automating real sites and APIs.
+</div>
+
+## The minimum you must be able to do
+
+If you can write these in your chosen language, start building a framework.
+
+```python
+# Python — read test data, loop, branch
+import json
+with open("users.json") as f:
+    users = json.load(f)
+for u in users:
+    if u["age"] >= 18:
+        print(u["name"], "is an adult")
+```
+
+```java
+// Java — same idea with Jackson
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.File;
+import java.util.List;
+
+ObjectMapper mapper = new ObjectMapper();
+List<User> users = mapper.readValue(new File("users.json"),
+        new com.fasterxml.jackson.core.type.TypeReference<List<User>>() {});
+for (User u : users) {
+    if (u.getAge() >= 18) System.out.println(u.getName() + " is an adult");
+}
+```
+
+## Interview questions & model answers
+
+**Q: Which language did you pick for automation and why?**
+A: I picked [language] because it matched my target companies' stack — most of the SDET roles I'm applying to use [Selenium + REST Assured in Java / pytest + Playwright in Python / Playwright in TypeScript]. Going deep in one language let me build a real framework and a portfolio repo, rather than being shallow in three.
+
+**Q: Java or Python for a brand-new automation team — how would you decide?**
+A: I'd look at the application's stack and the team's existing skills. If the product and devs are Java, I'd choose Java so I can reuse their build pipeline, libraries, and code review. If it's a polyglot or back-end-heavy product and we want speed, Python with pytest ramps faster and is excellent for API + data validation. The deciding factor is maintainability for *this* team, not language preference.
+
+**Q: Why is Playwright often paired with TypeScript?**
+A: Playwright is built by Microsoft with first-class TypeScript support — auto-completion, typed locators, and the Playwright Test runner are all native. If the front-end is already TS/React, the QA suite shares the language, tooling, and repo with developers, which lowers maintenance friction. Playwright also has Python and Java bindings, so TS isn't mandatory — it's just the smoothest combo.
+
+**Q: TestNG vs JUnit — what's the difference and which would you use?**
+A: Both are Java test runners. TestNG historically led in automation for data providers, test groups, dependencies, and XML-driven parallel execution. JUnit 5 has since added parameterized tests, tags, and parallel execution, so it's the modern default for new projects. I'd use JUnit 5 for greenfield work but I'm comfortable with TestNG because many existing suites use it.
+
+**Q: How important is Git for an automation engineer?**
+A: Essential. Test code is real code — it lives in version control, goes through pull requests and code review, and runs in CI. Beyond collaboration, my GitHub repos are my portfolio: they're concrete proof I can write maintainable framework code, not just record-and-playback.
+
+**Q: You know Java but the role uses Python. What do you do?**
+A: I'd be honest that my depth is in Java but emphasize that OOP, test design, API/UI automation concepts, and SQL all transfer directly — only the syntax changes. I'd show I can read Python and commit to ramping quickly, ideally bringing a small Python sample before the interview to prove it.
+
+## Common mistakes
+
+- **Learning three languages at once.** You end up unable to solve a real problem in any of them. Go deep in one.
+- **Choosing by hype instead of job listings.** The "best" language is the one that gets you interviews in your market.
+- **Treating test code as throwaway.** No Git, no structure, no review — then you can't show anything or maintain it. Test code is production code.
+- **Waiting until you "know the language" to start.** You learn fastest by automating real sites/APIs. Start with the minimum and grow.
+- **Ignoring the build tool.** Not understanding Maven/pip/npm means you can't manage dependencies or run in CI — a frequent stumbling block in interviews and on the job.

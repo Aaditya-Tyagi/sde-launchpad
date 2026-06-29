@@ -1,0 +1,154 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { getCollection } from 'astro:content';
+import { TRACKS, QA_PLAN } from '../../data/curriculum';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const qaTracks = TRACKS.filter((t) => t.program === 'qa');
+const qaTrackIds = new Set(qaTracks.map((t) => t.id));
+const lessons = (await getCollection('lessons')).filter((l) => !l.data.draft && qaTrackIds.has(l.data.track));
+const countFor = (tid: string) => lessons.filter((l) => l.data.track === tid).length;
+
+const planTaskIds: string[] = [];
+QA_PLAN.forEach((w) => w.items.forEach((it, i) => { if (!it.lesson) planTaskIds.push(`qatask:${w.id}:${i}`); }));
+const lessonIds = lessons.map((l) => l.id);
+---
+<BaseLayout title="12-Week Plan · QA · Automation Launchpad" active="plan" program="qa">
+  <div class="wrap" style="padding-top:28px">
+    <h1>Your 12-week plan</h1>
+    <p class="sub">From manual tester to full-fledged automation engineer / SDET. Check items off as you go — clicking a linked item opens the full lesson. Progress saves automatically in this browser.</p>
+
+    <!-- dashboard -->
+    <div class="panel" style="margin-top:18px;display:flex;gap:22px;flex-wrap:wrap;align-items:center">
+      <div class="ring">
+        <svg width="96" height="96">
+          <circle cx="48" cy="48" r="42" stroke="var(--panel-4)" stroke-width="8" fill="none"></circle>
+          <circle id="ringFill" cx="48" cy="48" r="42" stroke="var(--accent-2)" stroke-width="8" fill="none" stroke-linecap="round" stroke-dasharray="263.9" stroke-dashoffset="263.9"></circle>
+        </svg>
+        <div class="pct" id="pctText">0%</div>
+      </div>
+      <div style="flex:1;min-width:220px">
+        <b id="doneCount" style="font-size:18px">0 / 0 done</b><br />
+        <span class="muted" id="encourage">Start with Week 1 — tools installed and first test running in days.</span>
+        <div class="bar" style="margin-top:10px;max-width:320px"><i id="lvlBar"></i></div>
+        <span class="muted" style="font-size:12px" id="lvlText">Level 1</span>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <a class="btn btn-primary" href={`${base}/qa/tracks`}>Browse all topics →</a>
+        <a class="btn" href={`${base}/lessons/qa-cheatsheets/cheatsheets`}>📑 Cheat sheets</a>
+      </div>
+    </div>
+
+    <!-- track cards -->
+    <h2 style="margin-top:34px">Learning tracks</h2>
+    <div class="grid cols-3" style="margin-top:14px">
+      {qaTracks.map((t) => (
+        <a class="tcard" href={`${base}/tracks/${t.id}`}>
+          <div class="ticon">{t.icon}</div>
+          <h3>{t.name}</h3>
+          <p>{t.blurb}</p>
+          <div class="row" style="margin-top:12px;justify-content:space-between">
+            <span class="muted" style="font-size:12px">{countFor(t.id)} lessons</span>
+            <span class="muted" style="font-size:12px" data-track-prog={t.id}>0%</span>
+          </div>
+          <div class="bar" style="margin-top:6px"><i data-track-bar={t.id}></i></div>
+        </a>
+      ))}
+    </div>
+
+    <!-- 12-week plan -->
+    <h2 style="margin-top:38px">The week-by-week plan</h2>
+    <p class="sub">A recommended path at ~1.5–2 hrs/day. Check items off as you go — clicking a linked item opens the full lesson.</p>
+    <div style="margin-top:16px">
+      {QA_PLAN.map((w) => (
+        <div class="panel" style="margin-bottom:12px;padding:0;overflow:hidden">
+          <div class="wk-head" data-wk={w.id} style="display:flex;align-items:center;gap:12px;padding:16px 18px;cursor:pointer">
+            <span class="badge" style="background:rgba(78,222,163,.15);color:var(--accent-2)">{w.title.split('—')[0].trim()}</span>
+            <div style="flex:1">
+              <b>{w.title.split('—')[1]?.trim()}</b>
+              <div class="muted" style="font-size:12.5px">{w.focus}</div>
+            </div>
+            <span class="muted" style="font-size:12px" data-wk-prog={w.id}></span>
+            <span class="chev" data-chev={w.id}>▶</span>
+          </div>
+          <div class="wk-body hide" data-wk-body={w.id} style="padding:0 18px 14px">
+            <div class="callout tip" style="margin:4px 0 12px"><div class="ct">Goal</div>{w.goal}</div>
+            {w.items.map((it, i) => {
+              const tid = it.lesson ? it.lesson : `qatask:${w.id}:${i}`;
+              return (
+                <label class="plan-item" data-id={tid} style="display:flex;gap:10px;align-items:flex-start;padding:9px 2px;border-top:1px solid var(--line)">
+                  <input type="checkbox" data-check={tid} />
+                  <span style="flex:1">
+                    {it.lesson ? <a href={`${base}/lessons/${it.lesson}`}>{it.text}</a> : it.text}
+                    {it.lesson && <span class="tag" style="margin-left:8px">lesson</span>}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+
+  <script define:vars={{ lessonIds, planTaskIds, trackIds: qaTracks.map((t) => t.id), lessonsByTrack: Object.fromEntries(qaTracks.map((t) => [t.id, lessons.filter((l) => l.data.track === t.id).map((l) => l.id)])) }}>
+    const store = window.SDE2;
+    try { localStorage.setItem('launchpad:lastPath', 'qa'); } catch (e) {}
+    const allIds = lessonIds.concat(planTaskIds);
+
+    function paint() {
+      const doneAll = store.allDone();
+      const done = allIds.filter((id) => doneAll[id]).length;
+      const total = allIds.length;
+      const pct = total ? Math.round((done / total) * 100) : 0;
+      const circ = 263.9;
+      document.getElementById('ringFill').style.strokeDashoffset = String(circ - (circ * pct) / 100);
+      document.getElementById('pctText').textContent = pct + '%';
+      document.getElementById('doneCount').textContent = `${done} / ${total} done`;
+      const enc = document.getElementById('encourage');
+      enc.textContent = pct === 0 ? 'Start with Week 1 — tools installed and first test running in days.'
+        : pct < 30 ? 'Good start. Code a little every day and push it to GitHub.'
+        : pct < 70 ? 'Past the hump — build a real framework and add API + CI.'
+        : pct < 100 ? 'Strong. Learn an AI testing tool and polish your portfolio.'
+        : 'Curriculum complete. Go get the SDET offer. 🚀';
+
+      const lp = store.levelProgress();
+      document.getElementById('lvlBar').style.width = lp.pct + '%';
+      document.getElementById('lvlText').textContent = `Level ${lp.lvl} · ${lp.xp} XP`;
+
+      trackIds.forEach((tid) => {
+        const ids = lessonsByTrack[tid] || [];
+        const d = ids.filter((id) => doneAll[id]).length;
+        const p = ids.length ? Math.round((d / ids.length) * 100) : 0;
+        const lbl = document.querySelector(`[data-track-prog="${tid}"]`);
+        const bar = document.querySelector(`[data-track-bar="${tid}"]`);
+        if (lbl) lbl.textContent = p + '%';
+        if (bar) bar.style.width = p + '%';
+      });
+
+      document.querySelectorAll('[data-check]').forEach((el) => { el.checked = !!doneAll[el.dataset.check]; });
+      document.querySelectorAll('[data-wk-prog]').forEach((el) => {
+        const body = document.querySelector(`[data-wk-body="${el.dataset.wkProg}"]`);
+        const boxes = [...body.querySelectorAll('[data-check]')];
+        const d = boxes.filter((b) => b.checked).length;
+        el.textContent = `${d}/${boxes.length}`;
+      });
+    }
+
+    document.querySelectorAll('[data-check]').forEach((el) => {
+      el.addEventListener('change', () => { store.setDone(el.dataset.check, el.checked); paint(); });
+    });
+    document.querySelectorAll('[data-wk]').forEach((h) => {
+      h.addEventListener('click', (e) => {
+        if (e.target.closest('a')) return;
+        const id = h.dataset.wk;
+        document.querySelector(`[data-wk-body="${id}"]`).classList.toggle('hide');
+        const chev = document.querySelector(`[data-chev="${id}"]`);
+        chev.style.transform = chev.style.transform ? '' : 'rotate(90deg)';
+      });
+    });
+
+    store.onChange(paint);
+    paint();
+  </script>
+</BaseLayout>

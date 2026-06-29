@@ -1,0 +1,210 @@
+---
+title: "Cloud & Deployment: Docker, Kubernetes, Serverless & GitOps"
+track: backend
+summary: "How modern services actually ship: containers vs VMs, multi-stage Docker builds, Kubernetes objects and probes, rolling/blue-green/canary deploys, serverless tradeoffs, infrastructure-as-code, GitOps reconciliation, and the 12-factor principles that make all of it work."
+order: 10
+est: 32
+difficulty: medium
+priority: must
+tags: [docker, kubernetes, serverless, gitops, terraform, 12factor, deployment]
+whyAsked: "Shipping is half the job. This shows whether you understand how code gets from a commit to running, scaled, and self-healing in production — containers, orchestration, deploy strategies, and the operational principles (12-factor, IaC, GitOps) that keep it reproducible and rollback-able."
+followUps:
+  - "Containers vs VMs — what's actually shared?"
+  - "What problem does Kubernetes solve that Docker alone doesn't?"
+  - "Liveness vs readiness vs startup probe?"
+  - "Blue-green vs canary — when each?"
+  - "When does serverless NOT fit?"
+resources:
+  - { label: "Docker docs", url: "https://docs.docker.com/" }
+  - { label: "Kubernetes concepts", url: "https://kubernetes.io/docs/concepts/" }
+  - { label: "The Twelve-Factor App", url: "https://12factor.net/" }
+---
+
+Writing the code is half the job; **getting it running, scaled, and self-healing in production** is the other half. This lesson is the deployment pipeline end to end — package it in a container, orchestrate it with Kubernetes, ship it safely, and keep the whole thing reproducible with infrastructure-as-code and GitOps. It pairs with [observability](/lessons/backend/observability) (you can't operate what you can't see) and [distributed systems](/lessons/backend/distributed-systems) (everything here is a distributed system).
+
+## Containers vs VMs
+
+A **VM** virtualizes hardware — each guest ships a full OS kernel on a hypervisor, so it's heavy (GBs, boots in minutes) but strongly isolated. A **container** virtualizes the OS — processes share the host kernel, isolated by Linux namespaces and cgroups, so it's lightweight (MBs, starts in milliseconds).
+
+| | Virtual machine | Container |
+|---|---|---|
+| **Isolation** | Full OS + hypervisor (strong) | Shared kernel, namespaces/cgroups |
+| **Size / boot** | GBs, seconds-to-minutes | MBs, milliseconds |
+| **Density** | Few per host | Many per host |
+| **Use it for** | Hard multi-tenant isolation, mixed OSes | App packaging, microservices, CI |
+
+The container win is **reproducibility**: the image bundles app + dependencies + runtime, so "works on my machine" becomes "works everywhere." A Docker image is built from **layers** — each Dockerfile instruction is a cached layer, so ordering matters (copy `package.json` and install deps *before* copying source, so a code change doesn't bust the dependency-install cache).
+
+## Dockerfiles: multi-stage, small, non-root
+
+The senior signals are a small final image and not running as root. **Multi-stage builds** compile in a fat builder stage, then copy only the artifact into a minimal runtime — the build toolchain never ships.
+
+```dockerfile
+# ---- build stage ----
+FROM golang:1.22 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download              # cached unless deps change
+COPY . .
+RUN CGO_ENABLED=0 go build -o /app ./cmd/server
+
+# ---- runtime stage ----
+FROM gcr.io/distroless/static:nonroot
+COPY --from=build /app /app
+USER nonroot:nonroot             # never run as root
+EXPOSE 8080
+ENTRYPOINT ["/app"]
+```
+
+**Distroless** (or `alpine`) shrinks the attack surface — no shell, no package manager, fewer CVEs. Run **image scanning** (Trivy, Grype) in CI to catch vulnerable base layers, and pin tags by digest, not floating `latest`.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Order Dockerfile layers <b>stable-to-volatile</b>: base, then dependency manifests + install, then source. A source edit should rebuild one layer, not re-download every dependency.
+</div>
+
+## Kubernetes: what it actually solves
+
+Docker runs *a* container; the moment you have dozens across many machines you need **scheduling** (where does each container run?), **self-healing** (restart crashes, replace dead nodes), **scaling**, **service discovery**, and **rolling updates**. That's Kubernetes — a declarative control loop: you describe desired state, controllers reconcile reality toward it.
+
+Core objects:
+
+| Object | What it is |
+|---|---|
+| **Pod** | Smallest unit — one or more co-located containers sharing network/storage |
+| **ReplicaSet** | Keeps N identical Pods alive |
+| **Deployment** | Manages ReplicaSets; gives you rolling updates and rollback |
+| **Service** | Stable virtual IP + DNS load-balancing across Pods (Pods are ephemeral) |
+| **Ingress** | HTTP(S) routing/TLS from outside into Services |
+| **ConfigMap / Secret** | Externalized config and credentials, injected as env or files |
+| **Namespace** | Logical partition for multi-tenant/multi-team isolation |
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: orders }
+spec:
+  replicas: 3
+  selector: { matchLabels: { app: orders } }
+  template:
+    metadata: { labels: { app: orders } }
+    spec:
+      containers:
+        - name: orders
+          image: registry.example.com/orders@sha256:abc123
+          ports: [{ containerPort: 8080 }]
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "256Mi" }
+          readinessProbe:
+            httpGet: { path: /ready, port: 8080 }
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+```
+
+**Resource requests vs limits**: requests drive scheduling (guaranteed share, used to pick a node); limits cap usage (exceed memory → OOM-killed, exceed CPU → throttled). Set both, or one greedy Pod starves its neighbors.
+
+**Probes** — get these straight, they're a favorite question:
+- **Liveness** — "is it deadlocked?" Fail → kill and restart the container.
+- **Readiness** — "can it serve traffic *now*?" Fail → pull it out of the Service's load-balancer rotation, but don't restart.
+- **Startup** — "has it finished booting?" Guards slow-starting apps so liveness doesn't kill them mid-boot.
+
+**HPA (Horizontal Pod Autoscaler)** scales replica count on observed CPU/memory or custom metrics. **Rolling updates** are the Deployment default: bring up new-version Pods, wait for readiness, drain old ones a few at a time (`maxSurge`/`maxUnavailable`) — zero downtime, and `kubectl rollout undo` reverts.
+
+## Deployment strategies
+
+| Strategy | How | Tradeoff |
+|---|---|---|
+| **Rolling** | Replace Pods incrementally | Zero-downtime default; mixed versions live briefly; slow rollback |
+| **Blue-green** | Two full environments, flip the router | Instant cutover + instant rollback; 2x infra cost during release |
+| **Canary** | Route 1% → 5% → 100% to the new version | Limits blast radius; needs good metrics + automation |
+| **Feature flags** | Ship code dark, toggle at runtime | Decouples deploy from release; per-user rollout; flag debt to clean up |
+
+The thread through all of them is **fast, safe rollback**. Blue-green flips the router back; canary halts and drains; flags flip off — no redeploy. Always have a rollback path *before* you ship.
+
+## Serverless / FaaS
+
+**Functions-as-a-Service** (AWS Lambda, Cloud Functions, Azure Functions) — you ship a function, the platform runs it on an event (HTTP, queue message, file upload, cron), **scales to zero** when idle, and you **pay per invocation**. No servers to patch, autoscaling is the platform's problem.
+
+It fits **spiky, event-driven, stateless** workloads: glue/ETL, webhooks, async jobs, low-traffic endpoints. It does **not** fit when:
+- **Cold starts** matter — an idle function pays a startup penalty (load runtime + your code) on the first request; bad for latency-sensitive paths.
+- **Long-running** work — platforms cap execution (e.g. Lambda 15 min); not for streaming or batch.
+- **Stateful / sticky** connections — functions are ephemeral; state goes to external stores, and DB connection pools get exhausted by fan-out.
+- **Predictable high traffic** — at scale, always-on containers are often cheaper than per-invocation pricing, and **vendor lock-in** (proprietary triggers/runtimes) is real.
+
+## IaC and GitOps
+
+**Infrastructure-as-Code** (Terraform, Pulumi) makes infra **declarative and version-controlled**: you describe the desired cloud (VPCs, clusters, DBs) in code, `plan` shows the diff, `apply` converges to it. It's **idempotent** (re-running changes nothing if already correct) and detects **drift** (someone clicked in the console; the next plan flags it). No more snowflake servers nobody can reproduce.
+
+**GitOps** extends that idea to deployments: **Git is the single source of truth for desired state**, and an in-cluster controller (**Argo CD**, **Flux**) continuously **reconciles** the cluster to match the repo.
+
+| | Push-based CI deploy | GitOps (pull-based) |
+|---|---|---|
+| **Trigger** | CI pipeline runs `kubectl apply` | Controller watches Git, pulls changes |
+| **Credentials** | CI holds cluster creds (broad blast radius) | Cluster pulls; no external creds needed |
+| **Drift** | Undetected until next deploy | Continuously corrected back to Git |
+| **Rollback** | Re-run an old pipeline | `git revert` — the diff is the deploy |
+| **Audit** | Scattered across CI logs | Every change is a reviewed Git commit |
+
+The GitOps payoff: every production change is an auditable, reviewed commit, and rollback is just reverting one. See [security](/lessons/backend/security) for why pull-based — not handing CI cluster credentials — shrinks the attack surface.
+
+## The 12-factor app
+
+The principles that make an app cloud-portable and deploy-friendly. The high-value ones:
+
+- **Config in the environment** — config (DB URLs, secrets, feature flags) lives in env vars, never committed. One build, many environments.
+- **Stateless processes** — store nothing in local memory/disk between requests; push state to a DB/cache/object store. This is what lets you scale horizontally and kill any instance freely.
+- **Backing services as attached resources** — a database, queue, or cache is a URL you swap by config, not hard-wired.
+- **Logs as event streams** — write to stdout/stderr; the platform aggregates and ships them. Don't manage log files. (See [observability](/lessons/backend/observability).)
+- **Dev/prod parity** — keep environments as similar as possible; containers make this near-free.
+- **Disposability** — fast startup, graceful shutdown (handle `SIGTERM`, drain in-flight work) so the orchestrator can move you anytime.
+- **Port binding** — the app is self-contained and exports HTTP by binding a port, no external web server required.
+
+<div class="callout tip">
+  <div class="ct">Why this matters</div>
+  Statelessness + config-in-env + disposability are precisely what Kubernetes and autoscalers assume. A 12-factor app drops into any orchestrator; a stateful, file-logging, config-baked-in app fights it at every turn.
+</div>
+
+## Managed vs self-hosted, regions, cost
+
+**Managed** (RDS, EKS, managed Kafka) trades money for offloaded ops — patching, backups, HA are the provider's job; **self-hosted** is cheaper at scale and avoids lock-in but you own everything. For availability, spread replicas across **availability zones** (independent failure domains in one region) and go **multi-region** only when you genuinely need DR or geo-latency — it multiplies complexity (data replication, consistency, cost). **Autoscaling** (HPA for Pods, cluster autoscaler for nodes, serverless scale-to-zero) matches capacity to load so you don't pay for idle peak. Right-size requests/limits and watch the bill — over-provisioned requests waste reserved capacity cluster-wide.
+
+## Interview questions & model answers
+
+**Q: Containers vs VMs — what's actually shared?**
+"A VM virtualizes hardware and ships a full guest OS kernel on a hypervisor — strong isolation but heavy, GBs and seconds to boot. A container virtualizes the OS: processes share the host kernel, isolated by namespaces and cgroups, so it's MBs and starts in milliseconds. You get far higher density and reproducible images. VMs win when you need hard multi-tenant isolation or different OSes."
+
+**Q: What does Kubernetes solve that Docker alone doesn't?**
+"Docker runs a container on one host. Once you have many containers across many machines you need scheduling, self-healing, scaling, service discovery, and rolling updates. Kubernetes is a declarative control loop — you describe desired state with Deployments and Services, and controllers continuously reconcile the cluster toward it, restarting crashes and replacing dead nodes automatically."
+
+**Q: Liveness vs readiness vs startup probe?**
+"Liveness asks 'is it wedged?' — fail and Kubernetes restarts the container. Readiness asks 'can it serve traffic now?' — fail and it's pulled from the Service's load balancer but not restarted, which is how you avoid sending requests to a Pod that's still warming up or briefly overloaded. Startup guards slow-booting apps so the liveness probe doesn't kill them before they finish initializing."
+
+**Q: Blue-green vs canary — when each?**
+"Blue-green runs two full environments and flips the router — instant cutover and instant rollback, but you pay for double infrastructure during the release; good when you want an atomic switch. Canary routes a small slice of traffic to the new version and ramps up while watching metrics — it limits blast radius and catches problems on 1% of users, but it needs solid metrics and automation. Canary for risky changes at scale, blue-green when you want a clean atomic flip."
+
+**Q: When does serverless NOT fit?**
+"Latency-sensitive paths, because cold starts add startup penalty on idle invocations. Long-running or streaming work, because platforms cap execution time. Stateful or connection-heavy workloads, because functions are ephemeral and fan-out exhausts DB connection pools. And predictable high traffic, where always-on containers are usually cheaper than per-invocation pricing, plus you take on vendor lock-in. Serverless shines for spiky, event-driven, stateless glue."
+
+**Q: What is GitOps and why pull-based?**
+"Git is the single source of truth for desired state, and an in-cluster controller like Argo CD or Flux continuously reconciles the cluster to match the repo. Pull-based means the cluster pulls changes instead of CI pushing with cluster credentials — smaller attack surface, automatic drift correction, every change is a reviewed commit, and rollback is just a git revert."
+
+**Q: Resource requests vs limits?**
+"Requests are what the scheduler guarantees and uses to place a Pod on a node; limits are the hard ceiling — exceed the memory limit and you're OOM-killed, exceed CPU and you're throttled. Set both so the scheduler can pack nodes safely and one greedy Pod can't starve its neighbors."
+
+## Common mistakes / what weak candidates do
+
+- **Calling a container a lightweight VM** — missing that it shares the host kernel, which is the whole point.
+- **Fat images** — no multi-stage build, shipping the compiler and `node_modules` dev deps; running as **root**.
+- **Floating `latest` tags** — non-reproducible deploys; pin by digest.
+- **No resource requests/limits** — the scheduler can't pack nodes and one Pod OOMs the whole node.
+- **Confusing liveness and readiness** — putting a dependency check in liveness so a transient DB blip restart-loops every Pod.
+- **Treating Pods as pets with stable IPs** — Pods are ephemeral; you talk to Services.
+- **Reaching for serverless** for latency-sensitive or long-running work, then being surprised by cold starts and timeouts.
+- **Baking config/secrets into the image** — breaks dev/prod parity and leaks credentials; use env/ConfigMap/Secret.
+- **No rollback plan** — deploying with no canary, no blue-green, and no `rollout undo` rehearsed.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Package the app in a small, non-root, <b>multi-stage</b> container; orchestrate with Kubernetes for scheduling, self-healing, and scaling; ship with <b>canary or blue-green</b> and a rehearsed rollback. <b>Serverless</b> for spiky stateless events, not latency-sensitive or long-running work. Keep infra in <b>Terraform</b> and deploys in <b>GitOps</b> so Git is the source of truth and rollback is a revert — all on a <b>12-factor</b> app that's stateless, configured by env, and logs to stdout."
+</div>

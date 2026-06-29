@@ -1,0 +1,296 @@
+---
+title: "The SDET coding round"
+track: qa-programming
+summary: "What SDET coding interviews actually ask — string and array problems, HashMap counting, recursion and Big-O — with 13 classic problems, each with a clean solution and a complexity note."
+order: 4
+est: 30
+difficulty: medium
+priority: must
+tags: [coding, algorithms, strings, arrays, big-o, hashmap]
+whyAsked: "Almost every SDET screen has a coding round. It's narrower than a full SWE round — they want clean, correct, well-tested code on common patterns, not hard graph/DP problems."
+followUps:
+  - "What's the time complexity of your solution?"
+  - "How would you test this function?"
+  - "Can you do it in one pass / O(n)?"
+  - "Reverse the words in a sentence without using split."
+resources:
+  - { label: "NeetCode (patterns)", url: "https://neetcode.io/" }
+  - { label: "LeetCode Top Interview 150", url: "https://leetcode.com/studyplan/top-interview-150/" }
+  - { label: "Big-O cheat sheet", url: "https://www.bigocheatsheet.com/" }
+---
+
+Almost every SDET role has a coding round. The good news: it's **narrower than a full SWE round**. They rarely ask hard dynamic programming or graph problems. They want to see that you can write **clean, correct, working code** on bread-and-butter problems — strings, arrays, HashMap counting, basic recursion — and reason about complexity. Bonus points if you naturally mention how you'd *test* the function (you're a tester, after all).
+
+## What SDET coding rounds expect vs full SWE rounds
+
+| | SDET round | Full SWE round |
+|---|---|---|
+| Typical difficulty | Easy → lower-Medium | Medium → Hard |
+| Common topics | Strings, arrays, HashMap, basic recursion | + trees, graphs, DP, advanced algorithms |
+| What they grade | Correctness, clean code, edge cases, "how would you test it" | + optimality, advanced data structures |
+| Language | Java or Python (your automation language) | Any |
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  For SDET, a clean O(n) HashMap solution to a string problem — plus naming the edge cases you'd test (empty, null, duplicates, unicode) — beats a clever one-liner you can't explain. Talk through your approach, then code.
+</div>
+
+## Big-O essentials (just enough)
+
+Big-O describes how runtime/space grows as input size `n` grows.
+
+| Notation | Name | Example |
+|---|---|---|
+| O(1) | constant | HashMap get/put, array index |
+| O(log n) | logarithmic | binary search |
+| O(n) | linear | single loop over n items |
+| O(n log n) | linearithmic | good sorting |
+| O(n²) | quadratic | nested loop over the same data |
+
+Two rules cover most interviews: a loop over `n` is O(n); a loop inside a loop over the same `n` is O(n²). A HashMap turns many O(n²) "search inside a loop" solutions into O(n).
+
+## String problems
+
+### 1. Reverse a string
+
+```python
+def reverse_string(s):
+    return s[::-1]          # O(n) time, O(n) space
+```
+
+```java
+String reversed = new StringBuilder(s).reverse().toString();  // O(n)
+```
+
+### 2. Reverse the words in a sentence
+
+```python
+def reverse_words(sentence):
+    return " ".join(sentence.split()[::-1])   # "hi there" -> "there hi"; O(n)
+```
+
+### 3. Check a palindrome
+
+```python
+def is_palindrome(s):
+    s = s.lower()
+    return s == s[::-1]      # O(n) time, O(n) space
+```
+
+Two-pointer version (O(1) extra space) — a common follow-up:
+
+```python
+def is_palindrome(s):
+    i, j = 0, len(s) - 1
+    while i < j:
+        if s[i] != s[j]:
+            return False
+        i += 1; j -= 1
+    return True             # O(n) time, O(1) space
+```
+
+### 4. Are two strings anagrams?
+
+```python
+from collections import Counter
+def is_anagram(a, b):
+    return Counter(a) == Counter(b)    # O(n) time, O(k) space (k = distinct chars)
+```
+
+```java
+// sort-based: O(n log n) — also acceptable
+char[] x = a.toCharArray(); char[] y = b.toCharArray();
+Arrays.sort(x); Arrays.sort(y);
+boolean anagram = Arrays.equals(x, y);
+```
+
+### 5. Character frequency count
+
+```python
+from collections import Counter
+def char_count(s):
+    return dict(Counter(s))     # {'a': 2, 'b': 1, ...}; O(n)
+```
+
+```java
+Map<Character, Integer> freq = new HashMap<>();
+for (char c : s.toCharArray())
+    freq.merge(c, 1, Integer::sum);     // O(n)
+```
+
+### 6. First non-repeating character
+
+```python
+from collections import Counter
+def first_unique(s):
+    counts = Counter(s)
+    for c in s:                 # iterate in order
+        if counts[c] == 1:
+            return c
+    return None                 # O(n) time, O(k) space
+```
+
+## Array & number problems
+
+### 7. Two Sum — return indices of two numbers adding to target
+
+```python
+def two_sum(nums, target):
+    seen = {}                       # value -> index
+    for i, n in enumerate(nums):
+        if target - n in seen:
+            return [seen[target - n], i]
+        seen[n] = i
+    return None                     # O(n) time, O(n) space (one pass with a HashMap)
+```
+
+This is the canonical "HashMap turns O(n²) into O(n)" problem — interviewers love it.
+
+### 8. Find the duplicate(s) in an array
+
+```python
+def find_duplicates(nums):
+    seen, dupes = set(), set()
+    for n in nums:
+        if n in seen:
+            dupes.add(n)
+        seen.add(n)
+    return list(dupes)              # O(n) time, O(n) space
+```
+
+### 9. Find the missing number (0..n, one missing)
+
+```python
+def missing_number(nums):
+    n = len(nums)
+    return n * (n + 1) // 2 - sum(nums)   # expected sum - actual sum; O(n) time, O(1) space
+```
+
+### 10. Max and min in one pass
+
+```python
+def max_min(nums):
+    lo = hi = nums[0]
+    for n in nums[1:]:
+        if n < lo: lo = n
+        elif n > hi: hi = n
+    return lo, hi                   # O(n) time, O(1) space
+```
+
+### 11. Second largest element
+
+```python
+def second_largest(nums):
+    first = second = float("-inf")
+    for n in nums:
+        if n > first:
+            second, first = first, n
+        elif first > n > second:
+            second = n
+    return second if second != float("-inf") else None   # O(n), O(1)
+```
+
+### 12. FizzBuzz
+
+```python
+def fizzbuzz(n):
+    for i in range(1, n + 1):
+        if i % 15 == 0: print("FizzBuzz")
+        elif i % 3 == 0: print("Fizz")
+        elif i % 5 == 0: print("Buzz")
+        else: print(i)              # O(n)
+```
+
+The classic warm-up. The trap: check `% 15` (or `% 3 and % 5`) *first*.
+
+## Sorting basics
+
+You rarely implement a sort, but you must know how to *use* one and its cost.
+
+```python
+nums = [3, 1, 2]
+nums.sort()                          # in place, ascending — O(n log n)
+sorted_desc = sorted(nums, reverse=True)
+people.sort(key=lambda p: p["age"])  # sort by a field
+```
+
+```java
+int[] a = {3, 1, 2};
+Arrays.sort(a);                      // O(n log n)
+list.sort(Comparator.comparingInt(p -> p.age));
+```
+
+Know that built-in sorts are O(n log n), comparison-based, and that you can supply a custom comparator/key — that covers nearly all SDET sorting questions.
+
+## Basic recursion
+
+Recursion = a function calling itself on a smaller input, with a **base case** to stop.
+
+### 13. Factorial and Fibonacci
+
+```python
+def factorial(n):
+    if n <= 1:            # base case
+        return 1
+    return n * factorial(n - 1)      # O(n) time, O(n) call stack
+
+def fib(n):
+    if n < 2:            # base cases: fib(0)=0, fib(1)=1
+        return n
+    return fib(n - 1) + fib(n - 2)   # O(2^n) naive — mention memoization to make it O(n)
+```
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Every recursion needs a base case, or it never stops (stack overflow). Naive recursive Fibonacci is exponential — if asked to optimize, add memoization (a dict cache) to drop it to O(n).
+</div>
+
+## Be a tester while you code
+
+This is your edge over a generic candidate. After writing a function, say how you'd test it:
+
+```python
+# two_sum edge cases worth naming out loud:
+assert two_sum([2, 7, 11, 15], 9) == [0, 1]   # happy path
+assert two_sum([3, 3], 6) == [0, 1]           # duplicates
+assert two_sum([1, 2], 10) is None            # no answer
+assert two_sum([], 5) is None                 # empty input
+```
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Always state edge cases: empty/null input, single element, duplicates, negatives, very large input, and unicode/whitespace for strings. Naming them shows test-design thinking even before you finish coding.
+</div>
+
+## Interview questions & model answers
+
+**Q: What's the time complexity of your Two Sum solution?**
+A: O(n) time and O(n) space. I make a single pass, and for each element I check the HashMap for its complement in O(1). The brute-force nested loop would be O(n²); the HashMap trades space for that speedup.
+
+**Q: Why use a HashMap so often in these problems?**
+A: HashMaps give O(1) average lookup/insert, which turns "search inside a loop" (O(n²)) into a single O(n) pass — counting frequencies, detecting duplicates, finding complements. It's the single most useful structure in SDET coding rounds.
+
+**Q: Reverse the words in a sentence without using a reverse built-in.**
+A: Split on whitespace into a list, then build the result by iterating from the last word to the first and joining with spaces. It's O(n) time. I'd test empty string, single word, and multiple spaces between words.
+
+**Q: How would you make naive recursive Fibonacci faster?**
+A: Memoize — cache results in a dict so each `fib(k)` is computed once, dropping it from O(2^n) to O(n) time. Or go iterative with two rolling variables for O(1) space.
+
+**Q: How do you find the missing number from 0..n in O(1) space?**
+A: Sum 0..n with the formula n(n+1)/2 and subtract the actual array sum; the difference is the missing number. O(n) time, O(1) space, and no extra structure.
+
+**Q: How would you test the palindrome function?**
+A: True cases ("racecar", single char, empty), false cases ("hello"), and edge handling — mixed case ("RaceCar"), spaces/punctuation if the spec says ignore them, and unicode. I'd parametrize these as test cases rather than one big test.
+
+**Q: When is O(n²) actually acceptable?**
+A: When n is small and guaranteed bounded, or when the clearer O(n²) solution is more readable and performance doesn't matter for the use case. For test utilities on small inputs, clarity can win — but I'd still note the better complexity exists.
+
+## Common mistakes
+
+- **Jumping straight to code** without restating the problem or naming edge cases — talk first.
+- **Off-by-one errors** in loops and two-pointer logic — check the boundaries explicitly.
+- **Using `==` for object/string equality in Java** instead of `.equals()`.
+- **Forgetting the base case** in recursion, or recursing without shrinking the input — infinite recursion.
+- **Modifying a collection while iterating it** — leads to errors or skipped elements; iterate a copy or collect then mutate.
+- **Ignoring empty/null input** — the most common crash and the easiest to prevent.
+- **Not mentioning complexity** — interviewers almost always ask; state it proactively.

@@ -1,0 +1,156 @@
+---
+title: "QA glossary & 'difference between' pairs"
+track: qa-cheatsheets
+summary: "60+ QA terms with one-line definitions plus the classic 'difference between X and Y' tables interviewers love — severity vs priority, smoke vs sanity, stub vs mock, and more."
+order: 2
+est: 15
+difficulty: easy
+priority: know
+tags: [cheatsheet, glossary, terminology, severity, priority]
+resources:
+  - { label: "ISTQB glossary", url: "https://glossary.istqb.org/" }
+---
+
+Skim this to lock in the vocabulary. Interviewers test whether you use terms precisely.
+
+## Process & lifecycle
+
+| Term | One-line definition |
+|---|---|
+| SDLC | Software Development Life Cycle — phases to build software (requirements → design → dev → test → deploy → maintain). |
+| STLC | Software Testing Life Cycle — testing phases (requirement analysis → planning → design → env setup → execution → closure). |
+| Verification | "Are we building the product right?" — reviews, static checks, no code execution. |
+| Validation | "Are we building the right product?" — actual execution/testing against requirements. |
+| Shift-left | Test earlier in the lifecycle (requirements, unit) to catch defects sooner and cheaper. |
+| Shift-right | Test in production — monitoring, canary, chaos, A/B. |
+| Agile | Iterative delivery in short sprints with continuous feedback. |
+| Sprint | Fixed-length iteration (1–4 weeks) producing a potentially shippable increment. |
+| DoR (Definition of Ready) | Criteria a story must meet before work starts. |
+| DoD (Definition of Done) | Criteria a story must meet to be considered complete. |
+| RTM | Requirements Traceability Matrix — maps requirements to test cases for coverage. |
+| Test plan | Document defining scope, approach, resources, schedule of testing. |
+| Test strategy | High-level org/project-wide testing approach. |
+| Entry/exit criteria | Conditions to start / stop a test phase. |
+
+## Test types & levels
+
+| Term | One-line definition |
+|---|---|
+| Smoke testing | Quick "build not broken" check of critical paths; gate before deeper testing. |
+| Sanity testing | Narrow, focused check that a specific fix/feature works after a change. |
+| Regression testing | Re-run existing tests to ensure new changes did not break old functionality. |
+| Retesting | Re-execute the exact failed case after a defect fix to confirm it is resolved. |
+| Functional testing | Validates features against functional requirements. |
+| Non-functional testing | Performance, security, usability, reliability, scalability. |
+| Unit testing | Test a single function/class in isolation (developer-level). |
+| Integration testing | Test interactions between modules/services. |
+| System testing | End-to-end test of the complete integrated system. |
+| UAT | User Acceptance Testing — business/users confirm it meets needs. |
+| E2E testing | Simulates real user flow across the full stack. |
+| Exploratory testing | Simultaneous learning, test design, and execution without pre-scripted cases. |
+| Ad-hoc testing | Informal, unstructured testing with no documentation. |
+| Black-box testing | Test from requirements/behavior, no knowledge of internals. |
+| White-box testing | Test using knowledge of internal code/structure. |
+| Gray-box testing | Combination — partial internal knowledge. |
+| Alpha / Beta testing | Internal pre-release / external real-user pre-release testing. |
+| A/B testing | Compare two variants with real users to measure impact. |
+| Load / Stress / Soak | Expected load / beyond-limit / sustained-over-time performance testing. |
+
+## Test design techniques
+
+| Term | One-line definition |
+|---|---|
+| EP (Equivalence Partitioning) | Group inputs into classes that behave the same; test one per class. |
+| BVA (Boundary Value Analysis) | Test at and around boundaries (min, min±1, max, max±1). |
+| Decision table | Map combinations of conditions to expected actions. |
+| State transition testing | Test valid/invalid transitions between system states. |
+| Pairwise / all-pairs | Cover all pairs of input values to reduce combinations. |
+| Error guessing | Use experience to anticipate likely defects. |
+| Positive / negative testing | Valid inputs (should pass) vs invalid inputs (should fail gracefully). |
+
+## Test doubles & isolation
+
+| Term | One-line definition |
+|---|---|
+| Stub | Returns canned responses for calls made during the test (state). |
+| Driver | Calls the unit under test (used in bottom-up integration). |
+| Mock | Pre-programmed double with expectations; verifies interactions (behavior). |
+| Spy | Wraps a real object, records calls; can let real behavior run. |
+| Fake | Working but simplified implementation (e.g. in-memory DB). |
+| Dummy | Placeholder passed but never used. |
+| Fixture | Fixed baseline state/data set up before tests run. |
+| Test data | Inputs used to drive a test. |
+
+## Automation & quality concepts
+
+| Term | One-line definition |
+|---|---|
+| POM (Page Object Model) | Design pattern: each page = a class exposing elements + actions. |
+| Test pyramid | Many unit, fewer integration, fewest E2E/UI tests. |
+| Ice-cream cone (anti-pattern) | Inverted pyramid — too many slow UI tests. |
+| Flaky test | Passes/fails non-deterministically without code changes. |
+| Idempotent | Same operation repeated yields the same result/state. |
+| Assertion | Check that verifies expected vs actual; fails the test if false. |
+| Soft assertion | Collects failures and continues; reports all at the end. |
+| Hard assertion | Stops the test immediately on first failure. |
+| Headless | Browser runs without a visible UI (faster, CI-friendly). |
+| Parallel execution | Run tests concurrently to cut total time. |
+| Data-driven testing | Same test logic run with multiple data sets. |
+| Keyword-driven testing | Tests defined by keywords/actions in tables. |
+| BDD | Behavior-Driven Development — Given/When/Then specs (Gherkin/Cucumber). |
+| Test coverage | % of code/requirements exercised by tests. |
+| Code coverage | Line/branch/statement coverage measured by tooling. |
+| CI / CD | Continuous Integration / Continuous Delivery (or Deployment). |
+| Mocking server | Simulated backend returning predefined responses (e.g. WireMock). |
+
+## Defect metrics
+
+| Term | One-line definition |
+|---|---|
+| Severity | Technical impact of a defect on the system. |
+| Priority | Business urgency to fix the defect. |
+| Bug / Defect | A flaw in the product that causes incorrect behavior. |
+| Error | A human mistake (in code or design). |
+| Failure | Observable deviation from expected behavior at runtime. |
+| Fault | Underlying cause in code (synonym for defect). |
+| Defect leakage | Defects that escape testing and reach the next phase/production. |
+| Defect density | Defects per size unit (e.g. per KLOC or per module). |
+| DRE (Defect Removal Efficiency) | Defects found in testing ÷ total defects (testing + post-release). |
+| RCA | Root Cause Analysis — finding the underlying reason for a defect. |
+| Triage | Reviewing/prioritizing defects to decide what to fix and when. |
+| Reproducible | A defect that can be made to occur reliably via known steps. |
+| Workaround | Temporary way to avoid a defect without a real fix. |
+| Known issue | Documented, accepted defect not yet fixed. |
+
+## The classic "difference between X and Y" pairs
+
+| X vs Y | Key difference |
+|---|---|
+| Severity vs Priority | Severity = technical impact; Priority = fix urgency. They are independent. |
+| Smoke vs Sanity | Smoke = broad shallow build-stability check; Sanity = narrow deep check of a fix. |
+| Verification vs Validation | Verification = building right (reviews, no execution); Validation = right product (execution). |
+| Assert vs Verify | Assert = stop test on failure (hard); Verify = log and continue (soft). |
+| QA vs QC vs Testing | QA = process/prevention; QC = product/detection; Testing = the act of executing/finding defects. |
+| Bug vs Defect vs Error vs Failure | Error (human mistake) → Defect/Bug (in code) → Failure (observed at runtime). |
+| Stub vs Mock | Stub = canned state for indirect inputs; Mock = verifies expected interactions (behavior). |
+| Stub vs Driver | Stub = called-by the unit (below); Driver = calls the unit (above). |
+| Mock vs Spy | Mock = fully programmed expectations; Spy = wraps real object and records calls. |
+| Implicit vs Explicit wait | Implicit = global polling for all finds; Explicit = wait for one specific condition. |
+| Regression vs Retesting | Regression = ensure nothing else broke; Retesting = confirm a specific fix works. |
+| Functional vs Non-functional | What it does vs how well it does it (perf, security, usability). |
+| Black-box vs White-box | Tests from behavior/requirements vs from internal code knowledge. |
+| Test plan vs Test strategy | Plan = project-specific scope/schedule; Strategy = high-level org approach. |
+| Test case vs Test scenario | Case = detailed steps + expected result; Scenario = high-level "what to test". |
+| Authentication vs Authorization | Who you are (401) vs what you are allowed to do (403). |
+| 401 vs 403 | 401 = not authenticated; 403 = authenticated but not permitted. |
+| GET vs POST | GET = read, safe, idempotent, no body; POST = create/action, not idempotent. |
+| PUT vs PATCH | PUT = replace full resource (idempotent); PATCH = partial update. |
+| SOAP vs REST | SOAP = strict XML protocol + WSDL; REST = lightweight style over HTTP/JSON. |
+| Latency vs Throughput | Time per request vs requests handled per unit time. |
+| Page Object vs Page Factory | POM design pattern vs Selenium's `@FindBy` element-init mechanism. |
+| Selenium vs Playwright vs Cypress | WebDriver multi-lang vs modern auto-wait multi-browser vs JS in-browser runner. |
+| Agile vs Waterfall | Iterative/adaptive vs sequential/phase-gated. |
+| DoR vs DoD | Ready to start vs done/complete criteria. |
+| Test coverage vs Code coverage | Requirements exercised vs code lines/branches exercised. |
+
+<div class="callout key"><div class="ct">Severity vs Priority example</div> Company logo misspelled = low severity (works fine) but high priority (visible, embarrassing, fix now). A crash on a rarely used admin screen = high severity but possibly low priority.</div>

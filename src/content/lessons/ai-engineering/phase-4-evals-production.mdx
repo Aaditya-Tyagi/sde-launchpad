@@ -1,0 +1,321 @@
+---
+title: "Phase 4 — Evals, Observability & Production"
+track: ai-engineering
+summary: "Ship AI to production — evaluation frameworks, LLM-as-judge, tracing, latency optimization, cost dashboards, and A/B testing prompts."
+order: 5
+est: 38
+difficulty: hard
+priority: must
+tags: [evals, observability, tracing, llm-as-judge, production, cost, latency, monitoring]
+whyAsked: "Getting an LLM app to 'work once' is easy. Getting it reliable, measurable, and improvable is hard — this separates junior from senior AI engineers."
+followUps:
+  - "How do you evaluate an LLM application without ground truth labels?"
+  - "What is LLM-as-judge and what are its failure modes?"
+  - "How do you trace a multi-turn conversation for debugging?"
+  - "How do you run an A/B test on two prompts?"
+  - "How do you reduce LLM latency?"
+resources:
+  - { label: "RAGAS eval framework", url: "https://ragas.io" }
+  - { label: "Langfuse observability", url: "https://langfuse.com" }
+  - { label: "Braintrust eval platform", url: "https://braintrustdata.com" }
+---
+
+## Why evals are non-negotiable
+
+Without evals, you cannot:
+- Know if a prompt change made things better or worse
+- Catch regressions when you upgrade models
+- Detect quality degradation in production
+- Compare two approaches objectively
+
+**The eval mindset:** before writing any application code, define: "How will I know if this is working?" Then build the eval for it.
+
+---
+
+## Types of evals
+
+### 1. Unit evals (fastest, cheapest)
+
+Test specific, verifiable behaviors on known inputs:
+
+```python
+import pytest
+import anthropic
+
+client = anthropic.Anthropic()
+
+def classify_sentiment(text: str) -> str:
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=10,
+        system="Classify sentiment as 'positive', 'negative', or 'neutral'. Return only the word.",
+        messages=[{"role": "user", "content": text}],
+    )
+    return response.content[0].text.strip().lower()
+
+@pytest.mark.parametrize("text,expected", [
+    ("I love this product!", "positive"),
+    ("Terrible experience, never again.", "negative"),
+    ("The product arrived on Tuesday.", "neutral"),
+    ("Not bad, but not great either.", "neutral"),
+])
+def test_sentiment_classifier(text, expected):
+    result = classify_sentiment(text)
+    assert result == expected, f"Expected '{expected}', got '{result}' for: {text}"
+```
+
+---
+
+### 2. LLM-as-judge (for subjective quality)
+
+Use a powerful model to evaluate outputs from a weaker or cheaper model:
+
+```python
+def evaluate_response_quality(question: str, context: str, answer: str) -> dict:
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=256,
+        tools=[{
+            "name": "evaluation",
+            "description": "Evaluation result",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "score": {"type": "integer", "minimum": 1, "maximum": 5},
+                    "reasoning": {"type": "string"},
+                    "issues": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["score", "reasoning"],
+            }
+        }],
+        tool_choice={"type": "tool", "name": "evaluation"},
+        messages=[{"role": "user", "content": f"""Evaluate this AI response (1-5):
+5 = Excellent: accurate, clear, no hallucinations
+4 = Good: mostly accurate, minor issues  
+3 = Acceptable: some inaccuracy or clarity issues
+2 = Poor: significant problems
+1 = Unacceptable: wrong or harmful
+
+Question: {question}
+Context: {context}
+Answer: {answer}"""}],
+    )
+    for block in response.content:
+        if block.type == "tool_use":
+            return block.input
+
+# LLM-as-judge failure modes:
+# - Position bias: judges prefer option listed first — randomize order
+# - Verbosity bias: prefers longer answers — be explicit about brevity
+# - Self-preference: model judges own outputs higher — use different model as judge
+# - Inconsistency: average 3 runs for stable scores
+```
+
+---
+
+### 3. Regression test suite
+
+Run on every prompt change, model upgrade, or retrieval change:
+
+```python
+from dataclasses import dataclass, field
+
+@dataclass
+class EvalCase:
+    input: str
+    expected_output: str | None = None
+    expected_contains: list[str] = field(default_factory=list)
+    evaluator: str = "exact"  # "exact", "contains", "llm_judge"
+
+EVAL_SUITE = [
+    EvalCase(
+        input="What is our refund policy?",
+        expected_contains=["30 days", "receipt"],
+        evaluator="contains",
+    ),
+    EvalCase(input="What is 2 + 2?", expected_output="4", evaluator="exact"),
+]
+
+def run_eval_suite(pipeline_fn, suite: list[EvalCase]) -> dict:
+    results = {"passed": 0, "failed": 0, "cases": []}
+    
+    for case in suite:
+        actual = pipeline_fn(case.input)
+        
+        if case.evaluator == "exact":
+            passed = actual.strip().lower() == case.expected_output.lower()
+        elif case.evaluator == "contains":
+            passed = all(kw.lower() in actual.lower() for kw in case.expected_contains)
+        elif case.evaluator == "llm_judge":
+            score = evaluate_response_quality(case.input, "", actual)["score"]
+            passed = score >= 4
+        
+        results["passed" if passed else "failed"] += 1
+        results["cases"].append({"input": case.input, "actual": actual, "passed": passed})
+    
+    results["pass_rate"] = results["passed"] / len(suite)
+    return results
+```
+
+---
+
+## Observability — tracing every LLM call
+
+**Using Langfuse (open-source, self-hostable):**
+
+```python
+from langfuse.decorators import observe, langfuse_context
+
+@observe()
+def rag_pipeline(user_question: str) -> str:
+    langfuse_context.update_current_trace(
+        name="rag_pipeline",
+        input={"question": user_question},
+    )
+    
+    chunks = retrieve(user_question)
+    langfuse_context.update_current_observation(
+        metadata={"chunks_retrieved": len(chunks)},
+    )
+    
+    answer = generate_answer(user_question, chunks)
+    langfuse_context.update_current_trace(
+        output={"answer": answer},
+        user_id=get_current_user_id(),
+    )
+    return answer
+
+@observe(as_type="generation")
+def generate_answer(question: str, chunks: list[dict]) -> str:
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": build_prompt(question, chunks)}],
+    )
+    langfuse_context.update_current_observation(
+        usage={
+            "input": response.usage.input_tokens,
+            "output": response.usage.output_tokens,
+        },
+        model="claude-sonnet-4-6",
+    )
+    return response.content[0].text
+```
+
+**What to trace:** model, prompt (hashed for privacy), response, latency ms, input/output tokens, cost USD, user ID, session ID, retrieval scores.
+
+---
+
+## Latency optimization
+
+| Technique | Impact | How |
+|---|---|---|
+| **Streaming** | TTFT feels instant | `client.messages.stream()` + SSE |
+| **Model routing** | 3–10× | Use `claude-haiku` for simple tasks, `claude-sonnet` for complex |
+| **Prompt caching** | 90% cheaper, ~1ms | `cache_control: {"type": "ephemeral"}` on static context |
+| **Parallel calls** | N× faster | `asyncio.gather()` for independent calls |
+| **Response caching** | Instant on repeat | Redis cache keyed on prompt hash |
+| **Shorter max_tokens** | Proportional | Cap at 256 for factual Q&A, 4096 for code only |
+
+```python
+# Parallel independent calls — always do this
+import asyncio
+
+async def batch_classify(texts: list[str]) -> list[str]:
+    tasks = [classify_async(text) for text in texts]
+    return await asyncio.gather(*tasks)  # Nx faster than sequential loop
+
+# Response caching for deterministic prompts
+import hashlib, redis
+
+cache = redis.Redis()
+
+def cached_llm_call(prompt: str, ttl: int = 3600) -> str:
+    key = "llm:" + hashlib.sha256(prompt.encode()).hexdigest()
+    if hit := cache.get(key):
+        return hit.decode()
+    result = call_llm(prompt)
+    cache.setex(key, ttl, result)
+    return result
+```
+
+---
+
+## A/B testing prompts
+
+Never change a prompt based on gut feel:
+
+```python
+import hashlib
+
+PROMPT_VARIANTS = {
+    "control":   "Answer the user's question helpfully and concisely.",
+    "variant_a": "Answer the user's question. Be direct. Give the most useful answer in 2–3 sentences.",
+}
+
+def get_variant(user_id: str) -> str:
+    # Deterministic: same user always gets same variant
+    bucket = int(hashlib.md5(user_id.encode()).hexdigest(), 16) % 100
+    return "variant_a" if bucket < 50 else "control"
+
+def log_result(user_id: str, variant: str, thumbs_up: bool):
+    db.insert("ab_results", {
+        "user_id": user_id, "variant": variant,
+        "thumbs_up": thumbs_up, "created_at": "now()",
+    })
+
+# Run chi-square test after N=200+ samples per variant
+# Minimum detectable effect × traffic per day = how many days to run
+```
+
+---
+
+## Production cost dashboard
+
+```python
+PRICING = {
+    "claude-sonnet-4-6":         {"input": 3.00, "output": 15.00},  # per 1M tokens
+    "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00},
+}
+
+def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    p = PRICING[model]
+    return (input_tokens * p["input"] + output_tokens * p["output"]) / 1_000_000
+```
+
+```sql
+-- Daily cost report
+SELECT 
+    model,
+    SUM(input_tokens)  AS total_input_tokens,
+    SUM(output_tokens) AS total_output_tokens,
+    SUM(cost_usd)      AS total_cost_usd,
+    COUNT(*)           AS total_calls,
+    AVG(latency_ms)    AS avg_latency_ms,
+    PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency_ms) AS p99_latency_ms
+FROM llm_call_log
+WHERE called_at > NOW() - INTERVAL '24 hours'
+GROUP BY model
+ORDER BY total_cost_usd DESC;
+```
+
+---
+
+## Production checklist
+
+Before shipping any LLM feature:
+- [ ] Eval suite with ≥ 20 test cases covering happy path + edge cases
+- [ ] LLM-as-judge or human baseline score established
+- [ ] Every LLM call traced (model, prompt, response, latency, cost)
+- [ ] Streaming enabled for all user-facing generation
+- [ ] Retry logic with exponential backoff on all API calls
+- [ ] Token budget enforced (max_tokens set conservatively)
+- [ ] Rate limit headers handled (Retry-After respected)
+- [ ] Prompt injection mitigated (user content wrapped in `<user_input>` tags)
+- [ ] Cost alerting set up (daily spend > threshold → alert)
+- [ ] Model version pinned (don't let "claude-sonnet-latest" drift under you)
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "The eval hierarchy: unit evals catch deterministic regressions instantly. LLM-as-judge handles subjective quality — use a stronger model than the one you're evaluating, randomize comparison order. Human eval for major changes. In production, trace every call with Langfuse — prompt, response, latency, tokens, cost. A/B test every prompt change deterministically on user ID buckets before full rollout. The single biggest latency win is streaming — it makes TTFT the perceived latency. For cost, model routing is the biggest lever: use Haiku for simple classification, Sonnet for complex reasoning."
+</div>

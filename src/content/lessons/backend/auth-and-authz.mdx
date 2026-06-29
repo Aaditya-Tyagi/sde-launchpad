@@ -1,0 +1,179 @@
+---
+title: "Authentication & Authorization: OAuth2, JWT, OIDC & Passkeys"
+track: backend
+summary: "Keep authentication (who you are) and authorization (what you can do) distinct, then design both right: sessions vs stateless JWTs and the revocation tradeoff, OAuth2 grant types with Authorization Code + PKCE as the modern default, OIDC as the identity layer, passkeys for phishing-resistant login, and RBAC/ABAC/ReBAC with enforcement at the edge."
+order: 2
+est: 30
+difficulty: medium
+priority: must
+tags: [auth, oauth2, jwt, oidc, passkeys, webauthn, rbac, security]
+whyAsked: "Auth is the gate in front of every service, and the place where one wrong default leaks data or hands over accounts. Interviewers probe it to see whether you separate identity from permissions, understand token tradeoffs and revocation, and know the modern flows (PKCE, OIDC, passkeys) rather than reaching for deprecated ones."
+followUps:
+  - "AuthN vs AuthZ — what's the difference?"
+  - "Sessions vs JWTs — how do you revoke?"
+  - "Which OAuth2 grant for a SPA, and why PKCE?"
+  - "OAuth2 vs OpenID Connect?"
+  - "Where do you enforce authorization?"
+resources:
+  - { label: "OAuth 2.0 (oauth.net)", url: "https://oauth.net/2/" }
+  - { label: "OWASP Auth Cheat Sheets", url: "https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html" }
+  - { label: "WebAuthn Guide", url: "https://webauthn.guide/" }
+---
+
+Auth is two questions, not one: **authentication** is "who are you?" and **authorization** is "what are you allowed to do?" Conflating them is the classic mistake — a valid token proves identity, never permission. This lesson is the practical backend view; the broader threat model lives in [security](/lessons/backend/security), and the contracts these tokens travel on are in [API design](/lessons/backend/api-design).
+
+## AuthN vs AuthZ — keep them distinct
+
+| | Authentication (AuthN) | Authorization (AuthZ) |
+|---|---|---|
+| **Question** | Who are you? | What can you do? |
+| **Proves** | Identity (a verified subject) | Permission on a resource |
+| **Mechanisms** | Passwords, passkeys, OIDC, MFA | RBAC, ABAC, ReBAC, scopes, ACLs |
+| **Output** | A session or `id_token` | An allow/deny decision |
+| **Failure code** | `401 Unauthorized` | `403 Forbidden` |
+
+The order is fixed: authenticate first, then authorize. A logged-in user (`401` cleared) can still be told `403` for a resource they don't own. Note the HTTP irony — `401 Unauthorized` actually means *unauthenticated*; `403 Forbidden` is the real authorization failure.
+
+## Sessions vs tokens — and the revocation tradeoff
+
+| | Server-side session | Stateless JWT |
+|---|---|---|
+| **State** | Session store (Redis/DB), client holds an opaque ID | Self-contained; server stores nothing |
+| **Validation** | Lookup per request | Verify signature locally (no I/O) |
+| **Revoke** | Instant — delete the session row | Hard — valid until it expires |
+| **Scaling** | Shared/sticky session store | Trivially horizontal |
+| **Best for** | First-party web apps | APIs, microservices, service-to-service |
+
+The headline tradeoff is **revocation**. A session is killed by deleting one row, so logout and "force sign-out everywhere" are immediate. A JWT is valid until `exp` no matter what — you can't un-issue it. The standard mitigation is **short access-token TTL (5-15 min) plus a refresh token**, so a compromised access token dies fast and the revocable refresh token is the real control point. For instant kill, keep a denylist of token IDs (`jti`) until they expire — but that reintroduces the state JWTs were meant to avoid.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  <b>Sessions</b> for first-party web apps where instant revocation matters; <b>stateless JWTs</b> for APIs and service-to-service where horizontal scale matters. The moment you add a JWT denylist for revocation, you've rebuilt sessions — so make that a deliberate choice, not an accident.
+</div>
+
+## JWT structure and the traps
+
+A JWT is three base64url parts: `header.payload.signature`. The signature covers `header.payload`, so tampering is detectable — but base64 is **encoding, not encryption**: anyone can read the payload.
+
+```
+eyJhbGciOiJSUzI1NiIsImtpZCI6ImsxIn0   ← header  {"alg":"RS256","kid":"k1"}
+.eyJzdWIiOiJ1XzQyIiwiZXhwIjoxNzAwMDAwMDAwfQ  ← payload (claims)
+.MEUCIQ...signature...                 ← signature over header.payload
+```
+
+Standard claims: `iss` (issuer), `sub` (subject/user id), `aud` (audience), `exp` (expiry), `iat`, `jti` (unique id, for denylisting).
+
+**Signing — HS256 vs RS256:**
+
+| | HS256 (HMAC) | RS256 (RSA) |
+|---|---|---|
+| **Key** | One shared secret | Private key signs, public key verifies |
+| **Verifiers** | Anyone who verifies can also forge | Verifiers only need the public key |
+| **Use when** | Single trusted service | Multiple services / third parties verify |
+
+Use **RS256** (or ES256) once more than one party verifies — you hand out only the public key, so a leaked verifier can't mint tokens.
+
+**The traps:**
+- **Don't store sensitive data** in the payload — it's readable. No PII, no secrets, no passwords.
+- **Short access-token expiry** (minutes), long-lived **refresh token** stored securely.
+- **`alg:none` attack** — old libraries honored a header of `{"alg":"none"}` and skipped signature verification entirely, accepting forged tokens. Always pin the expected algorithm server-side; never trust the token's own `alg` header.
+- **Validate everything**: signature, `exp`, `iss`, and `aud` — a token minted for another audience must be rejected. Validate at the edge/gateway so every downstream service can trust it.
+
+## Refresh tokens and rotation
+
+The access token is short-lived; the **refresh token** is the long-lived credential that buys new access tokens without re-login. Because it's powerful, use **rotation**: every refresh issues a new refresh token and invalidates the old one. If an old (already-used) refresh token is ever replayed, that signals theft — revoke the entire token family. Store refresh tokens in `httpOnly` cookies (not `localStorage`, which JavaScript and XSS can read).
+
+## OAuth2 — delegated authorization
+
+OAuth2 is about **delegated access**: letting an app act on a resource without handling the user's password. Four roles: **resource owner** (the user), **client** (the app), **authorization server** (issues tokens), **resource server** (the API).
+
+| Grant type | Use case | Status |
+|---|---|---|
+| **Authorization Code + PKCE** | Web apps, SPAs, mobile | Modern default |
+| **Client Credentials** | Service-to-service (no user) | Standard for machines |
+| **Implicit** | Old SPA flow (token in URL fragment) | Deprecated |
+| **Resource Owner Password** | App collects the password directly | Avoid |
+
+**Authorization Code + PKCE** is the answer for almost any user-facing client. The client redirects to the auth server, the user logs in there, and a short-lived **code** comes back — then the client swaps the code for tokens over a back channel. **PKCE** (Proof Key for Code Exchange) closes the interception hole: the client sends a hashed `code_challenge` up front and the raw `code_verifier` at exchange, so a stolen authorization code is useless without the verifier. This is why **implicit grant is deprecated** — it put the access token straight in the redirect URL fragment, exposing it to history, logs, and referrers. PKCE makes a public client (SPA/mobile, which can't keep a secret) safe.
+
+**Client Credentials** is the no-user case: a service authenticates with its own id/secret to get a token for another API. **Scopes** bound what a token can do (`read:orders`, `write:payments`) — request the minimum.
+
+```
+# Authorization Code + PKCE (abridged)
+client → /authorize?response_type=code&code_challenge=H(v)&scope=...
+user authenticates at the auth server
+auth server → redirect back with ?code=abc
+client → /token  (code=abc, code_verifier=v)   # v is hashed, compared to H(v)
+auth server → { access_token, refresh_token, id_token }
+```
+
+## OpenID Connect — the identity layer
+
+OAuth2 alone is **authorization** — an access token says "this bearer may call these scopes," not "this is Alice." Apps misused it for login by treating "the token works" as proof of identity, which is unsound. **OpenID Connect (OIDC)** is a thin identity layer on top of OAuth2 that adds real authentication: alongside the access token you get an **`id_token`** (a JWT with verified identity claims — `sub`, `email`, `name`) and a **`userinfo`** endpoint. Rule: **OAuth2 for authorization, OIDC for authentication.** "Sign in with Google/Apple/Microsoft" is OIDC.
+
+## Passkeys / WebAuthn / FIDO2 — passwordless done right
+
+Passkeys are **public-key authentication** standardized as WebAuthn (the browser API) over FIDO2. At registration the device generates a key pair, keeps the **private key in secure hardware** (Secure Enclave/TPM), and registers the **public key** with the server. Login signs a server challenge with the private key; the server verifies with the public key. Nothing shared is secret.
+
+Why they beat passwords and OTP:
+- **Phishing-resistant** — the credential is cryptographically bound to the origin (domain), so a lookalike site can't trigger it. SMS OTP and TOTP can be relayed to a fake site; passkeys can't.
+- **No shared secret** to breach — the server stores only public keys, so a database leak hands attackers nothing usable.
+- **No replay** — each login is a fresh signed challenge.
+- **Synced across devices** via the platform keychain, so they're usable, not just secure.
+
+## Authorization models — RBAC, ABAC, ReBAC
+
+| Model | Decision based on | Example | Best for |
+|---|---|---|---|
+| **RBAC** | The user's role | "admins can delete" | Most apps; simple, auditable |
+| **ABAC** | Attributes (user, resource, context) | "managers in region X during business hours" | Fine-grained, contextual policy |
+| **ReBAC** | Relationships in a graph | "users who are editors of *this* doc" | Sharing, multi-tenant ownership (Google Docs-style) |
+
+Default to **RBAC**; reach for ABAC when decisions depend on context, and ReBAC (e.g. Google Zanzibar-style) when permissions are per-object relationships. Whatever the model, apply **least privilege** — grant the minimum, deny by default.
+
+**Where to enforce:** coarse checks (is the token valid? does it have the scope?) belong at the **gateway/edge**. But **object-level** authorization — "does *this* user own *this* order?" — must live in the **service**, because only it knows the data. Skipping that check is **IDOR / Broken Object-Level Authorization** (OWASP API #1): `GET /orders/124` returns someone else's order because the code trusted the URL instead of verifying ownership. Always check the subject against the specific resource, not just "is logged in."
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Authenticate and check coarse scopes at the <b>edge</b>; enforce <b>object-level</b> ownership in the service that owns the data. "Logged in" is never "allowed" — every per-record read and write must verify the subject against that exact record.
+</div>
+
+## Interview questions & model answers
+
+**Q: AuthN vs AuthZ — what's the difference?**
+"Authentication is who you are — verifying identity, output is a session or id_token, failure is 401. Authorization is what you can do — a permission decision on a resource, failure is 403. You always authenticate first, then authorize. A valid token proves identity, never permission, so I still check ownership on every resource access."
+
+**Q: Sessions vs JWTs — how do you handle revocation?**
+"Sessions are server-side state, so revoking is deleting one row — instant logout-everywhere. JWTs are stateless and stay valid until `exp`, so you can't un-issue them. I default to short access-token TTL, five to fifteen minutes, plus a revocable refresh token as the real control point. If I genuinely need instant kill, a `jti` denylist until expiry works — but that's rebuilding sessions, so I'd reconsider whether a JWT was the right call."
+
+**Q: Which OAuth2 grant for a single-page app, and why PKCE?**
+"Authorization Code with PKCE. The SPA gets a short-lived code via redirect, then exchanges it for tokens. PKCE sends a hashed challenge up front and the raw verifier at exchange, so an intercepted code is useless without the verifier — which makes a public client that can't keep a secret safe. Implicit grant is deprecated because it returned the access token in the URL fragment, exposing it to history and logs."
+
+**Q: OAuth2 vs OpenID Connect?**
+"OAuth2 is authorization — an access token grants scoped access to an API, it doesn't tell you who the user is. People misused it for login. OIDC adds an identity layer: an id_token, a signed JWT with verified identity claims, plus a userinfo endpoint. So OAuth2 for authorization, OIDC for authentication. 'Sign in with Google' is OIDC."
+
+**Q: Why are passkeys better than passwords or OTP?**
+"They're public-key auth — the private key never leaves secure hardware, the server only stores the public key, so a breach leaks nothing usable. And they're phishing-resistant because the credential is bound to the origin: a fake domain can't trigger them. SMS or TOTP codes can be relayed to a phishing site in real time; a passkey signature can't, because it's tied to the real domain."
+
+**Q: Where do you enforce authorization, and what's IDOR?**
+"Coarse checks — valid token, right scope — at the gateway. Object-level ownership in the service, because only it knows the data. IDOR, broken object-level authorization, is when you trust the ID in the URL: `/orders/124` returns another user's order because the code never checked that this user owns that order. The fix is verifying the subject against the specific resource on every read and write, deny by default."
+
+**Q: How do you validate a JWT safely?**
+"Verify the signature with a server-pinned algorithm — never trust the token's own `alg` header, that's how the `alg:none` attack works. Then check `exp`, `iss`, and `aud` so a token minted for a different audience is rejected. Use RS256 when multiple parties verify, so they only hold the public key. And I never put sensitive data in the payload — it's base64, not encrypted."
+
+## Common mistakes / what weak candidates do
+
+- **Conflating AuthN and AuthZ** — treating "valid token" as "allowed," so they never check resource ownership.
+- **Storing sensitive data in a JWT payload** — it's encoded, not encrypted, and anyone can read it.
+- **Ignoring revocation** — long-lived JWTs with no short TTL or refresh, so a stolen token works for hours.
+- **Not pinning the algorithm** — leaving the door open to the `alg:none` forgery and HS/RS confusion attacks.
+- **Reaching for implicit grant** or password grant instead of Authorization Code + PKCE.
+- **Using OAuth2 access tokens as proof of identity** instead of OIDC id_tokens.
+- **Skipping object-level checks** — the IDOR/BOLA bug: trusting the ID in the URL.
+- **Tokens in `localStorage`** — readable by XSS; use `httpOnly`, `Secure`, `SameSite` cookies.
+- **No refresh-token rotation** — a leaked refresh token grants indefinite access with no theft signal.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "<b>AuthN</b> is who you are, <b>AuthZ</b> is what you can do — authenticate first, then authorize, and a valid token is never proof of permission. <b>Sessions</b> revoke instantly; stateless <b>JWTs</b> need short TTL plus a rotating refresh token. <b>Authorization Code + PKCE</b> is the default flow, <b>OIDC</b> adds real identity on top of OAuth2, and <b>passkeys</b> give phishing-resistant public-key login. Enforce coarse scopes at the edge but <b>object-level ownership in the service</b> — skip that and you've shipped <b>IDOR</b>."
+</div>

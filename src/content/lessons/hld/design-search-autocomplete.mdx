@@ -1,0 +1,220 @@
+---
+title: "HLD: Design a Search Autocomplete System"
+track: hld
+summary: "Design Google-scale typeahead — trie vs prefix hash, top-K ranking, distributed storage, and < 100ms end-to-end latency."
+order: 7
+est: 30
+difficulty: hard
+priority: deep
+tags: [hld, autocomplete, typeahead, trie, top-k, ranking, prefix-search]
+whyAsked: "Search autocomplete tests data structure choice (trie vs inverted index), distributed aggregation, top-K algorithms, and caching under extreme read load."
+followUps:
+  - "How does a trie work? What are its time/space complexities?"
+  - "How do you store a trie that is too large to fit in memory?"
+  - "How do you update suggestion rankings without rebuilding the whole trie?"
+  - "How do you personalize suggestions?"
+  - "How do you handle typos and fuzzy matching?"
+resources:
+  - { label: "System Design Interview Vol.2 — Ch.6", url: "https://bytebytego.com" }
+---
+
+## Step 1: Requirements
+
+**Functional:**
+- Given a prefix, return the top 5 matching suggestions, ranked by popularity
+- Update rankings based on real search volume (near-real-time, not instant)
+- Support Unicode / international queries
+
+**Non-functional:**
+- 10M DAU, each types ~5 searches/day → 50M searches/day → ~580 queries/sec average
+- Every keystroke = one API call → 10x keystroke-to-search ratio → ~5,800 RPS
+- Latency < 100ms end-to-end (including network)
+- Suggestions update within ~10 minutes of a trending query
+
+**Estimation:**
+```
+Queries: 5,800 RPS at peak
+Unique prefixes: for 10M searches/day with avg 5 chars typed = 50M prefix queries/day
+Top 5 result per query → results are small (5 × 30 chars ≈ 150 bytes)
+Index size: store top-K for every prefix → depends on vocabulary size
+```
+
+---
+
+## Step 2: Data structure choice
+
+### Option A: Trie (prefix tree)
+
+A trie stores characters node by node. Each node optionally stores the top-K suggestions for that prefix.
+
+```
+Trie for ["apple", "app", "apply", "apt"]:
+
+root
+ └─ a
+    ├─ p
+    │  ├─ p            (word: "app")
+    │  │  ├─ l
+    │  │  │  ├─ e      (word: "apple")
+    │  │  │  └─ y      (word: "apply")
+    │  └─ t            (word: "apt")
+```
+
+**Augmented trie:** each node stores `top_k: List[string]` — the top 5 suggestions for that prefix, sorted by frequency. This makes reads O(1) after traversal.
+
+**Problem:** trie for billions of queries doesn't fit in a single machine's memory.
+
+---
+
+### Option B: Prefix hash table (simpler, scalable)
+
+Pre-compute top-K suggestions for every possible prefix and store in a hash table / Redis:
+
+```
+"a"   → ["apple", "amazon", "airbnb", "alibaba", "adobe"]
+"ap"  → ["apple", "apple store", "apply", "apt", "apex"]
+"app" → ["apple", "app store", "apple music", "apple id", "apps"]
+```
+
+**Read:** O(1) — just a hash lookup.
+**Storage:** for average query length 5, there are 5 prefix versions of each query → 5× the storage of raw query counts.
+
+This is simpler to distribute and reason about than a trie, and is the preferred approach at scale.
+
+---
+
+## Step 3: System architecture
+
+Two separate paths:
+
+```
+DATA COLLECTION PATH (offline / near-real-time)
+─────────────────────────────────────────────────
+User searches
+  └─ Kafka topic "searches" (search term + timestamp + userId)
+       └─ Stream processor (Flink / Spark Streaming)
+            ├─ Aggregate search counts per term (5-min windows)
+            ├─ Merge with historical counts
+            └─ Update top-K prefix table
+                 └─ Redis Cluster (prefix → top-K list)
+                 └─ Backup: DynamoDB or Cassandra
+
+QUERY PATH (real-time, < 100ms)
+──────────────────────────────────
+User types "app"
+  └─ Browser: debounce 100ms, GET /suggest?q=app
+       └─ API Gateway → CDN cache (if popular prefix, TTL 60s)
+       └─ Cache miss → Suggest Service
+             └─ Redis lookup: GET prefix:app
+             └─ Return ["apple", "app store", ...] (JSON ~150 bytes)
+```
+
+---
+
+## Step 4: Top-K algorithm
+
+Computing top-K suggestions from a stream of search events:
+
+### MapReduce batch job (for historical baseline):
+
+```python
+# Mapper: emit (term, 1) for each search event
+def mapper(search_event):
+    yield (search_event.query, 1)
+
+# Reducer: sum counts per term
+def reducer(term, counts):
+    yield (term, sum(counts))
+
+# After: sort by count DESC, take top 100K terms
+# For each term, generate all prefixes and update prefix hash
+```
+
+### Streaming aggregation (for near-real-time updates):
+
+```python
+# Flink / Kafka Streams: tumbling 5-min window
+stream
+  .keyBy("query")
+  .window(TumblingEventTimeWindows.of(Time.minutes(5)))
+  .sum("count")
+  .process(lambda term, count: update_prefix_table(term, count))
+```
+
+### Updating prefix table:
+
+```python
+def update_prefix_table(term: str, delta: int, redis_client):
+    # Update global term frequency
+    redis_client.zincrby("term_counts", delta, term)
+    
+    # Update top-K for each prefix of this term
+    for i in range(1, len(term) + 1):
+        prefix = term[:i]
+        prefix_key = f"prefix:{prefix}"
+        
+        # Sorted set: member=term, score=frequency
+        redis_client.zincrby(prefix_key, delta, term)
+        
+        # Keep only top 5 (trim excess members)
+        # ZREVRANK gives rank (0 = highest)
+        rank = redis_client.zrevrank(prefix_key, term)
+        if rank is not None and rank >= 5:
+            redis_client.zrem(prefix_key, term)
+```
+
+**Redis sorted sets** are perfect: `ZINCRBY`, `ZREVRANGE` with O(log N) complexity.
+
+---
+
+## Step 5: Scaling read path
+
+At 5,800 RPS with p99 < 100ms, the Redis lookup itself needs to be fast and available.
+
+**Redis Cluster:**
+- Shard by prefix: `prefix:a*` → shard 1, `prefix:b*` → shard 2, etc.
+- Each shard has a read replica for high availability
+- Lookup: `ZREVRANGE prefix:{query} 0 4 WITHSCORES` → O(log N + K)
+
+**CDN caching:**
+- Most popular prefixes ("a", "ap", "the", "he") are queried millions of times/day
+- Cache at CDN edge with 60s TTL
+- ~20% of queries hit CDN → reduces Redis load by 20%
+
+**Client-side caching:**
+- Cache recent prefix results in the browser (Map keyed by query string)
+- If user types "apple" and then deletes to "appl", serve the cached "appl" result without a network call
+
+---
+
+## Step 6: Ranking improvements
+
+Beyond raw frequency, rank by:
+
+1. **Recency** — trending queries score higher (time-decay factor)
+2. **Personalization** — queries from the user's own history score higher
+3. **Geographic** — local queries (e.g. "cricket" in India vs "baseball" in USA)
+4. **Spell correction** — map "applw" → "apple" using edit distance (Levenshtein) on the top-K candidates
+
+**Simple recency score:**
+```
+score = frequency × e^(-λ × days_since_last_seen)
+where λ controls decay rate (e.g. 0.1 = half-life ~7 days)
+```
+
+---
+
+## Step 7: Handling edge cases
+
+| Case | Solution |
+|---|---|
+| Offensive / banned queries | Blocklist filter at display time |
+| Very long prefixes | Only pre-compute top-K for prefixes ≤ 10 chars; longer → exact DB lookup |
+| Cold start (new query) | Fall through to Elasticsearch full-text search for unrecognized prefixes |
+| Unicode ("北京") | Normalize to UTF-8; store full unicode prefix keys |
+| Real-time trending | Spike detector: if term count spikes > 5× in 5 min, force prefix cache invalidation |
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "I use a prefix hash table stored in Redis sorted sets — each prefix maps to a sorted set of (term, frequency) pairs. `ZREVRANGE prefix:app 0 4` returns the top 5 in O(log N). The hard problem is keeping it updated: search events go to Kafka, a stream processor aggregates counts in 5-minute windows, and updates the sorted sets. Popular prefixes are cached at the CDN edge with a 60s TTL for the bulk of the read traffic. The query path itself is stateless — just a Redis GET — and easily horizontally scalable."
+</div>

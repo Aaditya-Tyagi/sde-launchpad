@@ -1,0 +1,206 @@
+---
+title: "Distributed Systems: Microservices, Service Mesh & Eventual Consistency"
+track: backend
+summary: "The hard truths of running many services: the real microservices tradeoff, the fallacies that bite you, CAP/PACELC and consistency models, consensus and quorums, service discovery and mesh, why 2PC is avoided and Sagas win, and the resilience patterns that keep partial failure from becoming total failure."
+order: 7
+est: 35
+difficulty: hard
+priority: must
+tags: [distributed-systems, microservices, service-mesh, cap, saga, consensus, resilience]
+whyAsked: "Once you own more than one service, every call can fail halfway, every clock disagrees, and consistency stops being free. This topic shows whether you understand the costs you take on when you split a system — and whether you reach for microservices for the right reasons or cargo-cult them."
+followUps:
+  - "When should you NOT use microservices?"
+  - "Explain CAP — what do you give up under a partition?"
+  - "Why is 2PC avoided, and what do you use instead?"
+  - "What does a service mesh take out of your app code?"
+  - "How do you make a distributed workflow safe to retry?"
+resources:
+  - { label: "Fallacies of Distributed Computing (deeplyembedded)", url: "https://en.wikipedia.org/wiki/Fallacies_of_distributed_computing" }
+  - { label: "Microservices (Martin Fowler)", url: "https://martinfowler.com/articles/microservices.html" }
+  - { label: "Saga pattern (microservices.io)", url: "https://microservices.io/patterns/data/saga.html" }
+---
+
+A distributed system is a set of computers that **fail independently** and **disagree about time**, pretending to be one program. The moment you split a monolith, every in-process call becomes a network call that can be slow, fail halfway, or succeed-but-you-never-hear-back. This lesson is about taking on that complexity **deliberately** — and the patterns that keep partial failure from cascading. It builds on [API design](/lessons/backend/api-design) and [event-driven systems](/lessons/backend/event-driven-systems).
+
+## Monolith vs microservices: the real tradeoff
+
+Microservices are an **organizational** solution before they are a technical one. You split a system so teams can deploy independently — not because the code runs faster.
+
+| Dimension | Monolith | Microservices |
+|---|---|---|
+| Deploy | One unit, one release | Independent per service |
+| Team scaling | Contention on one codebase | Teams own services end-to-end |
+| Local reasoning | Calls are in-process, typed, transactional | Calls cross the network, can fail partially |
+| Failure mode | Process up or down | Partial failure, cascades, retries |
+| Data | One DB, ACID transactions | DB per service, eventual consistency |
+| Operational cost | Low — one thing to run | High — discovery, mesh, tracing, on-call |
+
+The trade is real: you buy **independent deploy and team autonomy** by paying in **operational and distributed-systems complexity**. For a team of 8 on one product, that's usually a bad trade.
+
+The classic failure is the **distributed monolith**: you split the code into services but they still share a database, deploy in lockstep, and call each other synchronously in a chain. Now you have all the network failure modes of distributed systems and none of the independence — the worst of both. Tell-tale signs: you can't deploy service A without redeploying B, or a single request fans out through five services synchronously.
+
+<div class="callout tip">
+  <div class="ct">When NOT to split</div>
+  Small team, unclear domain boundaries, or a product still finding fit — stay a <b>well-modularized monolith</b>. Split a service out only when a clear boundary, a scaling hotspot, or a team-ownership need makes the operational cost worth it. "Modular monolith first, extract later" beats premature microservices almost every time.
+</div>
+
+## The 8 fallacies of distributed computing
+
+Every distributed bug traces back to assuming one of these is true. They are all false:
+
+1. **The network is reliable** — packets drop, connections reset.
+2. **Latency is zero** — a remote call is ~10,000x a local one.
+3. **Bandwidth is infinite** — chatty fan-out saturates links.
+4. **The network is secure** — assume hostile; encrypt in transit.
+5. **Topology doesn't change** — nodes come and go constantly.
+6. **There is one administrator** — many owners, many configs.
+7. **Transport cost is zero** — serialization and marshaling aren't free.
+8. **The network is homogeneous** — mixed protocols, versions, hardware.
+
+The practical upshot: **assume every call can be slow or fail**, and design timeouts, retries, and fallbacks for it. A candidate who names a few of these and ties them to concrete design choices stands out.
+
+## CAP and PACELC: what you actually give up
+
+**CAP**, stated precisely: when a **network partition** happens (some nodes can't reach others), you must choose between **Consistency** (every read sees the latest write, or an error) and **Availability** (every request gets a non-error response, possibly stale). You do **not** "pick 2 of 3" in normal operation — partitions are a fact, so the real choice is **CP vs AP under partition**.
+
+- **CP** — refuse or block on the minority side to avoid serving stale data (e.g. a leader-based store like ZooKeeper, etcd).
+- **AP** — keep serving on both sides and reconcile later (e.g. Dynamo-style stores, Cassandra with low quorum).
+
+**PACELC** extends it: **if Partition, choose A or C; Else (normal operation) choose Latency or Consistency.** Even with no partition, strong consistency costs round trips. Most "eventually consistent" stores are **PA/EL** — available under partition, low-latency otherwise.
+
+Consistency models, weakest to strongest, in spoken terms:
+
+| Model | Guarantee |
+|---|---|
+| **Eventual** | Replicas converge *eventually* if writes stop; reads may be stale |
+| **Read-your-writes** | You always see your own latest write |
+| **Monotonic reads** | You never see time go backwards across reads |
+| **Causal** | Cause is seen before effect (reply never appears before the post) |
+| **Strong / linearizable** | Every read sees the latest committed write, system-wide |
+
+The senior signal: **pick the weakest model that the product can tolerate**, because every step toward strong consistency costs latency and availability.
+
+## Consensus and quorums
+
+Many problems reduce to "get a group of nodes to **agree on one value**" despite failures: electing a leader, ordering entries in a **replicated log**, committing a config change. That's the **consensus** problem, and it's why **Raft** and **Paxos** exist.
+
+At a high level, **Raft** elects a leader; the leader appends entries to its log and replicates them; an entry **commits once a majority (quorum) acknowledges** it. If the leader dies, a new election picks a node with an up-to-date log. Paxos solves the same problem with a less approachable structure — interviewers rarely want the proof, just that you know **what** consensus buys you and that it needs a **majority** to make progress (so you run **odd** node counts: 3, 5, 7).
+
+Quorums also tune consistency in replicated stores. With `N` replicas, write quorum `W` and read quorum `R`:
+
+```text
+W + R > N  ⇒  read and write sets overlap ⇒ a read sees the latest write (strong-ish)
+N = 3, W = 2, R = 2  ⇒  4 > 3  ✓ tolerate 1 node down, still consistent
+N = 3, W = 1, R = 1  ⇒  2 = 2, not > 3  ⇒ fast but may read stale (AP)
+```
+
+Tuning `W` and `R` is how Dynamo-style systems slide between availability and consistency per call.
+
+## Service discovery, load balancing, health checks
+
+Services move — instances scale up, crash, redeploy. You can't hardcode IPs, so a **service registry** (Consul, etcd, Eureka, or Kubernetes DNS) tracks healthy instances.
+
+- **Client-side discovery** — the caller queries the registry and load-balances itself. Fewer hops, but every client embeds LB logic.
+- **Server-side discovery** — the caller hits a load balancer / gateway that consults the registry. Simpler clients, one more hop.
+
+**Health checks** keep the registry honest: a **liveness** check ("is the process alive?") triggers a restart; a **readiness** check ("can it serve traffic?") gates whether it receives requests. Failing readiness pulls an instance out of rotation without killing it — essential during warm-up or when a dependency is down.
+
+## Service mesh: resilience out of app code
+
+As service count grows, every team re-implements mTLS, retries, timeouts, and tracing — badly and inconsistently. A **service mesh** pushes that out of your application and into a **sidecar proxy** (usually **Envoy**) deployed next to each service. Your app makes a plain local call; the sidecar handles the network.
+
+| Concern | Without mesh | With mesh (sidecar) |
+|---|---|---|
+| mTLS between services | Each app does TLS itself | Automatic, transparent |
+| Retries / timeouts / circuit breaking | Per-language library | Config, uniform across langs |
+| Traffic shifting (canary, blue-green) | Custom routing code | Declarative rules |
+| Observability (metrics, traces) | Instrument every service | Emitted by the proxy |
+
+The mesh splits into a **data plane** (the fleet of sidecar proxies actually moving requests) and a **control plane** (**Istio**, **Linkerd**) that configures them. The win: resilience and security policy become **uniform and language-agnostic** — a Go service and a Python service get identical retry and mTLS behavior. The cost: another moving part, extra latency per hop, and real operational learning curve. The mesh's tracing feeds your [observability](/lessons/backend/observability) pipeline.
+
+## Distributed transactions: why 2PC loses to Sagas
+
+You can't run an ACID transaction across services with separate databases. **Two-phase commit (2PC)** tries — a coordinator asks everyone to *prepare*, then *commit* — but it's avoided in practice: it's **blocking** (if the coordinator dies mid-commit, participants hold locks indefinitely), it kills availability, and it scales poorly.
+
+The production answer is the **Saga**: model a business transaction as a sequence of **local** transactions, each with a **compensating action** that semantically undoes it if a later step fails.
+
+```text
+Order Saga (happy path):  reserve inventory → charge card → ship
+If "charge card" fails:    compensate by releasing the inventory reservation
+```
+
+Two coordination styles:
+
+- **Orchestration** — a central orchestrator tells each service what to do next and triggers compensations. Easier to reason about and monitor; the orchestrator is a single place that knows the flow.
+- **Choreography** — each service reacts to events and emits its own, no central brain. More decoupled, but the flow is implicit across many services and harder to debug.
+
+Two pieces make Sagas safe in the face of retries and duplicate messages:
+
+- **Idempotency keys** — each step carries a unique key so a retried "charge card" doesn't charge twice (same idea as in [API design](/lessons/backend/api-design)).
+- **Transactional outbox** — to publish an event *and* commit a DB change atomically, write the event to an `outbox` table **in the same local transaction**, then a relay reads the table and publishes. This closes the dual-write gap where the DB commits but the message never sends (covered in [event-driven systems](/lessons/backend/event-driven-systems)).
+
+## Resilience: surviving partial failure
+
+The defining feature of distributed systems is **partial failure** — one dependency is down while everything else is up. Design for it explicitly:
+
+- **Timeouts** — never an unbounded call. One hung downstream call ties up a thread; enough of them exhaust the pool and the whole service stalls.
+- **Retries with backoff + jitter** — retry only **idempotent** ops, with exponential backoff and **random jitter** so clients don't synchronize into a thundering herd. Cap the attempts.
+- **Circuit breaker** — after N consecutive failures, **open** the circuit and fail fast for a cooldown instead of hammering a dying dependency; probe with a half-open state before closing.
+- **Bulkheads** — isolate resources (separate thread pools / connection pools per dependency) so one slow dependency can't drown the others — like watertight compartments in a ship.
+- **Idempotency** — the precondition that makes retries safe at all.
+- **Graceful degradation** — serve a cached or default response when a non-critical dependency is down, rather than failing the whole request.
+
+```text
+call(dep):
+  if breaker.open: return fallback()        # fail fast
+  try with timeout=500ms:
+    result = retry(max=3, backoff+jitter, only_if_idempotent)
+    breaker.record_success(); return result
+  except: breaker.record_failure(); return fallback()
+```
+
+## Hard realities you should name
+
+- **Clock skew** — wall clocks drift between machines, so you can't order events by timestamp. **Logical clocks** (Lamport) order events causally; **vector clocks** also detect concurrent (conflicting) writes. Mention them when ordering or "who wrote last" comes up.
+- **Exactly-once is (mostly) a myth** — over a lossy network you get **at-most-once** or **at-least-once**. Real systems pick **at-least-once delivery + idempotent processing** to get *effectively*-once results.
+- **Observability is non-optional** — with a request crossing many services, logs alone won't tell you where it failed or got slow. **Distributed tracing** (a trace ID propagated across every hop) reconstructs the path — see [observability](/lessons/backend/observability).
+
+## Interview questions & model answers
+
+**Q: When should you NOT use microservices?**
+"When the team is small, the domain boundaries aren't clear yet, or the product is still finding fit. You pay operational cost — discovery, mesh, tracing, distributed-systems failure modes — for benefits, independent deploy and team autonomy, that a small team doesn't need. I'd start with a modular monolith and extract a service only when a real scaling hotspot or ownership boundary justifies it."
+
+**Q: Explain CAP — what do you give up under a partition?**
+"CAP says that during a network partition you choose consistency or availability, not both. CP systems refuse or block on the minority side to avoid stale reads; AP systems keep serving and reconcile later. You don't pick two of three in normal operation — partitions happen, so the real choice is CP vs AP under partition. PACELC adds that even without a partition you trade latency for consistency."
+
+**Q: What's a distributed monolith and why is it bad?**
+"Services split in code but still sharing a database, deploying in lockstep, and calling each other synchronously in a chain. You inherit every network failure mode of distributed systems but get none of the independence — you still can't deploy one service without the others. It's the worst of both worlds, usually from splitting before the boundaries were real."
+
+**Q: Why is 2PC avoided, and what do you use instead?**
+"2PC is blocking — if the coordinator dies after prepare, participants hold locks indefinitely, killing availability and scalability. Instead I use a Saga: a sequence of local transactions, each with a compensating action that undoes it if a later step fails. I make it safe with idempotency keys on each step and a transactional outbox so publishing an event and committing the DB change are atomic."
+
+**Q: What does a service mesh take out of your app code?**
+"mTLS between services, retries, timeouts, circuit breaking, traffic shifting for canaries, and metrics/tracing — all moved into a sidecar proxy like Envoy. The app makes a plain local call and the sidecar handles the network. A control plane like Istio or Linkerd configures the data-plane proxies, so a Go service and a Python service get identical resilience and security behavior without each reimplementing it."
+
+**Q: How do you make a distributed workflow safe to retry?**
+"Idempotency. Each step carries a unique key so retrying it doesn't double-apply, and processing is at-least-once delivery plus idempotent handlers to get effectively-once results. Wrap calls in timeouts and bounded retries with backoff and jitter, and use a circuit breaker so a dying dependency fails fast instead of cascading."
+
+**Q: W + R > N — what does it buy you?**
+"With N replicas, if the write quorum plus read quorum exceed N, the write set and read set overlap, so any read sees the latest write — strong-ish consistency. N=3, W=2, R=2 tolerates one node down and stays consistent. Drop to W=1, R=1 and you get fast, available, but possibly stale reads. It's the knob that slides a replicated store between consistency and availability."
+
+## Common mistakes / what weak candidates do
+
+- **Reaching for microservices by default** — splitting for resume-driven reasons before the team or domain needs it.
+- **Building a distributed monolith** — shared DB, lockstep deploys, synchronous call chains, and calling it microservices.
+- **Saying "pick 2 of 3" for CAP** — missing that partitions aren't optional, so the real choice is CP vs AP under partition.
+- **Assuming the network is reliable** — no timeouts, unbounded retries, no circuit breaker, so one slow dependency stalls everything.
+- **Retrying non-idempotent operations** — double-charging or double-shipping under retry, with no idempotency key.
+- **Reaching for 2PC** to keep cross-service consistency, ignoring its blocking failure mode and the Saga alternative.
+- **Dual writes** — committing the DB and publishing an event as two separate steps, losing one on a crash, instead of a transactional outbox.
+- **Ordering events by wall-clock timestamp** across machines, ignoring clock skew and logical/vector clocks.
+- **Claiming exactly-once delivery** instead of at-least-once plus idempotency.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Splitting a system buys <b>independent deploy and team autonomy</b> and costs <b>operational and distributed-systems complexity</b> — so modular monolith first, extract on a real boundary. Under a partition CAP forces <b>CP vs AP</b>; pick the weakest consistency the product tolerates. Cross-service transactions use <b>Sagas with compensations, idempotency keys, and a transactional outbox</b>, never 2PC. Push mTLS, retries, and tracing into a <b>service mesh</b>, and wrap every call in <b>timeout + retry-with-backoff-and-jitter + circuit breaker + bulkhead</b> because partial failure is the default."
+</div>

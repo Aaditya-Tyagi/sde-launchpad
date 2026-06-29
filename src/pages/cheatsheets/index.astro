@@ -1,0 +1,32 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { CHEATSHEETS } from '../../data/cheatsheets';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+---
+<BaseLayout title="Cheat Sheets · SDE-2 Launchpad" active="cheatsheets">
+  <div class="wrap" style="padding-top:28px;max-width:860px">
+    <h1>Cheat sheets</h1>
+    <p class="sub">Dense, scannable reference cards for last-minute review. Open any one and hit <b>Print</b> to save a clean PDF or paper copy — backgrounds drop to white and sections won't split across pages.</p>
+
+    <div class="cs-grid">
+      {CHEATSHEETS.map((c) => (
+        <a class="cs-card" href={`${base}/cheatsheets/${c.id}`}>
+          <div class="cs-card-ico">{c.icon}</div>
+          <b>{c.title}</b>
+          <small>{c.blurb}</small>
+          <span class="cs-card-meta">{c.sections.length} sections →</span>
+        </a>
+      ))}
+    </div>
+  </div>
+
+  <style is:global>
+    .cs-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:13px; margin-top:20px; }
+    .cs-card { display:flex; flex-direction:column; gap:5px; padding:18px; border:1px solid var(--line); border-radius:14px; background:var(--panel); text-decoration:none; color:var(--text); transition:.15s; }
+    .cs-card:hover { border-color:var(--accent); transform:translateY(-2px); background:var(--panel-2); }
+    .cs-card-ico { font-size:28px; }
+    .cs-card b { font-size:16px; margin-top:2px; }
+    .cs-card small { font-size:12.5px; color:var(--muted); line-height:1.45; flex:1; }
+    .cs-card-meta { font-family:var(--mono); font-size:11px; color:var(--accent); margin-top:6px; }
+  </style>
+</BaseLayout>

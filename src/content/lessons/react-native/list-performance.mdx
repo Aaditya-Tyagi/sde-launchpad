@@ -1,0 +1,176 @@
+---
+title: "List Performance: FlatList, FlashList & Virtualization"
+track: react-native
+summary: "Why ScrollView kills long lists, how virtualization works, FlatList props that matter, and when to upgrade to FlashList."
+order: 7
+est: 24
+difficulty: hard
+priority: must
+tags: [flatlist, flashlist, virtualization, performance, getItemLayout, keyExtractor]
+whyAsked: "List performance is the #1 practical RN performance topic. Every app has lists, and misusing them is a top cause of jank. Interviewers expect you to know virtualization deeply."
+followUps:
+  - "Why can't you use ScrollView for large lists?"
+  - "What does virtualization mean in the context of RN lists?"
+  - "What does getItemLayout do and when is it critical?"
+  - "What is the difference between FlatList and SectionList?"
+  - "Why is FlashList faster than FlatList?"
+resources:
+  - { label: "RN FlatList docs", url: "https://reactnative.dev/docs/flatlist" }
+  - { label: "FlashList by Shopify", url: "https://shopify.github.io/flash-list" }
+---
+
+## Why ScrollView is wrong for long lists
+
+`ScrollView` renders **all children at once**, eagerly, before the user scrolls. For 20 items it's fine. For 200+ items it means:
+- Mounting hundreds of native views up front → slow initial render
+- All those views stay in memory → high memory pressure
+- Scrolling a fully-mounted list is smooth, but the initial render blocks the UI thread
+
+Never use `ScrollView` for a list where the item count is unknown or potentially large. Use `FlatList` (or `FlashList`).
+
+## How virtualization works
+
+Virtualization (also called "windowing") renders only the items **currently visible** plus a small buffer outside the viewport. As the user scrolls:
+1. Items scrolled past are **unmounted** (or recycled).
+2. Items scrolling into view are **mounted** (or reused from a recycle pool).
+
+The result: at any moment you have O(visible items) mounted, not O(all items). Memory and initial render are constant regardless of list length.
+
+## FlatList — the core props
+
+```jsx
+<FlatList
+  data={items}                          // the data array
+  keyExtractor={(item) => item.id}      // REQUIRED: stable unique key for each item
+  renderItem={({ item, index }) => (    // render function — keep it fast
+    <ItemRow item={item} />
+  )}
+
+  // Performance-critical props
+  getItemLayout={(data, index) => ({    // skip measurement — huge perf win for fixed-height items
+    length: ITEM_HEIGHT,                // item height in px
+    offset: ITEM_HEIGHT * index,        // distance from list start
+    index,
+  })}
+  initialNumToRender={10}              // items to render on first paint
+  maxToRenderPerBatch={10}             // items added per scroll batch
+  windowSize={5}                        // render window: 5 viewports above + below
+  updateCellsBatchingPeriod={50}       // ms between batches
+  removeClippedSubviews={true}         // detach off-screen views (Android mainly)
+
+  // Optimization
+  ItemSeparatorComponent={() => <Divider />}  // separators without index math
+  ListEmptyComponent={<EmptyState />}          // what to show when data is []
+  ListHeaderComponent={<Header />}
+  ListFooterComponent={isLoading && <Spinner />}
+
+  // Pull to refresh
+  onRefresh={handleRefresh}
+  refreshing={isRefreshing}
+
+  // Infinite scroll
+  onEndReached={loadMore}
+  onEndReachedThreshold={0.3}          // trigger 30% before list end
+/>
+```
+
+## keyExtractor — the critical one
+
+`keyExtractor` must return a **stable, unique string** for each item. React Native uses this to efficiently reconcile list updates.
+
+```js
+// BAD: index as key — causes bugs on reorder/insert/delete
+keyExtractor={(_, index) => index.toString()}
+
+// GOOD: stable unique identifier
+keyExtractor={(item) => item.id.toString()}
+keyExtractor={(item) => `post-${item.id}`}
+```
+
+Using index as key means inserting an item at the top causes every key to shift — React Native remounts every item instead of just prepending.
+
+## getItemLayout — unlock scrollToIndex and skip measurement
+
+When all items have the same height, `getItemLayout` lets FlatList skip layout measurement entirely (a major perf win) and enables `scrollToIndex`/`scrollToOffset` without async measurement:
+
+```js
+const ITEM_HEIGHT = 72;
+const SEPARATOR_HEIGHT = 1;
+const ROW_HEIGHT = ITEM_HEIGHT + SEPARATOR_HEIGHT;
+
+getItemLayout={(data, index) => ({
+  length: ROW_HEIGHT,
+  offset: ROW_HEIGHT * index,
+  index,
+})}
+
+// Now this works synchronously:
+flatListRef.current?.scrollToIndex({ index: 50, animated: true });
+```
+
+Without `getItemLayout`, `scrollToIndex` for off-screen items requires measuring all preceding items first, which is expensive and potentially async.
+
+For **variable height** items, you cannot use `getItemLayout`. Consider:
+- `react-native-big-list` (pre-calculates heights)
+- Measuring items and caching heights manually
+- FlashList (handles variable height with less overhead)
+
+## renderItem — keep it fast
+
+The render function runs for every item in the visible window and during scroll batches. Expensive renders cause dropped frames:
+
+```jsx
+// BAD: creating functions inline causes React.memo to always miss
+<FlatList
+  renderItem={({ item }) => (
+    <ItemRow
+      item={item}
+      onPress={() => navigate('Detail', { id: item.id })} // new fn every render
+    />
+  )}
+/>
+
+// GOOD: stable references
+const renderItem = useCallback(
+  ({ item }) => <ItemRow item={item} onPress={handlePress} />,
+  [handlePress]
+);
+const ItemRow = React.memo(({ item, onPress }) => { /* ... */ });
+```
+
+## FlashList — the upgrade
+
+[FlashList by Shopify](https://shopify.github.io/flash-list) is a drop-in FlatList replacement with two key advantages:
+
+1. **Recycler pool**: instead of mounting/unmounting views as they scroll in/out, FlashList **recycles** existing native views and updates their content. This is far cheaper than RN's default remounting.
+2. **Better defaults**: smarter batching, less blank space on fast scrolls.
+
+```jsx
+import { FlashList } from '@shopify/flash-list';
+
+<FlashList
+  data={items}
+  renderItem={({ item }) => <ItemRow item={item} />}
+  estimatedItemSize={72}   // provide an estimate; FlashList measures and adjusts
+  keyExtractor={(item) => item.id}
+/>
+```
+
+**When to use FlashList**: lists with >50 items, complex item renders, or any list experiencing frame drops. For small static lists, FlatList is fine.
+
+## Common list performance mistakes
+
+| Mistake | Fix |
+|---|---|
+| Rendering images without caching | Use `FastImage` (react-native-fast-image) or Expo Image |
+| Heavy `renderItem` with inline functions | Extract + `useCallback` + `React.memo` |
+| Missing `keyExtractor` (defaults to index) | Always provide stable IDs |
+| No `getItemLayout` on fixed-height lists | Add it — free perf win |
+| `ScrollView` wrapping `FlatList` | Never — disables virtualization |
+| Missing `initialNumToRender` | Set to exactly what fits in the first screen |
+| Deeply nested list components | Flatten the render tree |
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "`ScrollView` renders everything eagerly — never use it for large lists. `FlatList` virtualizes: it only keeps visible items plus a buffer mounted, discarding the rest as the user scrolls. `keyExtractor` must return stable unique IDs — index keys break on insert/delete. `getItemLayout` skips async measurement for fixed-height items and unlocks synchronous `scrollToIndex`. `renderItem` should be memoized and the item component wrapped in `React.memo`. FlashList improves on FlatList with a native recycle pool — consider it for any list with 50+ complex rows."
+</div>

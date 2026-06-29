@@ -1,0 +1,175 @@
+---
+title: "HLD Building Blocks"
+track: hld
+summary: "The core components of every scalable system — load balancers, caches, queues, CDN, databases, and how they connect."
+order: 2
+est: 30
+difficulty: medium
+priority: must
+tags: [hld, load-balancer, cache, message-queue, cdn, database, consistency]
+whyAsked: "Every HLD answer assembles these building blocks. You need to know each one deeply enough to choose correctly and defend the trade-offs."
+followUps:
+  - "What is the CAP theorem and when does it apply?"
+  - "What is the difference between vertical and horizontal scaling?"
+  - "How does consistent hashing work?"
+  - "What is the difference between a message queue and a pub/sub system?"
+resources:
+  - { label: "CAP Theorem", url: "https://en.wikipedia.org/wiki/CAP_theorem" }
+  - { label: "Designing Data-Intensive Applications", url: "https://dataintensive.net" }
+---
+
+## Load balancer
+
+Distributes incoming requests across multiple servers. Operates at:
+- **L4 (TCP)** — routes by IP/port. Fast, no content inspection.
+- **L7 (HTTP)** — routes by URL, header, cookie. Enables sticky sessions, A/B testing, SSL termination.
+
+**Algorithms:**
+- **Round robin** — distribute evenly (default)
+- **Least connections** — route to server with fewest active requests (better for variable-duration requests)
+- **IP hash** — same client → same server (sticky sessions without cookies)
+- **Weighted round robin** — route more traffic to larger servers
+
+**Health checks:** LB polls each server every N seconds; removes unhealthy servers automatically.
+
+---
+
+## Caching
+
+The most impactful single optimization for read-heavy systems.
+
+**Cache strategies:**
+
+| Strategy | How | When |
+|---|---|---|
+| **Cache-aside (lazy loading)** | App reads cache; on miss, reads DB and writes to cache | Most common; simple |
+| **Write-through** | Every write goes to cache AND DB synchronously | Strong consistency, higher write latency |
+| **Write-behind (write-back)** | Write to cache, async flush to DB | Very fast writes, risk of data loss |
+| **Read-through** | Cache fetches from DB on miss transparently | Simpler app code |
+
+**Eviction policies:**
+- **LRU** (least recently used) — evict the item not accessed longest
+- **LFU** (least frequently used) — evict the item accessed fewest times
+- **TTL** — expire after fixed time regardless of access
+
+**Where to cache:**
+```
+Browser cache (HTTP headers: Cache-Control, ETag)
+    ↓
+CDN edge cache (static assets, API responses with Surrogate-Control)
+    ↓
+API gateway / reverse proxy (nginx cache)
+    ↓
+Application-level cache (Redis/Memcached) ← most common
+    ↓
+Database query cache (built-in, rarely relied on)
+```
+
+**Redis vs Memcached:**
+- Redis: data structures (sorted sets, lists, hashes), persistence, pub/sub, clustering, Lua scripting
+- Memcached: simpler, multi-threaded, slightly faster for basic key-value
+
+**Cache stampede** — when a hot cached item expires and N threads simultaneously query the DB:
+```
+Fix 1: Use a mutex / distributed lock to let only one thread refresh the cache.
+Fix 2: Add jitter to TTLs so keys don't all expire at once.
+Fix 3: "Probabilistic early expiration" — refresh slightly before TTL with probability based on remaining time.
+```
+
+---
+
+## Databases
+
+### Replication
+- **Single-leader (master-slave):** all writes go to primary, replicated async to replicas. Reads from replicas. 
+  - Risk: replication lag; a user might read stale data right after a write.
+- **Multi-leader:** writes to any node, conflicts resolved. Used for multi-region write.
+- **Leaderless (Dynamo-style):** any node accepts writes; quorum (W + R > N) for consistency.
+
+### Partitioning (sharding)
+- **Range-based:** shard by range of key (A-M → shard 1, N-Z → shard 2). Risk: hot partitions.
+- **Hash-based:** shard by hash(key) % N. Uniform distribution but range queries are hard.
+- **Consistent hashing:** place nodes and keys on a ring; key routes to next clockwise node. Adding/removing nodes only remaps a fraction of keys.
+
+### Indexes
+- **B-tree index:** for equality and range queries. Default in Postgres/MySQL.
+- **Hash index:** equality only, O(1). Used by Redis.
+- **Inverted index:** maps terms to documents. Used by Elasticsearch for full-text search.
+- **Composite index:** index on (a, b) supports `WHERE a=? AND b=?` and `WHERE a=?` but NOT `WHERE b=?`.
+
+---
+
+## Message queues
+
+Decouple producers from consumers; absorb traffic spikes; enable async processing.
+
+**Kafka vs SQS:**
+| | Kafka | SQS |
+|---|---|---|
+| Model | Log (consumer reads at offset) | Queue (message deleted on consume) |
+| Replay | Yes — seek to any offset | No |
+| Ordering | Per partition | FIFO queues only |
+| Throughput | Very high | High |
+| Managed | Self-host or Confluent | AWS fully managed |
+| Best for | Event streaming, analytics | Task queues, async work |
+
+**Delivery semantics:**
+- **At-most-once:** fire and forget; possible message loss
+- **At-least-once:** retry on failure; possible duplicates → consumers must be **idempotent**
+- **Exactly-once:** Kafka transactions or idempotent consumers + dedup table
+
+**Fan-out pattern:**
+```
+Producer → Topic → Consumer Group A (email service)
+                 → Consumer Group B (push notification)
+                 → Consumer Group C (analytics)
+```
+Each consumer group reads independently from the same topic — no need to copy messages.
+
+---
+
+## CDN (Content Delivery Network)
+
+Serves static assets (JS, CSS, images, video) from edge nodes close to the user.
+
+**Origin pull vs origin push:**
+- **Pull (lazy):** CDN fetches from origin on first request; caches for TTL. Simple to set up.
+- **Push:** you upload content to CDN explicitly. Better control, mandatory for large files.
+
+**Cache invalidation:**
+- Set `Cache-Control: max-age=31536000` for immutable assets (use content hash in filename: `app.a3b4c5.js`)
+- Use `surrogate-control` + `purge` API for dynamic content cached at edge
+
+**What to put on CDN:** static assets, images, video chunks, pre-rendered HTML pages (for SSG), API responses with long TTL (product catalog, config).
+
+---
+
+## CAP theorem (simplified)
+
+In a distributed system facing a **network partition**, you must choose between:
+- **Consistency (C):** every read returns the most recent write (or an error)
+- **Availability (A):** every request gets a response (may be stale)
+- **Partition tolerance (P):** the system continues operating despite network splits
+
+P is non-negotiable in any distributed system (networks fail). So the real choice is **CP vs AP**:
+
+| | System | Trade-off |
+|---|---|---|
+| **CP** | HBase, Zookeeper, Postgres (strong) | Returns error instead of stale data |
+| **AP** | Cassandra, DynamoDB, CouchDB | Returns stale data rather than failing |
+
+**When it actually matters:** most systems are fine with eventual consistency (a like count 1s stale is fine). Choose strong consistency for: financial transactions, inventory, seat reservations — anything where stale reads cause incorrect behavior.
+
+---
+
+## Consistency models (from strongest to weakest)
+
+1. **Linearizability (strong consistency)** — behaves as if single-machine. Highest latency.
+2. **Sequential consistency** — all operations appear in some single order (not necessarily wall-clock time).
+3. **Causal consistency** — operations with causal dependencies appear in order.
+4. **Eventual consistency** — all replicas converge eventually, given no new writes.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Before picking any technology, I ask: is this read-heavy or write-heavy? What's the consistency requirement? Can I tolerate stale reads? For a read-heavy system I add a Redis cache in front of the DB with a cache-aside pattern — reads hit cache, misses fall through to DB and populate the cache. For write-heavy I use a message queue to decouple the write path from downstream processing. The queue absorbs traffic spikes and makes consumers independently scalable. Kafka when I need replay or fan-out to multiple consumers; SQS when I just need reliable task delivery."
+</div>

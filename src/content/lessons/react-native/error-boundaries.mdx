@@ -1,0 +1,233 @@
+---
+title: "Error Boundaries & Crash Handling"
+track: react-native
+summary: "What error boundaries catch (and don't), how to implement one, RN-specific crash reporting, and the React 18 updates to error handling."
+order: 13
+est: 18
+difficulty: medium
+priority: must
+tags: [error-boundaries, crash-handling, componentDidCatch, Sentry, react-18-errors]
+whyAsked: "Error boundaries are the production resilience question — they show you think about failure modes, not just happy paths. Knowing what they DON'T catch is the senior signal."
+followUps:
+  - "What errors do error boundaries NOT catch?"
+  - "Why are error boundaries still class components?"
+  - "How do you handle async errors in a component with an error boundary?"
+  - "What's new in React 18 for error handling?"
+  - "How would you integrate Sentry with an error boundary?"
+resources:
+  - { label: "react.dev: Error Boundaries", url: "https://react.dev/reference/react/Component#catching-rendering-errors-with-an-error-boundary" }
+  - { label: "react-error-boundary library", url: "https://github.com/bvaughn/react-error-boundary" }
+---
+
+## What an error boundary is
+
+An **error boundary** is a React component that catches JavaScript errors in its **child component tree** during rendering, in lifecycle methods, and in constructors — and renders a fallback UI instead of crashing the whole app.
+
+Error boundaries must be **class components** — there's no hook equivalent (as of React 18, there's a proposal but not yet stable). In practice, use the `react-error-boundary` library.
+
+## What they catch vs what they don't
+
+**Error boundaries CATCH:**
+- Errors thrown during **rendering** (`render()` / function component body)
+- Errors in **lifecycle methods** (`componentDidMount`, `componentDidUpdate`)
+- Errors in **constructors** of child components
+
+**Error boundaries DO NOT catch:**
+- Errors in **event handlers** (use try/catch there)
+- **Async errors** (setTimeout, Promise rejections, async/await) — caught by `window.onerror` / `unhandledrejection`
+- Errors in the **error boundary itself**
+- Server-side rendering errors
+
+This is the most common interview trap. Many candidates think error boundaries catch all errors. They don't.
+
+## Implementing one from scratch
+
+```tsx
+import React, { Component, ErrorInfo, ReactNode } from 'react';
+
+interface Props {
+  children: ReactNode;
+  fallback: ReactNode | ((error: Error, reset: () => void) => ReactNode);
+  onError?: (error: Error, info: ErrorInfo) => void;
+}
+
+interface State {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends Component<Props, State> {
+  state: State = { hasError: false, error: null };
+
+  static getDerivedStateFromError(error: Error): State {
+    // Called during render — update state to show fallback
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    // Called after render — side effects ok here (logging)
+    this.props.onError?.(error, info);
+    // Log to crash reporting service
+    console.error('ErrorBoundary caught:', error, info.componentStack);
+  }
+
+  reset = () => this.setState({ hasError: false, error: null });
+
+  render() {
+    if (this.state.hasError && this.state.error) {
+      const { fallback } = this.props;
+      return typeof fallback === 'function'
+        ? fallback(this.state.error, this.reset)
+        : fallback;
+    }
+    return this.props.children;
+  }
+}
+
+// Usage
+function App() {
+  return (
+    <ErrorBoundary
+      fallback={(error, reset) => (
+        <View style={styles.error}>
+          <Text>Something went wrong</Text>
+          <Text style={styles.detail}>{error.message}</Text>
+          <Button title="Try again" onPress={reset} />
+        </View>
+      )}
+      onError={(error, info) => Sentry.captureException(error, { extra: info })}
+    >
+      <MainContent />
+    </ErrorBoundary>
+  );
+}
+```
+
+## react-error-boundary — the production-ready choice
+
+```tsx
+import { ErrorBoundary, useErrorBoundary } from 'react-error-boundary';
+
+// FallbackComponent receives error and resetErrorBoundary
+function ErrorFallback({ error, resetErrorBoundary }) {
+  return (
+    <View>
+      <Text>Error: {error.message}</Text>
+      <Button title="Retry" onPress={resetErrorBoundary} />
+    </View>
+  );
+}
+
+<ErrorBoundary
+  FallbackComponent={ErrorFallback}
+  onReset={() => queryClient.clear()} // reset app state on retry
+>
+  <App />
+</ErrorBoundary>
+
+// In a component — throw to the nearest boundary programmatically
+function DataLoader() {
+  const { showBoundary } = useErrorBoundary();
+
+  async function fetchData() {
+    try {
+      await api.getUser();
+    } catch (err) {
+      showBoundary(err); // trigger the boundary from an async context
+    }
+  }
+}
+```
+
+## Granular boundaries — nest them
+
+Don't just wrap the whole app — put boundaries around discrete features so one failure doesn't take down the whole screen:
+
+```tsx
+function ProfileScreen() {
+  return (
+    <View>
+      <ErrorBoundary fallback={<Text>Profile failed to load</Text>}>
+        <UserHeader />
+      </ErrorBoundary>
+
+      <ErrorBoundary fallback={<Text>Posts unavailable</Text>}>
+        <PostFeed />
+      </ErrorBoundary>
+
+      <ErrorBoundary fallback={null}> {/* silently hide if broken */}
+        <RecommendedUsers />
+      </ErrorBoundary>
+    </View>
+  );
+}
+```
+
+## Handling async errors and event handler errors
+
+```tsx
+// Event handlers — use try/catch
+function SubmitButton() {
+  const [error, setError] = useState<Error | null>(null);
+
+  const handleSubmit = async () => {
+    try {
+      await submitForm();
+    } catch (err) {
+      setError(err as Error); // show inline error, or use showBoundary
+    }
+  };
+
+  return (
+    <>
+      {error && <Text style={styles.error}>{error.message}</Text>}
+      <Button title="Submit" onPress={handleSubmit} />
+    </>
+  );
+}
+```
+
+## React 18 error handling improvements
+
+React 18 made two changes to error handling:
+
+1. **Errors are now caught in more places**: errors during hydration, errors in transitions, and errors in `startTransition` callbacks are now caught by error boundaries.
+2. **Two new root-level error events**: `onCaughtError` (error caught by a boundary) and `onUncaughtError` (error NOT caught by any boundary) can be configured on `createRoot`:
+
+```tsx
+const root = createRoot(container, {
+  onUncaughtError: (error, errorInfo) => {
+    Sentry.captureException(error);
+  },
+  onCaughtError: (error, errorInfo) => {
+    if (!(error instanceof ExpectedError)) Sentry.captureException(error);
+  },
+});
+```
+
+## Crash reporting integration (Sentry)
+
+```tsx
+import * as Sentry from '@sentry/react-native';
+
+Sentry.init({
+  dsn: 'your-dsn-here',
+  tracesSampleRate: 0.2,
+});
+
+// Sentry provides its own ErrorBoundary with automatic capture
+import { ErrorBoundary } from '@sentry/react-native';
+
+function App() {
+  return (
+    <ErrorBoundary fallback={<CrashScreen />} showDialog>
+      <MainApp />
+    </ErrorBoundary>
+  );
+}
+```
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Error boundaries catch render-time errors, lifecycle errors, and constructor errors in child components — but NOT async errors, event handler errors, or errors in the boundary itself. `getDerivedStateFromError` updates state to show the fallback UI; `componentDidCatch` is for side effects like logging. I use `react-error-boundary` in production and nest boundaries granularly so one broken feature doesn't take down the whole screen. Async errors from event handlers need try/catch; `showBoundary` from `useErrorBoundary` bridges async errors into the boundary system."
+</div>

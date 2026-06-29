@@ -1,0 +1,80 @@
+---
+title: "useImperativeHandle + forwardRef"
+track: react-native
+summary: "Expose a controlled set of imperative methods from a child to its parent via a ref — the right way."
+order: 4
+est: 16
+difficulty: medium
+priority: must
+tags: [hooks, refs, forwardRef, imperative]
+whyAsked: "You got asked this directly. It tests whether you understand refs beyond DOM nodes and know when imperative escape hatches are appropriate in a declarative world."
+followUps:
+  - "Why not just lift state up instead of using a ref?"
+  - "What does forwardRef do, and is it still required?"
+  - "What's a real use case where this is the right tool?"
+resources:
+  - { label: "React docs: useImperativeHandle", url: "https://react.dev/reference/react/useImperativeHandle" }
+---
+
+Most parent→child communication in React is **declarative**: the parent passes props down. But sometimes a parent needs to *imperatively* trigger something on a child — focus an input, open a modal, scroll a list, play a video. `useImperativeHandle` lets a child expose a **small, explicit API** on its `ref` instead of leaking its internals.
+
+## The shape
+
+```jsx
+import { forwardRef, useImperativeHandle, useRef } from 'react';
+
+const FancyInput = forwardRef(function FancyInput(props, ref) {
+  const inputRef = useRef(null);
+
+  useImperativeHandle(ref, () => ({
+    focus: () => inputRef.current.focus(),
+    clear: () => { inputRef.current.value = ''; },
+  }), []);
+
+  return <input ref={inputRef} {...props} />;
+});
+```
+
+Now the parent holds a ref and calls those methods — and *only* those methods:
+
+```jsx
+function Form() {
+  const inputRef = useRef(null);
+  return (
+    <>
+      <FancyInput ref={inputRef} placeholder="Email" />
+      <button onClick={() => inputRef.current.focus()}>Focus</button>
+      <button onClick={() => inputRef.current.clear()}>Clear</button>
+    </>
+  );
+}
+```
+
+Three pieces working together:
+
+- **`forwardRef`** lets a component receive a `ref` from its parent (a function component can't get one otherwise). In React 19+, `ref` can be a normal prop, but forwardRef is still the widely-deployed pattern.
+- **`useImperativeHandle(ref, factory, deps)`** sets what `ref.current` becomes — the object your factory returns — instead of the raw DOM/native node.
+- The internal `inputRef` stays private; the parent can't reach into it.
+
+<div class="callout key">
+  <div class="ct">In one line</div>
+  <code>useImperativeHandle</code> customizes the value a parent's ref points to, letting a child publish a deliberate imperative API (e.g. <code>focus()</code>, <code>open()</code>) while hiding its internals.
+</div>
+
+## When is this actually the right tool?
+
+Default to declarative — lift state up or pass props. Reach for an imperative handle only for **actions that don't naturally map to state**:
+
+- Focus / blur / scroll-to / select text
+- Play / pause / seek on a media component
+- Open / close / shake an animation on an imperative component (a toast, a bottom sheet)
+- Triggering an imperative animation library call
+
+<div class="callout warn">
+  <div class="ct">The follow-up trap</div>
+  "Why not lift state up?" — Because some things aren't state, they're <i>one-shot commands</i>. Modeling "focus right now" as a boolean prop is awkward (you'd need to reset it). An imperative method expresses a transient action cleanly. Say that and you've nailed the question.
+</div>
+
+## Say it out loud (30s)
+
+> "`forwardRef` lets a child receive a parent's ref; `useImperativeHandle` replaces what that ref points to with a custom object of methods, so the child exposes a deliberate API like `focus()` or `open()` while keeping its internals private. I use it only for imperative actions that don't map to state — focus, scroll, play/pause, opening a modal — and otherwise keep things declarative by lifting state up."

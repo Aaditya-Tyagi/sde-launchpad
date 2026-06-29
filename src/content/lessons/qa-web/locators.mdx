@@ -1,0 +1,290 @@
+---
+title: "Locators: CSS selectors & XPath"
+track: qa-web
+summary: "You can't automate what you can't locate. Master the full CSS and XPath reference, dynamic locators, axes, the resilient-locator hierarchy, Playwright getBy* and shadow DOM — then validate everything in DevTools."
+order: 1
+est: 28
+difficulty: medium
+priority: must
+tags: [locators, css, xpath, devtools, shadow-dom]
+whyAsked: "Brittle locators are the #1 cause of flaky tests. Interviewers hand you a tricky element and ask you to locate it — they're testing whether you can write robust selectors and know when to use CSS vs XPath."
+followUps:
+  - "When would you use XPath over CSS?"
+  - "How do you locate an element by its visible text?"
+  - "What makes a locator brittle and how do you fix it?"
+  - "Locate the input that follows a label reading 'Email'."
+resources:
+  - { label: "CSS cheatsheet", url: "https://devhints.io/css" }
+  - { label: "XPath cheatsheet", url: "https://devhints.io/xpath" }
+  - { label: "Playwright locators", url: "https://playwright.dev/docs/locators" }
+  - { label: "Practice: the-internet", url: "https://the-internet.herokuapp.com/" }
+---
+
+Every UI action starts with finding an element. Robust locators are the difference between a stable suite and constant flakiness — and "locate this element" is the single most common live exercise in QA interviews.
+
+## CSS selectors — full reference
+
+CSS is your default: faster than XPath, native to the browser engine, and readable. Learn every primitive.
+
+```
+/* Basic */
+#id                  element with that id
+.class               element with that class
+tag                  every element of that type
+tag.class            tag AND class together
+.a.b                 element with BOTH classes a and b
+*                    any element
+
+/* Attributes */
+[name='q']           attribute equals
+[href^='https']      attribute STARTS WITH (^)
+[src$='.png']        attribute ENDS WITH ($)
+[class*='btn']       attribute CONTAINS substring (*)
+[data-role~='nav']   attribute contains word (space-separated list)
+[type='text'][required]   multiple attribute conditions (AND)
+
+/* Combinators */
+a b                  b is a DESCENDANT of a (any depth)
+a > b                b is a DIRECT CHILD of a
+a + b                b is the IMMEDIATELY-following sibling of a
+a ~ b                b is ANY following sibling of a
+
+/* Structural pseudo-classes */
+li:first-child       first child of its parent
+li:last-child        last child
+li:nth-child(2)      2nd child (counts ALL siblings)
+li:nth-of-type(2)    2nd <li> among siblings (counts only li)
+tr:nth-child(odd)    every odd row
+input:not([disabled])  negation
+:checked / :disabled   form state
+```
+
+<div class="callout warn">
+  <div class="ct">nth-child vs nth-of-type</div>
+  <code>nth-child(2)</code> matches an element only if it is the 2nd child of its parent regardless of tag. <code>nth-of-type(2)</code> matches the 2nd element <em>of that tag</em>. Mixing them up is a classic interview trip-up. CSS has <strong>no</strong> way to select by visible text and cannot traverse to a parent — for those, reach for XPath.
+</div>
+
+## XPath — full reference
+
+XPath can do everything CSS can plus select by text and traverse **up and sideways**.
+
+```
+/* Path basics */
+//tag                 anywhere in the document (relative)
+/html/body/div        absolute path from root (AVOID — brittle)
+//*                    any element
+//div/span            span that is a direct child of div
+//div//span           span anywhere inside div
+
+/* Predicates */
+//input[@id='user']        attribute equals
+//*[@id='x']               any tag with that id
+//div[@class='card'][2]    the 2nd matching div
+(//input)[1]               first input in the whole DOM
+(//table//tr)[last()]      last row
+//li[position() <= 3]      first three li
+
+/* Text */
+//button[text()='Login']           exact text of the node itself
+//button[.='Login']                exact text of node AND descendants
+//button[contains(text(),'Log')]   partial text
+//button[contains(.,'Log')]        partial text incl. children
+//*[normalize-space()='Save']      trims/collapses whitespace
+//input[starts-with(@id,'user_')]  dynamic id prefix
+```
+
+### text() vs `.` — a frequent question
+
+`text()` returns only the **direct** text node of an element. `.` (or the string value of the node) returns the **concatenated** text of the element and all its descendants. So for `<button><span>Log</span>in</button>`:
+
+```
+//button[text()='Login']      → no match (text is split across nodes)
+//button[.='Login']           → matches (joins "Log" + "in")
+//button[contains(.,'Log')]   → matches (partial, includes children)
+```
+
+Rule of thumb: use `.` / `contains(.,...)` when text is wrapped in child tags; use `text()` only when the target text sits directly in the element.
+
+### XPath axes — the killer feature
+
+Axes let you navigate the tree relative to a node you can find. This is what interviewers probe.
+
+```
+//label[text()='Email']/following-sibling::input     next sibling input
+//input[@id='q']/preceding-sibling::label            previous sibling label
+//span[text()='Total']/parent::div                   immediate parent
+//span[text()='Total']/ancestor::table               nearest enclosing table
+//td[text()='42']/ancestor::tr                        the row containing a cell
+//div[@id='menu']/descendant::a                       all anchors inside
+//h2/following::p                                      every <p> after this h2 anywhere
+//h2/preceding::p                                      every <p> before it
+//a/child::span                                        direct child span
+//input/self::input                                   the node itself
+```
+
+The most useful in real tests: `following-sibling`, `ancestor`, and `parent` — they let you anchor on stable text (a label) and hop to the volatile input next to it.
+
+## Dynamic & resilient locator patterns
+
+Auto-generated ids like `id="user_8f3a91"` change every build. Anchor on the stable part:
+
+```
+//input[starts-with(@id,'user_')]
+//div[contains(@class,'modal') and contains(@class,'open')]
+//*[normalize-space(text())='Add to cart']
+//tr[td[text()='Widget']]//button[text()='Delete']   row-scoped action
+```
+
+### CSS chaining vs XPath chaining
+
+```
+/* CSS — descendant chaining is implicit */
+.product-card .price
+
+/* XPath — chain with another // */
+//div[@class='product-card']//span[@class='price']
+```
+
+In code you can also chain `findElement` calls to scope a search to a parent (Selenium) or use `.locator()` (Playwright) — see below.
+
+## The resilient-locator hierarchy
+
+When choosing how to locate, prefer the most stable, user-visible attribute. This exact priority order is the "correct" interview answer:
+
+1. **Dedicated test id** — `[data-testid='login-btn']`. Decoupled from styling and copy; the gold standard.
+2. **Role + accessible name** — the *button* named "Submit". Maps to how a real user (and assistive tech) perceives the page.
+3. **Label / placeholder / alt text** — for form fields.
+4. Stable **id** or **name** attributes.
+5. Visible **text**.
+6. **CSS** by structural/semantic selectors.
+7. **XPath** (last resort, especially anything index- or layout-based).
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Locate by what the user perceives (role, name, text, test id), not by how the page is built (deep CSS chains, absolute XPath). The former survives refactors; the latter breaks on the next CSS tweak.
+</div>
+
+## Selenium 4 relative locators
+
+Selenium 4 added human-friendly spatial locators built on the DOM geometry:
+
+```java
+import static org.openqa.selenium.support.locators.RelativeLocator.with;
+
+WebElement pwd = driver.findElement(By.id("password"));
+WebElement userField = driver.findElement(
+    with(By.tagName("input")).above(pwd));
+
+driver.findElement(with(By.tagName("button")).below(pwd).toRightOf(cancel));
+// available: above, below, toLeftOf, toRightOf, near
+```
+
+Handy when the only reliable anchor is a neighbouring element. Note it relies on rendered positions, so it can be flaky if layout shifts — prefer it only when better locators don't exist.
+
+## Playwright getBy* locators
+
+Playwright bakes the resilient hierarchy into its API and these auto-wait and auto-retry:
+
+```ts
+page.getByRole('button', { name: 'Sign in' });   // role + accessible name
+page.getByLabel('Email');                          // form label
+page.getByPlaceholder('Search…');
+page.getByText('Welcome back');                    // substring by default
+page.getByText('Exact', { exact: true });
+page.getByTestId('login-btn');                     // data-testid (configurable)
+page.getByAltText('Company logo');
+page.getByTitle('Close');
+
+// Chaining / scoping
+page.getByRole('listitem')
+    .filter({ hasText: 'Widget' })
+    .getByRole('button', { name: 'Delete' });
+
+// Still supports CSS/XPath when needed
+page.locator('css=.price');
+page.locator('xpath=//span[@class="price"]');
+```
+
+`filter({ hasText })` and `nth(i)` solve the "one of many similar rows" problem cleanly.
+
+## Shadow DOM
+
+Web components hide markup inside a shadow root, so normal locators can't pierce it.
+
+- **Selenium 4:** `getShadowRoot()` returns a search context for the open shadow tree.
+
+```java
+WebElement host = driver.findElement(By.cssSelector("my-widget"));
+SearchContext shadow = host.getShadowRoot();
+shadow.findElement(By.cssSelector(".inner-button")).click();
+```
+
+- **Playwright:** locators pierce **open** shadow DOM automatically — `getByRole`/CSS just work across the boundary. Neither tool can reach a **closed** shadow root.
+
+## Validate before you code
+
+Never write a locator blind. In Chrome DevTools console:
+
+```js
+document.querySelectorAll("css-here").length   // CSS — check the count is 1
+$x("//xpath-here")                              // XPath — returns array of nodes
+$$("css-here")                                  // shorthand for querySelectorAll
+```
+
+You can also use the Elements panel: right-click a node → Copy → Copy selector / Copy XPath (a starting point, usually too brittle to keep). If your selector returns exactly one element, it's good; if it returns several, tighten it.
+
+## "Locate this tricky element" — interview tasks with answers
+
+**1. Input next to a label "Email" (no id on the input).**
+```
+XPath:  //label[normalize-space()='Email']/following-sibling::input
+PW:     page.getByLabel('Email')
+```
+
+**2. Delete button in the table row whose first cell is "Widget".**
+```
+XPath:  //tr[td[normalize-space()='Widget']]//button[normalize-space()='Delete']
+PW:     page.getByRole('row', { name: 'Widget' }).getByRole('button', { name: 'Delete' })
+```
+
+**3. Element with a dynamic id like `btn_3f9a` that always starts with `btn_`.**
+```
+CSS:    [id^='btn_']
+XPath:  //*[starts-with(@id,'btn_')]
+```
+
+**4. The price inside the 2nd product card.**
+```
+CSS:    .product-card:nth-of-type(2) .price
+XPath:  (//div[@class='product-card'])[2]//span[@class='price']
+```
+
+**5. A link whose visible text is exactly "Sign out" (others contain "Sign").**
+```
+XPath:  //a[normalize-space()='Sign out']
+PW:     page.getByRole('link', { name: 'Sign out', exact: true })
+```
+
+**6. The parent `<tr>` of a cell containing "42".**
+```
+XPath:  //td[normalize-space()='42']/ancestor::tr[1]
+```
+
+**7. Checkbox that is currently checked.**
+```
+CSS:    input[type='checkbox']:checked
+```
+
+<div class="callout warn">
+  <div class="ct">Avoid</div>
+  Absolute XPath (<code>/html/body/div[2]/...</code>), index-only chains, and selectors tied to styling classes designers churn. Ask devs to add <code>data-testid</code> — it's the cheapest flakiness fix there is.
+</div>
+
+## Common mistakes
+
+- Using `text()='X'` when the text is wrapped in child spans (use `.='X'` or `contains(.,'X')`).
+- Forgetting `normalize-space()` and failing on leading/trailing whitespace or `&nbsp;`.
+- Relying on `nth-child` for "the 2nd row" when there's a header or hidden node ahead — counts surprise you; use `nth-of-type` or scope to `tbody`.
+- Copying DevTools' auto-generated absolute selector and committing it.
+- Writing a locator that matches multiple elements and silently acting on the first.
+- Caching a `WebElement` then reusing it after a re-render → `StaleElementReferenceException`. Re-find instead.

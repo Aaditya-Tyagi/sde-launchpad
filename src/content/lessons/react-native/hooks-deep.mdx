@@ -1,0 +1,70 @@
+---
+title: "Hooks Deep Dive: refs, effects & memo"
+track: react-native
+summary: "useRef's dual role, useEffect vs useLayoutEffect timing, the rules of hooks, and custom hooks."
+order: 3
+est: 20
+difficulty: medium
+priority: deep
+tags: [hooks, useRef, useEffect, useLayoutEffect, custom-hooks]
+whyAsked: "Hooks are the daily reality of React work, so interviewers probe the subtle timing and identity behaviors that cause real bugs."
+followUps:
+  - "What are the two distinct uses of useRef?"
+  - "useEffect vs useLayoutEffect — when does each fire?"
+  - "Why can't you call hooks conditionally?"
+  - "When would you write a custom hook?"
+resources:
+  - { label: "react.dev: Reusing logic with custom hooks", url: "https://react.dev/learn/reusing-logic-with-custom-hooks" }
+---
+
+Hooks let function components hold state and side effects. The subtle parts — which interviews target — are timing and identity.
+
+## useRef has two jobs
+
+`useRef` returns a stable, mutable container (`{ current }`) that **persists across renders and does not trigger a re-render when changed**. That single behavior powers two distinct uses:
+
+1. **Element refs** — attach to a view (`<input ref={inputRef} />`) to imperatively focus/measure/scroll.
+2. **Mutable instance values** — store something that should survive renders but isn't UI state: a timer id, the previous prop value, a "has mounted" flag, a websocket. Mutating `ref.current` is the escape hatch for "remember this without re-rendering."
+
+```js
+const renders = useRef(0);
+renders.current++;        // changes every render, never causes one
+```
+
+## useEffect vs useLayoutEffect
+
+Both run *after* render, but at different moments:
+
+- **`useEffect`** fires **after paint** (asynchronously). The screen updates first, then your effect runs. This is the default — data fetching, subscriptions, logging, timers.
+- **`useLayoutEffect`** fires **synchronously after the DOM/native tree is mutated but before paint**. Use it only when you must read layout (measure a node) and mutate before the user sees a flicker. It blocks paint, so overusing it hurts performance — in RN, prefer `useEffect` unless you're measuring.
+
+The cleanup function you return runs before the effect re-runs and on unmount — essential for removing listeners and clearing timers to avoid leaks.
+
+## The rules of hooks (and why)
+
+1. **Only call hooks at the top level** — never inside conditions, loops, or nested functions.
+2. **Only call them from React functions** — components or other hooks.
+
+The reason is concrete: React tracks hooks **by call order**, not by name. It keeps an ordered list of hook "slots" per component. If you call hooks conditionally, the order shifts between renders and React associates state with the wrong slot — corrupting your state. The linter enforces this for you.
+
+## Custom hooks
+
+A custom hook is just a function starting with `use` that calls other hooks. It extracts **stateful logic** for reuse — not markup. Examples: `useDebouncedValue`, `useOnlineStatus`, `useFetch`, `useInterval`.
+
+```js
+function useDebouncedValue(value, ms = 300) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), ms);
+    return () => clearTimeout(id);   // cleanup cancels the pending update
+  }, [value, ms]);
+  return debounced;
+}
+```
+
+Two components using `useDebouncedValue` get **independent** state — custom hooks share logic, not state. That's the key distinction from older patterns (HOCs, render props) which wrapped the tree; hooks compose flatly without "wrapper hell."
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "`useRef` is a render-stable mutable box that doesn't trigger re-renders — used both for element refs and for instance values like timers. `useEffect` runs after paint; `useLayoutEffect` runs synchronously before paint for layout measurement. Hooks must be called unconditionally at the top level because React tracks them by call order. Custom hooks are `use`-prefixed functions that extract stateful logic for reuse, each call getting its own independent state."
+</div>

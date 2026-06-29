@@ -1,0 +1,293 @@
+---
+title: "LLD: Design a Typeahead / Autocomplete"
+track: lld
+summary: "Design a production autocomplete — debounced remote search, keyboard navigation, accessibility, caching, and cancellation."
+order: 5
+est: 30
+difficulty: hard
+priority: must
+tags: [lld, autocomplete, typeahead, debounce, keyboard-nav, aria, combobox]
+whyAsked: "Autocomplete is the most common frontend LLD question. It combines debounce, async state, keyboard events, accessibility, and performance in one realistic component."
+followUps:
+  - "How do you prevent a stale response from overwriting a newer one?"
+  - "How would you cache autocomplete results to avoid repeat requests?"
+  - "What ARIA roles does an accessible autocomplete need?"
+  - "How do you handle keyboard navigation?"
+  - "How would you support multi-select?"
+resources:
+  - { label: "WAI-ARIA: Combobox pattern", url: "https://www.w3.org/WAI/ARIA/apg/patterns/combobox/" }
+---
+
+## Step 1: Requirements
+
+**Must-have:**
+- Debounced search (300ms) — don't fire on every keystroke
+- Async results with loading state
+- Keyboard navigation: Arrow keys, Enter to select, Escape to close
+- ARIA combobox pattern (role="combobox", role="listbox", role="option")
+- Click-outside to close
+- Clear input button
+
+**Nice-to-have:**
+- Request cancellation (AbortController)
+- Result caching
+- Highlight matched text in results
+- Debounce leading edge (show results for unchanged previous query instantly)
+
+---
+
+## Step 2: Data model
+
+```ts
+interface AutocompleteState<T> {
+  query: string;
+  options: T[];
+  activeIndex: number;  // -1 = none focused
+  isOpen: boolean;
+  isLoading: boolean;
+  error: string | null;
+}
+
+interface AutocompleteProps<T> {
+  onSearch: (query: string) => Promise<T[]>;
+  getLabel: (option: T) => string;
+  getValue: (option: T) => string;
+  onSelect: (option: T) => void;
+  placeholder?: string;
+  minChars?: number;  // minimum chars to trigger search
+  debounceMs?: number;
+}
+```
+
+---
+
+## Step 3: The hook — core logic
+
+```ts
+import { useState, useEffect, useRef, useCallback } from 'react';
+
+function useAutocomplete<T>({
+  onSearch,
+  getLabel,
+  onSelect,
+  minChars = 1,
+  debounceMs = 300,
+}: AutocompleteProps<T>) {
+  const [query, setQuery] = useState('');
+  const [options, setOptions] = useState<T[]>([]);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [isOpen, setIsOpen] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const abortRef = useRef<AbortController | null>(null);
+  const cache = useRef(new Map<string, T[]>());
+
+  // Debounced search
+  useEffect(() => {
+    if (query.length < minChars) {
+      setOptions([]);
+      setIsOpen(false);
+      return;
+    }
+
+    // Check cache first
+    if (cache.current.has(query)) {
+      setOptions(cache.current.get(query)!);
+      setIsOpen(true);
+      return;
+    }
+
+    const timerId = setTimeout(async () => {
+      // Cancel any in-flight request
+      abortRef.current?.abort();
+      abortRef.current = new AbortController();
+
+      setIsLoading(true);
+      try {
+        const results = await onSearch(query);
+        // Only update if this is still the current query
+        // (AbortController handles cancellation at the network level;
+        //  this guards against race conditions in the state update)
+        cache.current.set(query, results);
+        setOptions(results);
+        setIsOpen(true);
+        setActiveIndex(-1);
+      } catch (err) {
+        if ((err as Error).name !== 'AbortError') {
+          setOptions([]);
+        }
+      } finally {
+        setIsLoading(false);
+      }
+    }, debounceMs);
+
+    return () => {
+      clearTimeout(timerId);
+      abortRef.current?.abort();
+    };
+  }, [query, onSearch, minChars, debounceMs]);
+
+  // Keyboard handler
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (!isOpen) return;
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setActiveIndex(i => Math.min(i + 1, options.length - 1));
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setActiveIndex(i => Math.max(i - 1, -1));
+        break;
+      case 'Enter':
+        e.preventDefault();
+        if (activeIndex >= 0 && options[activeIndex]) {
+          handleSelect(options[activeIndex]);
+        }
+        break;
+      case 'Escape':
+        setIsOpen(false);
+        setActiveIndex(-1);
+        break;
+    }
+  }, [isOpen, options, activeIndex]);
+
+  const handleSelect = useCallback((option: T) => {
+    onSelect(option);
+    setQuery(getLabel(option));
+    setIsOpen(false);
+    setActiveIndex(-1);
+  }, [onSelect, getLabel]);
+
+  const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setQuery(e.target.value);
+  }, []);
+
+  const clear = useCallback(() => {
+    setQuery('');
+    setOptions([]);
+    setIsOpen(false);
+  }, []);
+
+  return {
+    query, options, activeIndex, isOpen, isLoading,
+    handlers: { onChange: handleChange, onKeyDown: handleKeyDown },
+    handleSelect, clear,
+  };
+}
+```
+
+---
+
+## Step 4: The component — accessible markup
+
+```tsx
+function Autocomplete<T extends { id: string }>({
+  onSearch, getLabel, getValue, onSelect, placeholder = 'Search...',
+}: AutocompleteProps<T>) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listId = useId();
+  const optionIdPrefix = useId();
+
+  const { query, options, activeIndex, isOpen, isLoading, handlers, handleSelect, clear } =
+    useAutocomplete({ onSearch, getLabel, getValue, onSelect });
+
+  // Click outside to close
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onClickOutside = (e: MouseEvent) => {
+      if (!containerRef.current?.contains(e.target as Node)) {
+        // close...
+      }
+    };
+    document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, []);
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative' }}>
+      {/* ARIA combobox input */}
+      <input
+        ref={inputRef}
+        role="combobox"
+        aria-expanded={isOpen}
+        aria-controls={listId}
+        aria-autocomplete="list"
+        aria-activedescendant={
+          activeIndex >= 0 ? `${optionIdPrefix}-${activeIndex}` : undefined
+        }
+        value={query}
+        placeholder={placeholder}
+        {...handlers}
+      />
+      {query && (
+        <button onClick={clear} aria-label="Clear search">×</button>
+      )}
+      {isLoading && <span aria-live="polite">Loading…</span>}
+
+      {/* Dropdown */}
+      {isOpen && options.length > 0 && (
+        <ul
+          id={listId}
+          role="listbox"
+          style={{ position: 'absolute', width: '100%', listStyle: 'none', padding: 0 }}
+        >
+          {options.map((opt, i) => (
+            <li
+              key={getValue(opt)}
+              id={`${optionIdPrefix}-${i}`}
+              role="option"
+              aria-selected={i === activeIndex}
+              onMouseDown={(e) => { e.preventDefault(); handleSelect(opt); }}
+              style={{
+                padding: '8px 12px',
+                background: i === activeIndex ? '#e0e7ff' : '#fff',
+                cursor: 'pointer',
+              }}
+            >
+              <HighlightMatch text={getLabel(opt)} query={query} />
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* Accessible empty state */}
+      {isOpen && options.length === 0 && !isLoading && (
+        <div role="status" aria-live="polite">No results for "{query}"</div>
+      )}
+    </div>
+  );
+}
+
+// Highlight the matched portion
+function HighlightMatch({ text, query }: { text: string; query: string }) {
+  if (!query) return <>{text}</>;
+  const idx = text.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, idx)}
+      <mark>{text.slice(idx, idx + query.length)}</mark>
+      {text.slice(idx + query.length)}
+    </>
+  );
+}
+```
+
+---
+
+## Step 5: Edge cases to talk through
+
+| Edge case | Solution |
+|---|---|
+| Race condition (fast typing) | `AbortController` cancels in-flight requests; `cache.current.has(query)` guards stale setState |
+| Stale options on backspace | Cache stores per-query; clearing cache on significant change |
+| Scroll active option into view | `scrollIntoView` on the highlighted `<li>` when `activeIndex` changes |
+| Mobile UX | `inputMode="search"` on input; close on select; no hover states needed |
+| Max cache size | LRU eviction — use `Map` (insertion order) and delete oldest when size exceeds limit |
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "I separate the hook (state, debounce, search, keyboard) from the component (markup, ARIA). The search effect cleans up on every `query` change — it clears the timer and aborts any in-flight request with `AbortController`. The cache is a `Map` on a ref (not state) so it persists across renders without causing re-renders. ARIA: input gets `role='combobox'`, the list gets `role='listbox'`, each option gets `role='option'` with `aria-selected`, and `aria-activedescendant` points to the focused option's ID."
+</div>

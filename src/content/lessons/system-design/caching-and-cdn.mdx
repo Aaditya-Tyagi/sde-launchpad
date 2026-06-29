@@ -1,0 +1,193 @@
+---
+title: "Caching & CDN deep dive"
+track: system-design
+summary: "Caching layers, write strategies (aside/through/back), eviction, the three big failure modes (stampede, penetration, avalanche), invalidation & consistency, CDN internals, and Redis data structures."
+order: 8
+est: 32
+difficulty: hard
+priority: must
+tags: [cache, redis, cdn, eviction, invalidation, stampede, hot-key]
+whyAsked: "Caching shows up in nearly every backend design, and the failure modes (stampede, penetration, avalanche) and invalidation are exactly where senior candidates separate from juniors."
+followUps:
+  - "Cache-aside vs read-through vs write-through vs write-back?"
+  - "What is a cache stampede and how do you prevent it?"
+  - "How do you keep a cache consistent with the DB?"
+  - "Push vs pull CDN — and how is the cache key formed?"
+  - "How do you mitigate a hot key in Redis?"
+resources:
+  - { label: "Redis docs", url: "https://redis.io/docs/" }
+  - { label: "AWS CloudFront caching", url: "https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/Introduction.html" }
+  - { label: "System Design Primer: caching", url: "https://github.com/donnemartin/system-design-primer#cache" }
+---
+
+A cache trades **freshness and complexity** for **latency and offloaded load**. It's the highest-leverage lever in a read-heavy system — and the source of the subtlest bugs. Know the layers, the write strategies, the failure modes, and invalidation, and you can defend any caching decision.
+
+## The caching layers
+
+Cache as close to the user as freshness allows — each layer cuts latency and offloads the one behind it.
+
+```
+Browser cache        ms,    per-user      (HTTP Cache-Control, ETag, memory/disk)
+   │ miss
+CDN / edge cache     ~10ms, per-region    (static assets, cacheable responses)
+   │ miss
+App-level cache      <1ms,  shared        (Redis / Memcached — the workhorse)
+   │ miss
+DB buffer pool       in-DB                (DB caches hot pages in RAM)
+   │ miss
+Disk
+```
+
+Each layer has different invalidation, scope, and TTL. The browser cache is private and hard to purge (version your URLs); the CDN and Redis you control directly.
+
+## Write strategies (how the cache and DB stay related)
+
+| Strategy | Read | Write | Pro | Con |
+|---|---|---|---|---|
+| **Cache-aside** (lazy) | App checks cache; on miss reads DB and populates | App writes DB, then **invalidates/updates** cache | Simple, only caches what's used, cache failure ≠ outage | First read is a miss; risk of stale on bad invalidation |
+| **Read-through** | Cache library fetches from DB on miss transparently | (paired with write-through) | App code is simple | Cache is in the critical path |
+| **Write-through** | (paired with read-through) | App writes cache, cache synchronously writes DB | Cache always fresh | Write latency = cache + DB; caches data that may never be read |
+| **Write-back** (write-behind) | from cache | Write cache now, flush to DB async | Fast writes, absorbs bursts | **Data loss** if cache dies before flush; complex |
+
+**Cache-aside is the default** for most systems — it's simple and a cache outage just means slower reads, not lost data. Reach for write-through when you need the cache always-fresh and can afford the write latency; write-back only for write-heavy buffering where you can tolerate the durability risk.
+
+```
+cache-aside read:
+  v = cache.get(k); if v: return v
+  v = db.read(k);   cache.set(k, v, ttl);  return v
+cache-aside write:
+  db.write(k, v);   cache.delete(k)   # invalidate, let next read repopulate
+```
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  On write, prefer <b>delete (invalidate)</b> over <b>update</b> the cache. Deleting is simpler and avoids a subtle race where two concurrent writers leave a stale value; the next read repopulates with the committed DB value.
+</div>
+
+## Eviction policies
+
+A cache is bounded; when full it evicts:
+- **LRU (Least Recently Used)** — evict the oldest-touched entry. Good default; matches temporal locality.
+- **LFU (Least Frequently Used)** — evict the least-accessed. Better when popularity is stable, but a one-time burst can pollute LRU while LFU resists it.
+- **TTL** — expire after a fixed time regardless of use; the main tool for bounding staleness.
+- **FIFO / random** — simpler, rarely better than LRU.
+
+TTL and an eviction policy work together: TTL bounds *staleness*, the policy bounds *size*. Redis offers `allkeys-lru`, `allkeys-lfu`, `volatile-ttl`, etc.
+
+## The three big failure modes
+
+This section is where interviews are won.
+
+### 1. Cache stampede / thundering herd
+A hot key expires (or the cache restarts). Suddenly thousands of concurrent requests all miss, all hit the DB for the same key, and **overload it** — a self-inflicted DDoS. Fixes:
+- **Locking / single-flight:** the first miss acquires a lock and recomputes; others wait for the result (or briefly serve stale). One DB hit instead of thousands.
+- **Stale-while-revalidate:** serve the expired value while one background task refreshes it.
+- **Jittered/staggered TTLs:** don't let many keys expire at the same instant.
+- **Pre-warming / early recompute:** refresh hot keys *before* they expire.
+
+### 2. Cache penetration
+Requests for keys that **don't exist** (missing/invalid ids, often malicious) always miss the cache and hammer the DB, since there's nothing to cache. Fixes:
+- **Cache the negative result** (`key → NULL`) with a short TTL, so repeat misses are absorbed.
+- **Bloom filter** in front: if the filter says "definitely not present," reject before touching the DB (no false negatives, tiny memory).
+- Input validation to reject obviously-bad keys at the edge.
+
+### 3. Cache avalanche
+A **large fraction of keys expire at once** (e.g. all set with the same TTL) or the whole cache layer goes down — load suddenly slams the DB and it falls over, cascading. Fixes:
+- **Jitter the TTLs** (`base ± random`) so expirations spread out.
+- **High availability** for the cache (Redis replicas/cluster) so it doesn't vanish.
+- **Circuit breaker / rate limit** to the DB so a cache failure degrades gracefully instead of taking everything down.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  All three reduce to "a miss reached the DB and the DB couldn't take it." Stampede = many requests for <i>one</i> key; avalanche = many keys expiring <i>together</i>; penetration = keys that <i>never</i> cache. Naming the right one and its specific fix is a strong senior signal.
+</div>
+
+## Invalidation & consistency
+
+"There are only two hard things in CS: cache invalidation and naming things." Cache and DB *will* diverge; you choose how much and for how long.
+
+- **TTL-only:** simplest — accept staleness up to the TTL. Fine for like counts, catalogs.
+- **Explicit invalidation on write:** delete the key when the underlying row changes. Tighter, but you must find every key affected by a write (the hard part).
+- **Write-through:** cache updated on the write path — freshest, slowest writes.
+- **Versioning / cache keys with version:** include a version/etag in the key so a new version is simply a new key; old entries age out.
+
+The **race to know:** read misses, fetches from DB (value `v1`), then before it writes the cache, a writer updates DB to `v2` and invalidates the (empty) cache; the slow reader now writes `v1`, leaving a **stale cache indefinitely**. Mitigations: short TTL as a backstop, delete-on-write (not update), or single-flight read locks. Acknowledging this race is exactly the kind of detail interviewers probe.
+
+Decide consistency explicitly: most caches are **eventually consistent** with the DB (bounded by TTL). If you need read-your-writes (a user must see their own edit immediately), bypass the cache or update it synchronously for that user.
+
+## CDN deep dive
+
+A CDN is a geographically distributed cache of **edge** servers (PoPs) near users. It cuts a ~100ms cross-region round trip to ~10ms and offloads your origin.
+
+**Push vs pull:**
+- **Pull (origin-pull):** the CDN fetches from your origin on the first request for a path, caches it per `Cache-Control`/`TTL`, and serves subsequent requests from the edge. Default — simplest, self-managing; cost is a slow first request per edge (cold miss).
+- **Push:** you proactively upload assets to the CDN ahead of demand. Good for large, predictable files (a video release) where you don't want first-request misses; more operational overhead.
+
+**Cache key:** what the CDN uses to identify a cached object — typically the URL/path, optionally plus selected query strings, headers (e.g. `Accept-Encoding`), or cookies. **Mis-configuring the key is a classic bug:** include a per-user cookie and your hit rate craters (every user is a unique key); ignore a query param that changes content and users get the wrong asset. Normalize the key to exactly what affects the response.
+
+**Static vs dynamic:** static assets (JS/CSS/images/video) cache trivially with long TTLs + versioned URLs. **Dynamic/personalized** content is cached carefully — short TTLs, or edge compute (Cloudflare Workers / Lambda@Edge) to assemble per-request responses, or simply pass-through to origin. Use the CDN for TLS termination and DDoS absorption even when content isn't cacheable.
+
+**Invalidation:** version immutable assets in the filename (`app.a1b2.js`) so a deploy just references new URLs — no purge needed. For must-purge cases, CDNs offer explicit invalidation, but it's slow and rate-limited, so versioned URLs are preferred.
+
+## Redis: use cases & data structures
+
+Redis is an in-memory data-structure store — far more than a KV cache. Knowing its structures lets you pick the right tool:
+
+| Structure | Use case |
+|---|---|
+| **String** | Simple cache value, counters (`INCR`), rate-limit tokens |
+| **Hash** | Object/field storage (a user's fields without serializing the whole blob) |
+| **List** | Queues, recent-activity feeds (precomputed feed lists) |
+| **Set** | Unique membership (who liked a post), tags |
+| **Sorted Set (ZSET)** | Leaderboards, ranked feeds, time-ordered data, sliding-window rate limiting |
+| **Bitmap / HyperLogLog** | Space-efficient flags / approximate unique counts (DAU) |
+| **Streams** | Lightweight event log / message queue |
+
+Beyond caching, Redis powers **sessions, rate limiting** (atomic `INCR`/Lua), **distributed locks** (with care — Redlock caveats), **pub/sub**, and **leaderboards/feeds** (ZSET). Persistence (RDB snapshots / AOF) and replication/cluster make it durable and HA enough to be a primary store for some workloads — but treat it as a cache by default.
+
+## Hot-key mitigation
+
+One key (a viral post, a celebrity) gets disproportionate traffic and overwhelms its single Redis node/shard. Fixes:
+- **Local in-process cache** (a tiny LRU in the app) in front of Redis for the hottest keys — absorbs reads before the network hop.
+- **Replicate the hot key** across nodes and read from a random replica.
+- **Key splitting:** store `key#1…key#N` copies and pick one at random to spread load.
+- **Detect** hot keys (Redis `--hotkeys`, monitoring) so you can react before they melt a node.
+
+## Interview questions & model answers
+
+**Q: Cache-aside vs write-through?**
+"Cache-aside: the app reads cache, on miss reads DB and populates, and on write invalidates the key. Simple, only caches what's used, and a cache outage just slows reads. Write-through: writes go through the cache to the DB synchronously, so the cache is always fresh, at the cost of higher write latency and caching data that may never be read. I default to cache-aside and use write-through when freshness matters more than write speed."
+
+**Q: What's a cache stampede and how do you prevent it?**
+"When a hot key expires, thousands of concurrent requests all miss and hit the DB for the same key, overloading it. I prevent it with single-flight locking — the first miss recomputes while others wait — plus stale-while-revalidate to serve the old value during refresh, and jittered TTLs so keys don't expire together."
+
+**Q: Stampede vs avalanche vs penetration?**
+"Stampede: many requests for one expired hot key. Avalanche: many keys expiring at once (or the cache dying) slamming the DB. Penetration: requests for keys that don't exist, so they never cache and always hit the DB. Fixes: single-flight for stampede, TTL jitter + HA + circuit breaker for avalanche, cache-the-null + Bloom filter for penetration."
+
+**Q: How do you keep the cache consistent with the DB?**
+"Most caches are eventually consistent, bounded by TTL. On writes I delete the key rather than update it — deletion avoids a stale-overwrite race and the next read repopulates from the committed DB value. Where I need read-your-writes I bypass or synchronously update the cache for that user. I also keep a short TTL as a backstop against missed invalidations."
+
+**Q: Push vs pull CDN, and what's the cache key?**
+"Pull fetches from origin on first request and caches per TTL — self-managing, default choice, with a cold first-request miss. Push proactively uploads assets ahead of demand — good for large predictable files. The cache key is what identifies a cached object, usually the URL plus selected query params/headers; getting it wrong — like keying on a per-user cookie — destroys the hit rate."
+
+**Q: Why version asset filenames instead of purging the CDN?**
+"Versioned URLs (`app.a1b2.js`) make a deploy reference brand-new keys, so there's nothing stale to serve and no purge needed — and you can set near-infinite TTLs on immutable assets. Explicit purge is slow and rate-limited, so it's a fallback, not the strategy."
+
+**Q: How do you handle a hot key in Redis?**
+"Add a small local in-process LRU in front of Redis for the hottest keys, replicate the key and read from a random replica, or split it into N sub-keys to spread load — after detecting it via Redis hot-key tooling. The structural fix for celebrity-style hot keys is to special-case them upstream."
+
+## Common mistakes / what weak candidates do
+
+- **Saying "add a cache"** with no strategy, eviction policy, TTL, or invalidation plan.
+- **Updating the cache on write** instead of deleting, opening a stale-overwrite race.
+- **Not knowing the three failure modes**, or conflating stampede with avalanche.
+- **Setting identical TTLs everywhere** (avalanche risk) — no jitter.
+- **Keying a CDN on per-user data**, tanking the hit rate, or forgetting versioned URLs.
+- **Treating Redis as only a string KV**, unaware of ZSET/Hash/Bitmap use cases.
+- **Ignoring the hot-key problem** and assuming uniform load.
+- **Caching write-heavy or rarely-reread data** where the hit rate makes it pure overhead.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "I cache as close to the user as freshness allows — browser, CDN, Redis, DB buffer pool. <b>Cache-aside</b> by default, deleting (not updating) keys on write to avoid stale-overwrite races, with TTLs as a backstop. I guard the three failure modes: <b>single-flight</b> for stampedes, <b>TTL jitter + HA + circuit breakers</b> for avalanches, <b>cache-the-null + Bloom filters</b> for penetration. CDN with versioned immutable URLs and a correctly-scoped cache key. Redis structures chosen per use case, and hot keys mitigated with local caches and key splitting."
+</div>

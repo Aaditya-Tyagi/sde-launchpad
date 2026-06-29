@@ -1,0 +1,264 @@
+---
+title: "Phase 5 — Fine-Tuning, Specialize & Ship"
+track: ai-engineering
+summary: "Know when fine-tuning beats RAG, implement LoRA with real code, pick a specialization depth, and ship one polished AI product publicly."
+order: 6
+est: 35
+difficulty: hard
+priority: deep
+tags: [fine-tuning, lora, specialization, shipping, portfolio, rlhf, sft]
+whyAsked: "Senior AI engineers must know when fine-tuning is the right tool vs RAG vs prompt engineering — and be able to implement it, not just talk about it."
+followUps:
+  - "When does fine-tuning outperform RAG?"
+  - "What is LoRA and how does it reduce compute requirements?"
+  - "What is RLHF and when is it used?"
+  - "How do you prepare a fine-tuning dataset?"
+  - "What is catastrophic forgetting?"
+resources:
+  - { label: "Anthropic fine-tuning (Claude)", url: "https://docs.anthropic.com/en/docs/build-with-claude/fine-tuning" }
+  - { label: "OpenAI fine-tuning guide", url: "https://platform.openai.com/docs/guides/fine-tuning" }
+  - { label: "LoRA paper", url: "https://arxiv.org/abs/2106.09685" }
+---
+
+## RAG vs Fine-tuning vs Prompt Engineering
+
+This is the most important decision in applied AI engineering. Most teams reach for fine-tuning too early.
+
+| Technique | Changes | Best for |
+|---|---|---|
+| **Prompt engineering** | Nothing (zero new cost) | Steering behavior with instructions |
+| **RAG** | Adds runtime knowledge | Private/current knowledge the model doesn't have |
+| **Fine-tuning** | Model weights | Style, format, consistent behavior, narrow task efficiency |
+
+**Fine-tuning does NOT teach facts well.** If you want the model to know your Q3 financials, use RAG. If you want the model to always respond in a specific JSON schema, write concisely, or sound like your brand voice — fine-tune.
+
+**When to fine-tune:**
+- Consistent output format (e.g. always structured JSON of specific shape)
+- Style/tone that's hard to maintain with prompts (e.g. brand voice, medical-grade language)
+- Cost efficiency: replace a 4K-token system prompt with a fine-tuned model (no prompt cost)
+- Narrow task where base model is overkill (e.g. classify 5 categories → tiny fine-tuned model)
+
+**When NOT to fine-tune:**
+- You haven't maxed out prompt engineering first
+- Your data changes frequently (fine-tuned model is static; RAG is dynamic)
+- You have < 100 examples (not enough for meaningful generalization)
+
+---
+
+## Fine-tuning with Claude (API-based)
+
+Anthropic supports fine-tuning on Claude models. You provide JSONL training data:
+
+```python
+# Prepare training data (JSONL format)
+import json
+
+training_examples = [
+    {
+        "messages": [
+            {"role": "user", "content": "Classify this review: 'Great product, fast delivery!'"},
+            {"role": "assistant", "content": '{"sentiment": "positive", "category": "product_quality", "confidence": 0.95}'},
+        ]
+    },
+    {
+        "messages": [
+            {"role": "user", "content": "Classify this review: 'Arrived damaged and no response from support'"},
+            {"role": "assistant", "content": '{"sentiment": "negative", "category": "customer_service", "confidence": 0.98}'},
+        ]
+    },
+    # ... 100-1000+ more examples
+]
+
+# Write to JSONL file
+with open("training_data.jsonl", "w") as f:
+    for ex in training_examples:
+        f.write(json.dumps(ex) + "\n")
+```
+
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+# Upload training data
+with open("training_data.jsonl", "rb") as f:
+    file = client.beta.files.upload(
+        file=("training_data.jsonl", f, "application/jsonl"),
+    )
+
+# Create fine-tuning job
+job = client.fine_tuning.jobs.create(
+    model="claude-haiku-4-5-20251001",   # base model
+    training_file=file.id,
+    hyperparameters={
+        "n_epochs": 3,
+        "batch_size": 4,
+        "learning_rate_multiplier": 1.0,
+    },
+)
+print(f"Job ID: {job.id}, Status: {job.status}")
+
+# Poll until complete
+import time
+while job.status not in ("succeeded", "failed"):
+    time.sleep(30)
+    job = client.fine_tuning.jobs.retrieve(job.id)
+    print(f"Status: {job.status}")
+
+fine_tuned_model = job.fine_tuned_model
+```
+
+---
+
+## LoRA — Low-Rank Adaptation (for open-source models)
+
+Fine-tuning a 70B parameter model requires massive GPU memory. LoRA solves this by adding small trainable "adapter" matrices instead of updating the full weights.
+
+**The math:**
+```
+Original weight matrix W (d × k dimensions):
+  Full fine-tune: update all d×k parameters
+
+LoRA: W = W_original + B × A
+  A shape: (r × k), B shape: (d × r)
+  Where r << min(d, k) — the "rank" (typically 4–64)
+  
+  d=4096, k=4096, r=16:
+  Full params:    4096 × 4096 = 16.7M
+  LoRA params:    (4096 × 16) + (16 × 4096) = 131K  (125× fewer!)
+```
+
+**With Hugging Face PEFT:**
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import LoraConfig, get_peft_model, TaskType
+
+# Load base model (in 4-bit quantization to fit in GPU memory)
+from transformers import BitsAndBytesConfig
+import torch
+
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_compute_dtype=torch.bfloat16,
+)
+
+model = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-3.1-8B-Instruct",
+    quantization_config=bnb_config,
+    device_map="auto",
+)
+
+# Apply LoRA adapters
+lora_config = LoraConfig(
+    task_type=TaskType.CAUSAL_LM,
+    r=16,                    # rank — higher = more capacity, more params
+    lora_alpha=32,           # scaling factor (usually 2×r)
+    target_modules=["q_proj", "v_proj"],  # which layers to adapt
+    lora_dropout=0.1,
+    bias="none",
+)
+model = get_peft_model(model, lora_config)
+model.print_trainable_parameters()
+# → trainable params: 4,194,304 || all params: 8,032,776,192 || trainable%: 0.052%
+```
+
+**Training loop (simplified):**
+```python
+from transformers import Trainer, TrainingArguments
+
+training_args = TrainingArguments(
+    output_dir="./lora_output",
+    num_train_epochs=3,
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=4,
+    learning_rate=2e-4,
+    fp16=True,
+    logging_steps=10,
+    save_strategy="epoch",
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=eval_dataset,
+)
+trainer.train()
+model.save_pretrained("./lora_adapters")  # only saves the small LoRA weights (~50MB)
+```
+
+---
+
+## RLHF — Reinforcement Learning from Human Feedback
+
+RLHF is how models like ChatGPT are made to be helpful and safe. The three stages:
+
+1. **SFT (Supervised Fine-Tuning):** fine-tune on high-quality human-written demonstrations
+2. **Reward Model:** train a model to predict human preference (which of two responses is better?)
+3. **RL (PPO):** optimize the SFT model using the reward model's score as the reward signal
+
+**In practice (2025 reality):** very few companies do full RLHF. Instead they use:
+- **DPO (Direct Preference Optimization):** simpler, no RL loop, trains directly on preference pairs
+- **RLAIF (RL from AI Feedback):** replace human raters with an LLM judge for the preference signal
+
+```python
+# DPO training data format: (prompt, chosen_response, rejected_response)
+dpo_examples = [
+    {
+        "prompt": "Explain recursion simply.",
+        "chosen": "Recursion is when a function calls itself. Think of Russian nesting dolls — each doll contains a smaller version of itself until you reach the smallest one.",
+        "rejected": "Recursion is a programming concept whereby a function calls itself within its own definition, establishing a recursive relationship with a termination condition...",
+    },
+]
+```
+
+---
+
+## Catastrophic forgetting
+
+When you fine-tune on a narrow task, the model can "forget" capabilities it had before.
+
+**Signs:** after fine-tuning on JSON classification, model stops being able to write prose, do math, etc.
+
+**Mitigations:**
+- **Mix in general data:** add 10–20% general instruction-following data to your training set
+- **Low learning rate:** fine-tune slowly to avoid overwriting base weights
+- **LoRA instead of full fine-tune:** adapters only affect a small subset of parameters
+- **Eval on base capabilities:** test math, reasoning, and writing on your eval suite after fine-tuning
+
+---
+
+## Picking your specialization
+
+Choose the area you want to own heading into your first AI engineering role:
+
+| Depth | What you build | Roles it targets |
+|---|---|---|
+| **AI Application Engineer** | Ship features with LLM APIs — RAG, agents, structured outputs | Most common; all product companies |
+| **AI Infra Engineer** | Eval frameworks, prompt management, model deployment, cost dashboards | Platforms, AI-first companies |
+| **ML Engineer** | Fine-tuning, LoRA, custom models, training pipelines | Research-adjacent, model companies |
+
+For an SDE-2 frontend/RN dev transitioning to AI: target **AI Application Engineer** first. Deep on RAG + agents + evals. Leave training infrastructure for later.
+
+---
+
+## Portfolio projects (tiered)
+
+**Level 1 — Baseline (all candidates have this):**
+- RAG chatbot over PDF documents
+- "Chat with your data" demo
+
+**Level 2 — Differentiated:**
+- AI interview coach agent on your LeetCode clone (calls real tools: run tests, check complexity, give hints)
+- Eval harness with LLM-as-judge + regression tracking dashboard
+- Multi-agent pipeline: research agent → writer agent → critic agent
+
+**Level 3 — Senior-signal:**
+- Fine-tuned model for a specific domain with before/after evals
+- End-to-end RAG pipeline with hybrid search, reranking, and eval metrics
+- Open-source contribution to LangChain, PEFT, or anthropic-sdk
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Fine-tuning changes model behavior and style; RAG adds knowledge. Most teams should exhaust prompt engineering and RAG before fine-tuning. When I do fine-tune, I use LoRA for efficiency — it adds small adapter matrices (rank 16 typically) that train in < 1% of the parameters vs full fine-tuning, so I can run it on a single GPU. DPO is my preferred alignment technique over RLHF — same outcome, no reward model or RL loop needed. I always mix 10–20% general data into fine-tuning runs to prevent catastrophic forgetting."
+</div>

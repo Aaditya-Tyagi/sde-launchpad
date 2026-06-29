@@ -1,0 +1,300 @@
+---
+title: "Git for QA engineers"
+track: qa-cicd
+summary: "Version control is non-negotiable for automation — the working dir/staging/local/remote model, branching strategies, merge vs rebase, resolving conflicts, pull requests for test code, and recovering when you broke something."
+order: 1
+est: 18
+difficulty: easy
+priority: must
+tags: [git, github, version-control]
+whyAsked: "Your automation code lives in Git alongside the app's. Comfort with branches, PRs, and recovery commands is assumed for any automation role — and 'undo the last commit' style questions are extremely common."
+followUps:
+  - "Merge vs rebase — when do you use each?"
+  - "How do you undo the last commit without losing work?"
+  - "What goes in a .gitignore for a test project?"
+  - "You pushed a broken commit to main — what do you do?"
+resources:
+  - { label: "Learn Git Branching (interactive)", url: "https://learngitbranching.js.org/" }
+  - { label: "Pro Git book (free)", url: "https://git-scm.com/book/en/v2" }
+  - { label: "GitHub flow", url: "https://docs.github.com/en/get-started/using-github/github-flow" }
+  - { label: "Atlassian Git tutorials", url: "https://www.atlassian.com/git/tutorials" }
+---
+
+Every test you write belongs in version control. Your GitHub repos are also your portfolio — interviewers look at your commit history. The good news: a QA engineer uses maybe 20 commands daily, and once the mental model clicks, the rest is muscle memory.
+
+## The mental model: four places your code lives
+
+This is the single idea that makes everything else make sense. A file in a Git project moves through **four areas**:
+
+1. **Working directory** — the actual files on disk you're editing. Your `login.spec.ts` lives here.
+2. **Staging area (index)** — a holding pen for changes you've marked to go into the next commit. `git add` moves changes here.
+3. **Local repository** — the committed history on *your* machine. `git commit` snapshots staged changes here. This is fully yours; nothing is shared yet.
+4. **Remote repository** — the shared copy on GitHub/GitLab. `git push` sends local commits up; `git fetch`/`git pull` brings remote commits down.
+
+```text
+working dir  --git add-->  staging  --git commit-->  local repo  --git push-->  remote
+   (edits)                 (index)                   (.git)                     (GitHub)
+      <-----git restore-----   <----git reset----        <----git fetch/pull----
+```
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  A commit is not "saving a file" — it is an immutable snapshot of the <em>entire</em> staged tree, identified by a SHA hash, pointing to its parent. Branches are just movable labels (pointers) to a commit. <code>HEAD</code> is a pointer to "where you are right now." Internalize this and reset/rebase/cherry-pick stop being magic.
+</div>
+
+## The commands you'll actually use daily
+
+```bash
+git status                     # what's changed / staged — run this constantly
+git diff                       # unstaged changes; git diff --staged for staged
+git add <file> / git add -p    # stage; -p stages selected hunks interactively
+git commit -m "msg"            # snapshot staged changes
+git pull --rebase              # get latest, replay your commits on top
+git push                       # publish local commits
+git log --oneline --graph --all # visual history
+git switch <branch>            # change branch (modern; replaces checkout)
+git switch -c feature/x        # create + switch
+git stash / git stash pop      # park dirty work temporarily
+git restore <file>             # discard a working-dir change
+```
+
+`git switch` and `git restore` (Git 2.23+) split the overloaded `git checkout` into two clearer commands — `switch` for branches, `restore` for files. Older docs and interviewers still say `checkout`; know both.
+
+## Daily QA workflow (GitHub flow)
+
+Most teams a QA actually joins use **GitHub flow**: `main` is always deployable, and every change is a short-lived branch + pull request.
+
+```bash
+git switch main
+git pull                                   # start from latest main
+git switch -c feature/login-regression     # branch per task/ticket
+# ...write tests...
+git add tests/login.spec.ts
+git commit -m "test(login): add regression for locked-account error"
+git push -u origin feature/login-regression
+# open a Pull Request -> CI runs your tests -> review -> squash & merge
+git switch main && git pull                 # sync, delete the old branch
+```
+
+That loop — branch, commit, push, PR, merge, sync — is 95% of a QA's Git life.
+
+## Branching strategies (know the trade-offs)
+
+- **Feature branches** — one branch per ticket/feature, merged via PR. Simple, isolates work, plays well with CI per-PR. The default for most teams.
+- **Trunk-based development** — everyone commits to `main` (or merges tiny branches) many times a day, behind **feature flags** for incomplete work. Minimizes merge pain and long-lived divergence; demands strong CI and fast tests. Increasingly the norm at high-velocity orgs.
+- **Gitflow** — heavyweight model with long-lived `main`, `develop`, plus `feature/*`, `release/*`, `hotfix/*` branches. Good for scheduled releases / versioned products (e.g. installed software), overkill for continuously-deployed web apps. Interviewers ask about it; many teams have moved away from it.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Short-lived branches beat long-lived ones. The longer a branch lives, the more it diverges from main and the uglier the eventual merge. Branch small, merge often.
+</div>
+
+## Merge vs rebase
+
+Both integrate one branch's work into another; they differ in the history they produce.
+
+- **Merge** (`git merge main` while on your branch) creates a **merge commit** that ties the two histories together. History is truthful but can look like a braid. Safe default for shared branches — it never rewrites existing commits.
+- **Rebase** (`git rebase main`) lifts your branch's commits off and **replays them on top** of the latest main, producing a *linear* history as if you'd started from the current main. Clean and readable, but it **rewrites commit hashes**.
+
+```bash
+# keep my feature branch current with main, linear history:
+git switch feature/x
+git fetch origin
+git rebase origin/main        # replay my commits on top of latest main
+# resolve any conflicts, then:
+git push --force-with-lease    # required because history was rewritten
+```
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  <strong>Never rebase a branch others have based work on, and never rewrite shared/public history.</strong> Rebasing changes hashes; collaborators' clones will diverge and you'll create duplicate commits and chaos. Rebase only your own un-shared branch. When force-pushing your own branch, use <code>--force-with-lease</code> (refuses if someone else pushed in the meantime) — never a bare <code>--force</code>.
+</div>
+
+The "Golden Rule of Rebasing": don't rebase commits that exist outside your local repo and that others may rely on.
+
+## Resolving conflicts — a worked example
+
+A conflict happens when two branches change the **same lines** of the same file. Say both `main` and your branch edited the base URL in `config.ts`:
+
+```bash
+git switch feature/staging-url
+git rebase origin/main
+# CONFLICT (content): Merge conflict in config.ts
+```
+
+Open `config.ts`. Git inserts conflict markers:
+
+```text
+export const config = {
+<<<<<<< HEAD                       (the incoming side — main's version)
+  baseURL: "https://prod.example.com",
+=======
+  baseURL: "https://staging.example.com",
+>>>>>>> feature/staging-url        (your version)
+};
+```
+
+Decide the correct final content — keep yours, keep theirs, or combine — then **delete all three marker lines**:
+
+```text
+export const config = {
+  baseURL: "https://staging.example.com",
+};
+```
+
+Then stage and continue:
+
+```bash
+git add config.ts
+git rebase --continue      # or: git merge --continue / git commit, if merging
+# If it's going badly: git rebase --abort returns you to the pre-rebase state
+```
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Conflicts are routine, not scary. Run <code>git status</code> to list conflicted files, fix them one at a time, and re-run your tests after resolving — a "successful" conflict resolution can still be logically wrong. Tools like VS Code's merge editor make this far easier than editing markers by hand.
+</div>
+
+## Pull requests & code review for test code
+
+Test code is real code and gets reviewed like product code. A good QA PR:
+
+- **Small and focused** — one feature/ticket; easier to review, faster to merge, less conflict surface.
+- **Green in CI** — your tests pass in the pipeline before you ask for review (see the CI/CD lesson).
+- **Has a clear description** — what's covered, what isn't, how to run it locally, screenshots/trace for UI tests.
+- **No hard-coded secrets, no flaky `sleep()`s, stable locators** — reviewers will (and should) push back on these.
+
+Reviewing *others'* test code, watch for: hard waits instead of explicit/auto waits, tests that depend on execution order, shared mutable test data, assertions that can't actually fail, and over-mocking that tests the mock instead of the system.
+
+## .gitignore for test projects
+
+Never commit generated artifacts, dependencies, or secrets. A realistic `.gitignore`:
+
+```text
+# dependencies
+node_modules/
+target/            # Java/Maven
+__pycache__/
+.venv/
+
+# test outputs & reports
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+screenshots/
+videos/
+*.png              # if screenshots land in repo root
+.pytest_cache/
+
+# secrets & local config — NEVER commit these
+.env
+.env.local
+*.pem
+credentials.json
+```
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  <code>.gitignore</code> only ignores <em>untracked</em> files. If you already committed <code>.env</code>, adding it to <code>.gitignore</code> does nothing — it's still tracked. Run <code>git rm --cached .env</code> to stop tracking it, and if a real secret was ever pushed, <strong>rotate the credential immediately</strong> — it lives forever in history until purged with tools like <code>git filter-repo</code> or BFG.
+</div>
+
+## Handling large artifacts
+
+Don't put videos, large binaries, or test datasets in normal Git — every clone downloads every version forever and the repo bloats. Options:
+
+- **Git LFS** (Large File Storage) replaces big files with text pointers and stores the blobs separately. Use for large fixtures you truly must version.
+- **External storage** — upload videos/traces to S3 or the CI's artifact store (GitHub Actions artifacts) instead of committing them.
+- Most test reports/screenshots should be **CI artifacts, not committed files**.
+
+## Commit hygiene
+
+- **Atomic commits** — one logical change each; the suite should pass at every commit.
+- **Conventional Commits** style is widely expected: `test(cart): add empty-cart checkout guard`, `fix(ci): pin Playwright to v1.50`. Types like `feat`, `fix`, `test`, `chore`, `docs`, `refactor`.
+- Imperative mood, ~50-char subject, blank line, then a body explaining *why* if needed.
+- **Squash** noisy WIP commits when merging a PR so `main` reads as one clean change per feature.
+
+## Recovering when you broke something
+
+These are the interview favorites — know exactly what each does.
+
+```bash
+# Undo last commit, KEEP changes staged (most common "oops"):
+git reset --soft HEAD~1
+
+# Undo last commit, keep changes but unstaged:
+git reset --mixed HEAD~1     # (default)
+
+# Nuke last commit AND its changes (destructive — only for local commits):
+git reset --hard HEAD~1
+
+# Safely undo a commit that's ALREADY pushed/shared — makes a NEW inverse commit:
+git revert <hash>
+
+# Pluck one specific commit from another branch onto yours:
+git cherry-pick <hash>
+
+# Park dirty work to switch tasks, then bring it back:
+git stash            # stash push
+git stash pop        # reapply + drop the stash
+git stash list
+
+# Recover a commit you "lost" via reset — the safety net:
+git reflog           # shows every HEAD movement; copy the hash and:
+git reset --hard <hash>     # or: git switch -c rescue <hash>
+```
+
+<div class="callout key">
+  <div class="ct">Key idea: reset vs revert</div>
+  <strong>reset</strong> rewrites history (moves the branch pointer back) — use ONLY on local, un-pushed commits. <strong>revert</strong> adds a new commit that undoes a previous one — the SAFE choice for anything already on a shared branch like <code>main</code>. And <code>git reflog</code> means almost nothing is truly lost: committed work can be recovered for ~30 days even after a hard reset.
+</div>
+
+## Tags & releases
+
+Tags mark a point in history — typically a release version. Used to pin which build a regression suite ran against.
+
+```bash
+git tag -a v2.3.0 -m "Release 2.3.0"   # annotated tag (preferred — has metadata)
+git push origin v2.3.0
+git tag                                 # list tags
+git checkout v2.3.0                     # inspect the exact code of a release
+```
+
+A GitHub **Release** is a tag plus notes/artifacts. QA often runs the full regression suite against a release tag and attaches the report.
+
+## Interview questions & model answers
+
+**Q1. Explain the difference between the working directory, staging area, and the local and remote repos.**
+The working directory is your files on disk. `git add` moves changes into the staging area (index), a holding pen for the next commit. `git commit` snapshots the staged changes into the local repo's history. `git push` publishes those local commits to the remote (GitHub). `fetch`/`pull` bring remote commits back down. Staging lets you craft a commit from a subset of your changes rather than committing everything at once.
+
+**Q2. Merge vs rebase — when do you use each?**
+Merge preserves true history with a merge commit and never rewrites existing commits — I use it for integrating shared branches and for the final PR merge. Rebase replays my commits on top of the latest main for a clean linear history — I use it to keep my own feature branch up to date before opening/updating a PR. The golden rule: never rebase commits that others have already based work on, because rebase rewrites hashes.
+
+**Q3. You committed and pushed a change that broke main. What do you do?**
+Because it's already shared, I don't reset — that rewrites public history. I run `git revert <hash>`, which creates a new commit that undoes the bad change, push it, and let CI confirm green. If it's urgent and the revert isn't trivial, I'd revert the merge commit. Then I fix forward properly in a new branch/PR.
+
+**Q4. How do you undo the last commit without losing your work?**
+`git reset --soft HEAD~1` — it moves the branch pointer back one commit but keeps all my changes staged, so I can recommit with a better message or split it up. `--mixed` (the default) keeps changes but unstaged; `--hard` would discard them, which I'd avoid unless I truly want them gone.
+
+**Q5. Walk me through resolving a merge conflict.**
+After a merge/rebase that conflicts, I run `git status` to see conflicted files. In each, Git marks the two versions with `<<<<<<<`, `=======`, `>>>>>>>`. I edit to the correct final content, remove the markers, `git add` the file, then `git merge --continue` (or `git rebase --continue`). Crucially I re-run the affected tests afterward, because a syntactically clean resolution can still be logically wrong. If it spirals, `git merge/rebase --abort` resets me to before.
+
+**Q6. What belongs in .gitignore for a test project, and what if a secret got committed?**
+Dependencies (`node_modules/`, `target/`), generated reports/screenshots/videos (`playwright-report/`, `allure-results/`), caches, and especially secrets (`.env`, keys). If a secret was already committed, `.gitignore` won't help since it's tracked — I `git rm --cached` it, and most importantly **rotate the credential**, because it persists in history until scrubbed with `git filter-repo`/BFG.
+
+**Q7. What's the difference between git fetch and git pull?**
+`fetch` downloads remote commits into your local remote-tracking branches but does NOT change your working branch — it's safe to inspect first. `pull` is `fetch` plus an automatic `merge` (or `rebase` with `--rebase`) into your current branch. I often `fetch` then review before integrating, or use `pull --rebase` to keep history linear.
+
+**Q8. How would you handle large video/trace files from UI tests in Git?**
+I keep them out of normal Git — they bloat every clone forever. I publish them as CI artifacts (e.g. GitHub Actions upload-artifact) or to external storage like S3. If something genuinely must be versioned, Git LFS stores big blobs out of band behind pointers.
+
+## Common mistakes
+
+- **Committing `node_modules/`, reports, or `.env`** — bloats the repo and leaks secrets. Set up `.gitignore` first.
+- **Using `git push --force` on a shared branch** — clobbers others' work. Use `--force-with-lease`, and only on your own branch.
+- **Rebasing a shared branch** — rewrites public history and creates duplicate commits for everyone.
+- **`git reset --hard` to "undo," then panicking** — recoverable via `git reflog`, but avoid `--hard` on anything you might want back.
+- **Giant, mixed commits** ("fixed stuff") — impossible to review or revert cleanly. Keep them atomic with meaningful messages.
+- **Long-lived feature branches** — diverge from main and create painful conflicts. Branch small, merge often.
+- **Resolving a conflict and not re-running tests** — a clean compile is not a correct merge.
+- **Confusing reset and revert** — reset for local-only undo, revert for anything already pushed.

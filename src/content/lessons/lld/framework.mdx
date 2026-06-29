@@ -1,0 +1,143 @@
+---
+title: "LLD Framework: How to Approach Any Design Problem"
+track: lld
+summary: "A repeatable 5-step process for frontend LLD interviews — requirements, API design, data model, class structure, and edge cases."
+order: 1
+est: 20
+difficulty: medium
+priority: must
+tags: [lld, framework, approach, requirements, api-design]
+whyAsked: "LLD is common at mid/senior frontend interviews. Interviewers want to see structured thinking — not just code, but the process of arriving at a clean design."
+followUps:
+  - "How do you identify the boundaries of a LLD problem?"
+  - "What is the difference between LLD and HLD?"
+  - "How do you handle extensibility in a component design?"
+  - "When would you use composition over inheritance?"
+resources:
+  - { label: "Refactoring Guru: Design Patterns", url: "https://refactoring.guru/design-patterns" }
+---
+
+LLD (Low-Level Design) is about the *structure* of the code — classes, interfaces, APIs, and how components interact. Frontend LLD problems ask you to design a component, a utility, or a small system with real TypeScript/JavaScript code.
+
+## The 5-step framework
+
+Use this every time — interviewers want to see process, not just output.
+
+### Step 1: Clarify requirements (2 min)
+
+Before writing any code, ask:
+- What is the **core use case**? (Never skip this — know what you're building.)
+- What are the **must-have** vs **nice-to-have** features?
+- What **constraints** apply? (browser support, performance, accessibility, TypeScript?)
+- What does the **public API** look like — class, function, hook, or component?
+
+```
+Example: "Design an autocomplete"
+Questions to ask:
+  - Remote data or local?
+  - Single select or multi-select?
+  - Keyboard navigation required?
+  - Debounce needed?
+  - What should the component expose to the parent?
+```
+
+### Step 2: Define the public API
+
+Write the interface/signature **before** the implementation. This is what the consumer of your design sees:
+
+```ts
+// For a class-based utility
+interface DebounceOptions { leading?: boolean; trailing?: boolean; }
+function debounce<T extends (...args: any[]) => any>(
+  fn: T,
+  ms: number,
+  options?: DebounceOptions
+): T & { cancel(): void; flush(): void }
+
+// For a React component
+interface AutocompleteProps<T> {
+  options: T[];
+  value: T | null;
+  onChange: (value: T | null) => void;
+  getLabel: (option: T) => string;
+  onSearch?: (query: string) => Promise<T[]>;  // remote
+  placeholder?: string;
+  disabled?: boolean;
+}
+```
+
+### Step 3: Design the data model
+
+Identify:
+- What state does this need?
+- What is derived vs stored?
+- What events/callbacks cross the boundary?
+
+```ts
+// Autocomplete internal state
+interface AutocompleteState<T> {
+  query: string;          // current input value
+  options: T[];           // current list of options to display
+  selectedIndex: number;  // keyboard focus position (-1 = none)
+  isOpen: boolean;        // dropdown visible
+  isLoading: boolean;     // async fetch in progress
+}
+```
+
+### Step 4: Sketch the structure
+
+Talk through your component/class hierarchy before coding:
+
+```
+<Autocomplete>
+  ├── <Input>         (controlled, fires onInput for debounced search)
+  ├── <Dropdown>      (conditionally rendered, handles click-outside)
+  │   └── <OptionList>
+  │       └── <OptionItem> × N
+  └── (keyboard handler lives at Autocomplete level)
+```
+
+Or for a utility/class:
+```
+EventEmitter
+  ├── on(event, fn) → unsubscribe fn
+  ├── off(event, fn)
+  ├── emit(event, ...args)
+  └── once(event, fn) → auto-removes after one call
+```
+
+### Step 5: Code the core, talk through the rest
+
+Code the most interesting or risky parts:
+- The state management logic
+- The key algorithm (debounce, virtual scroll, event dispatch)
+- The tricky edge case
+
+Then **say out loud** what you'd do for the rest rather than coding everything:
+> "I'd add keyboard navigation next — ArrowUp/Down would update `selectedIndex`, Enter would select. I'd also add `onClickOutside` to close the dropdown."
+
+## What interviewers evaluate
+
+| Dimension | What they look for |
+|---|---|
+| **Correctness** | Does the core logic work? |
+| **API design** | Is it clean and ergonomic for consumers? |
+| **Extensibility** | Can new features be added without rewriting? |
+| **Edge cases** | Empty state, error state, loading, accessibility |
+| **TypeScript** | Generics, proper types, no `any` unless justified |
+| **Communication** | Do you explain your decisions? |
+
+## LLD vs HLD (quick distinction)
+
+| | LLD | HLD |
+|---|---|---|
+| Focus | Classes, functions, APIs, state | Servers, databases, queues, services |
+| Output | TypeScript/JavaScript code | Architecture diagrams, sequence flows |
+| Scale | One component or utility | Entire distributed system |
+| Time frame | 20–40 min | 40–60 min |
+| Asked at | Frontend SDE-2+ | Full-stack / backend SDE-2+ |
+
+<div class="callout key">
+  <div class="ct">The framework in 30 seconds</div>
+  Requirements → API signature → Data model → Component/class structure → Code the core, talk through the rest. Speak every decision out loud. Interviewers give more credit for explaining your tradeoffs than for writing perfect code in silence.
+</div>

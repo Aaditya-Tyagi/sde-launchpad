@@ -1,0 +1,212 @@
+---
+title: "Graphs"
+track: dsa
+summary: "BFS/DFS on grids and adjacency lists, connected components, topological sort, and union-find — the startup staples."
+order: 6
+est: 32
+difficulty: medium
+priority: must
+tags: [graphs, bfs, dfs, topological-sort, union-find]
+whyAsked: "Grid and graph traversal show up at most startups. They test whether you can model a problem as a graph and pick the right traversal."
+followUps:
+  - "When do you use BFS vs DFS?"
+  - "How do you detect a cycle in a directed graph?"
+  - "What does topological sort give you, and when is it impossible?"
+  - "When would you use union-find instead of DFS?"
+resources:
+  - { label: "NeetCode: Graphs", url: "https://neetcode.io/practice" }
+---
+
+A graph is nodes + edges. Most interview graphs are either a **grid** (each cell connects to its 4 neighbors) or an **adjacency list** (`Map<node, neighbors[]>`). The whole category reduces to a few traversal templates plus a `visited` set so you never process a node twice.
+
+## When to reach for each tool — recognition triggers
+
+- "**Connected regions / reachability / flood fill / count components**" → DFS or BFS + visited.
+- "**Fewest steps / shortest path in an unweighted graph / nearest / spread**" → BFS (it explores by distance).
+- "**Ordering with prerequisites / build order / detect cycle in a directed graph**" → topological sort.
+- "**Dynamic connectivity / are these two in the same group / count groups as edges arrive**" → union-find (DSU).
+- "Weighted shortest path" → Dijkstra (heap); not covered in depth here but mention it.
+
+<div class="callout key">
+  <div class="ct">Pattern trigger</div>
+  "Connected regions / reachability" → DFS flood fill. "Fewest steps / shortest unweighted path / spread" → BFS. "Ordering with prerequisites / detect cycle in a directed graph" → topological sort. "Grouping / merging sets" → union-find.
+</div>
+
+## Building the graph
+
+```js
+// Adjacency list from an edge list (undirected)
+function buildAdj(n, edges) {
+  const adj = Array.from({ length: n }, () => []);
+  for (const [a, b] of edges) { adj[a].push(b); adj[b].push(a); }  // drop one line for directed
+  return adj;
+}
+```
+
+## Grid traversal (flood fill)
+
+```js
+// Number of Islands: count connected components of land.  O(rows*cols)
+function numIslands(grid) {
+  const rows = grid.length, cols = grid[0].length;
+  let count = 0;
+  function dfs(r, c) {
+    if (r < 0 || c < 0 || r >= rows || c >= cols || grid[r][c] !== '1') return;
+    grid[r][c] = '0';                    // mark visited in place
+    dfs(r + 1, c); dfs(r - 1, c); dfs(r, c + 1); dfs(r, c - 1);
+  }
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++)
+      if (grid[r][c] === '1') { count++; dfs(r, c); }
+  return count;
+}
+```
+
+## BFS vs DFS — which and why
+
+- **BFS** explores level by level using a **queue** → gives the **shortest path in an unweighted graph** (fewest edges). Use it for "minimum steps" / "nearest" / multi-source spread.
+- **DFS** goes deep using recursion or a stack → great for connected components, cycle detection, path existence, and anything naturally recursive.
+
+## Worked examples
+
+### Rotting Oranges — multi-source BFS
+
+All rotten oranges spread simultaneously. Seed the queue with *every* rotten cell, then BFS by minute.
+
+```js
+// O(rows*cols) time and space
+function orangesRotting(grid) {
+  const rows = grid.length, cols = grid[0].length;
+  const q = []; let fresh = 0;
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++) {
+      if (grid[r][c] === 2) q.push([r, c]);
+      else if (grid[r][c] === 1) fresh++;
+    }
+  let minutes = 0;
+  const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+  while (q.length && fresh > 0) {
+    minutes++;
+    for (let n = q.length; n > 0; n--) {          // process one minute's wave
+      const [r, c] = q.shift();
+      for (const [dr, dc] of dirs) {
+        const nr = r + dr, nc = c + dc;
+        if (nr >= 0 && nc >= 0 && nr < rows && nc < cols && grid[nr][nc] === 1) {
+          grid[nr][nc] = 2; fresh--; q.push([nr, nc]);
+        }
+      }
+    }
+  }
+  return fresh === 0 ? minutes : -1;   // -1 if any orange never rots
+}
+```
+
+Idea: seeding all sources at once means each BFS "wave" is one minute. **Time** O(R·C) · **Space** O(R·C).
+
+### Course Schedule — cycle detection via Kahn's topological sort
+
+A topological order exists **iff the directed graph is a DAG (no cycle)**.
+
+```js
+// Can you finish all courses?  O(V + E)
+function canFinish(numCourses, prereqs) {
+  const adj = Array.from({ length: numCourses }, () => []);
+  const indeg = new Array(numCourses).fill(0);
+  for (const [course, pre] of prereqs) { adj[pre].push(course); indeg[course]++; }
+  const q = []; indeg.forEach((d, i) => { if (d === 0) q.push(i); });
+  let placed = 0;
+  while (q.length) {
+    const n = q.shift(); placed++;
+    for (const nxt of adj[n]) if (--indeg[nxt] === 0) q.push(nxt);
+  }
+  return placed === numCourses;   // all placed → no cycle
+}
+```
+
+Idea: repeatedly remove in-degree-0 nodes. If a cycle exists, its nodes never reach in-degree 0, so `placed < numCourses`.
+**Time** O(V + E) · **Space** O(V + E).
+
+### Clone Graph — DFS with a visited map
+
+Copy each node once; the map prevents infinite recursion on cycles.
+
+```js
+// O(V + E) time and space
+function cloneGraph(node) {
+  const clones = new Map();
+  function dfs(n) {
+    if (!n) return null;
+    if (clones.has(n)) return clones.get(n);
+    const copy = { val: n.val, neighbors: [] };
+    clones.set(n, copy);                    // record BEFORE recursing (handles cycles)
+    for (const nb of n.neighbors) copy.neighbors.push(dfs(nb));
+    return copy;
+  }
+  return dfs(node);
+}
+```
+
+Idea: registering the clone before recursing breaks cycles — a neighbor pointing back finds the existing copy.
+**Time** O(V + E) · **Space** O(V).
+
+### Union-Find (DSU) — counting components as edges arrive
+
+Path compression + union by rank gives near-O(1) amortized operations (inverse-Ackermann).
+
+```js
+function makeDSU(n) {
+  const parent = Array.from({ length: n }, (_, i) => i);
+  const rank = new Array(n).fill(0);
+  function find(x) {                       // path compression
+    while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+  }
+  function union(a, b) {                    // union by rank, returns true if merged
+    let ra = find(a), rb = find(b);
+    if (ra === rb) return false;
+    if (rank[ra] < rank[rb]) [ra, rb] = [rb, ra];
+    parent[rb] = ra;
+    if (rank[ra] === rank[rb]) rank[ra]++;
+    return true;
+  }
+  return { find, union };
+}
+```
+
+Idea: each `union` that actually merges shrinks the component count by one. Use it for "number of connected components", "redundant connection", and Kruskal's MST.
+**Time** ~O(α(n)) per op · **Space** O(n).
+
+## Complexity & why it beats brute force
+
+Traversals are **O(V + E)** — each node and edge touched once, versus re-exploring paths repeatedly in a naive recursion. BFS gives unweighted shortest paths in one pass instead of trying all paths. Union-find answers connectivity queries in near-constant time versus an O(V + E) traversal per query.
+
+## Edge cases & common bugs
+
+- **Missing visited set** → infinite loops on cycles, or exponential re-exploration.
+- **Marking visited too late** in BFS — mark when you *enqueue*, not when you dequeue, or nodes get added multiple times.
+- **Grid bounds** — check `r/c` ranges before indexing; a single missing bound check crashes.
+- **Directed vs undirected** — add one edge direction vs two; topological sort needs the correct direction (`pre -> course`).
+- **Disconnected graphs** — loop over all start nodes; one DFS won't cover everything.
+- **`q.shift()` is O(n)** in JS — acceptable in interviews, but mention an index pointer for large inputs.
+- **Self-loops / duplicate edges** in union-find — `union` returning false flags them.
+
+## Interview tips & questions
+
+- Interviewers probe: "BFS or DFS here, and why?" — tie it to shortest-path vs reachability.
+- "How do you detect a cycle?" — Kahn's (in-degree) for directed, or DFS 3-color (white/gray/black, a gray-to-gray edge is a back edge).
+- For grid problems, state the in-place visited trick vs a separate set (space tradeoff).
+
+| Problem | Difficulty | Idea |
+|---|---|---|
+| [Number of Islands](https://leetcode.com/problems/number-of-islands/) | Medium | flood fill |
+| [Clone Graph](https://leetcode.com/problems/clone-graph/) | Medium | DFS + visited map |
+| [Course Schedule](https://leetcode.com/problems/course-schedule/) | Medium | topo / cycle |
+| [Rotting Oranges](https://leetcode.com/problems/rotting-oranges/) | Medium | multi-source BFS |
+| [Pacific Atlantic Water Flow](https://leetcode.com/problems/pacific-atlantic-water-flow/) | Medium | DFS from borders |
+| [Number of Connected Components](https://leetcode.com/problems/number-of-connected-components-in-an-undirected-graph/) | Medium | union-find |
+| [Word Ladder](https://leetcode.com/problems/word-ladder/) | Hard | BFS shortest transform |
+
+<div class="callout tip">
+  <div class="ct">Template</div>
+  DFS: <code>visited.add(n); for nb in adj[n] if !visited dfs(nb)</code>. BFS: <code>q=[start]; visited.add(start); while q: n=q.shift(); for nb …</code> (mark on enqueue). Topo: peel in-degree-0 nodes.
+</div>

@@ -1,0 +1,257 @@
+---
+title: "Closures, Scope & Hoisting"
+track: javascript
+summary: "Why a function remembers variables from where it was defined — and how scope, hoisting, and the TDZ actually work."
+order: 1
+est: 20
+difficulty: medium
+priority: must
+tags: [closures, scope, hoisting, tdz]
+whyAsked: "Closures are the most-asked JS concept because they underpin callbacks, modules, hooks, and the classic loop bug. Interviewers probe whether you understand lexical scope, not just recite a definition."
+followUps:
+  - "Why does a `var` loop print the same value, and how do `let` or an IIFE fix it?"
+  - "What's the difference between hoisting of `var`, `let`/`const`, and function declarations?"
+  - "What is the Temporal Dead Zone?"
+  - "How would you implement a private counter with a closure?"
+  - "What is a stale closure in React, and how do you avoid it?"
+  - "Can closures cause memory leaks?"
+resources:
+  - { label: "javascript.info: Closures", url: "https://javascript.info/closure" }
+  - { label: "javascript.info: Variable scope, closure", url: "https://javascript.info/closure" }
+  - { label: "MDN: Closures", url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Closures" }
+---
+import JsPlayground from '../../../components/JsPlayground.astro';
+
+A **closure** is a function bundled together with references to the variables from the scope where it was *defined*. Because JavaScript uses **lexical scoping**, a function's access to outer variables is fixed by where it sits in the source code — not by where or when it's called.
+
+## The mental model: lexical environments & the scope chain
+
+Every time a function is created, the engine attaches to it a hidden reference to its **lexical environment** — the place in the source where it was written. A lexical environment is a record of the local variables plus a pointer to the *outer* environment. When you read a name like `count`, the engine looks in the current environment; if it's not there it follows the outer pointer, and the next, forming a **scope chain** that ends at the global environment.
+
+So "closure" isn't a special object you create — it is just the normal consequence of functions keeping their outer-environment pointer alive. Every function in JS is technically a closure; the term matters when the outer function has already returned but its variables are still reachable.
+
+<JsPlayground code={`let x = 'global';
+function outer() {
+  let y = 'outer';
+  function inner() {
+    let z = 'inner';
+    // resolves z (local), y (outer env), x (global env)
+    return z + ' / ' + y + ' / ' + x;
+  }
+  return inner;
+}
+console.log(outer()());  // 'inner / outer / global'`} height={200} />
+
+Name resolution walks the chain *outward* only — an outer scope can never see an inner scope's variables. The chain is fixed at definition time, which is why it is called *lexical* (source-text) scoping rather than dynamic scoping.
+
+## A function that remembers
+
+<JsPlayground code={`function makeCounter() {
+  let count = 0;              // private to this closure
+  return function () {
+    count += 1;
+    return count;
+  };
+}
+const next = makeCounter();
+console.log(next()); // 1
+console.log(next()); // 2
+const other = makeCounter();
+console.log(other()); // 1  — independent closure`} height={180} />
+
+`count` should be gone once `makeCounter` returns — but the inner function keeps a live reference to it, so it survives. Each call to `makeCounter` creates a fresh, independent `count`. That's a closure: encapsulated, private state.
+
+## The classic loop bug
+
+This is the single most common closure interview question:
+
+<JsPlayground code={`// var: one shared binding
+for (var i = 0; i < 3; i++) {
+  setTimeout(() => console.log('var', i), 0);
+}
+// let: a new binding each iteration
+for (let j = 0; j < 3; j++) {
+  setTimeout(() => console.log('let', j), 0);
+}`} height={170} />
+
+`var` is function-scoped, so all three callbacks close over the **same** `i`, which is `3` by the time they run → prints `3, 3, 3`. `let` is block-scoped and creates a **fresh binding per iteration**, so each callback captures its own `j` → `0, 1, 2`. Before `let`, people fixed this with an IIFE that captured the value as a parameter.
+
+## Hoisting & the TDZ
+
+Declarations are processed before any code runs ("hoisting"), but they behave differently:
+
+| Declaration | Hoisted? | Usable before its line? |
+|---|---|---|
+| `function foo(){}` | Yes, fully | Yes — you can call it above its definition |
+| `var x` | Yes, name only | Yes, but value is `undefined` until assigned |
+| `let` / `const` | Yes, name only | **No** — throws (Temporal Dead Zone) |
+
+The **Temporal Dead Zone** is the span from the start of the block until the `let`/`const` declaration is evaluated. Touching the variable in that window throws a `ReferenceError` — a deliberate safety feature so you can't read a binding before it's initialized.
+
+<JsPlayground code={`console.log(fnDecl());      // 'works' — function declarations hoist fully
+console.log(varX);          // undefined — name hoisted, value not
+try { console.log(letY); }  // ReferenceError — TDZ
+catch (e) { console.log('TDZ: cannot access letY before init'); }
+
+var varX = 1;
+let letY = 2;
+function fnDecl() { return 'works'; }`} height={200} />
+
+A subtle one interviewers love: `typeof` is *not* safe in the TDZ. `typeof undeclaredVar` returns `'undefined'`, but `typeof letInTDZ` still throws.
+
+## The module pattern & private state
+
+Before ES modules, closures were the standard way to create private state and a public API. An IIFE runs once, captures private variables, and returns only the methods you want exposed:
+
+<JsPlayground code={`const counter = (function () {
+  let count = 0;                 // truly private — no outside access
+  return {
+    inc() { count += 1; return count; },
+    reset() { count = 0; },
+    get() { return count; }
+  };
+})();
+console.log(counter.inc());  // 1
+console.log(counter.inc());  // 2
+counter.reset();
+console.log(counter.get());  // 0
+console.log(counter.count);  // undefined — not exposed`} height={210} />
+
+This is the *revealing module pattern*. The modern equivalent is ES module scope or `#private` class fields, but the closure version still appears constantly in libraries and interview questions.
+
+## Currying & partial application
+
+Closures let a function capture some arguments now and the rest later — the basis of currying and partial application:
+
+<JsPlayground code={`function multiply(a) {
+  return function (b) {
+    return a * b;       // closes over a
+  };
+}
+const double = multiply(2);
+const triple = multiply(3);
+console.log(double(5));  // 10
+console.log(triple(5));  // 15
+
+// Partial application of a generic logger
+function withPrefix(prefix) {
+  return (msg) => prefix + ': ' + msg;
+}
+const warn = withPrefix('WARN');
+console.log(warn('disk low'));  // 'WARN: disk low'`} height={230} />
+
+## What's the output? (classic puzzles)
+
+**Puzzle 1 — shared vs fresh binding inside a function:**
+
+<JsPlayground code={`function makeFns() {
+  const fns = [];
+  for (var i = 0; i < 3; i++) {
+    fns.push(() => i);
+  }
+  return fns;
+}
+const [a, b, c] = makeFns();
+console.log(a(), b(), c());  // ?`} height={190} />
+
+Answer: `3 3 3`. All three arrows close over the *same* function-scoped `i`, which is `3` after the loop. Swap `var` for `let` and you get `0 1 2`.
+
+**Puzzle 2 — IIFE capture by value:**
+
+<JsPlayground code={`var fns = [];
+for (var i = 0; i < 3; i++) {
+  (function (n) {
+    fns.push(() => n);   // n is a fresh parameter per IIFE call
+  })(i);
+}
+console.log(fns[0](), fns[1](), fns[2]());  // ?`} height={190} />
+
+Answer: `0 1 2`. Passing `i` as an argument copies its current value into the parameter `n`, giving each closure its own binding — the pre-`let` fix for the loop bug.
+
+**Puzzle 3 — one shared variable across two closures:**
+
+<JsPlayground code={`function makePair() {
+  let value = 0;
+  const setVal = (v) => { value = v; };
+  const getVal = () => value;
+  return { setVal, getVal };
+}
+const p = makePair();
+p.setVal(42);
+console.log(p.getVal());  // ?`} height={190} />
+
+Answer: `42`. `setVal` and `getVal` close over the *same* `value` binding, so a write through one is visible through the other. Two functions can share one closed-over variable.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "A closure is a function plus the lexical environment it was defined in, so it keeps live access to outer variables even after the outer function returns. `var` is function-scoped and hoisted as `undefined`; `let`/`const` are block-scoped and sit in a Temporal Dead Zone until declared. The loop bug happens because `var` shares one binding while `let` creates a fresh one per iteration."
+</div>
+
+## The stale-closure bug in React hooks
+
+This is the highest-value real-world closure trap and a common senior follow-up. A component renders, and every callback defined in that render closes over *that render's* variables. If a callback is captured once (e.g. in a `useEffect` with an empty dependency array, or a stale event listener), it keeps seeing the *old* state forever:
+
+```js
+function Counter() {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      // STALE: this closure captured count === 0 at mount.
+      // It logs 0 forever, no matter how many times you click.
+      console.log(count);
+    }, 1000);
+    return () => clearInterval(id);
+  }, []); // empty deps → effect (and its closure) created once
+}
+```
+
+Fixes: add `count` to the dependency array (so the closure is recreated with fresh state), or use the **functional updater** `setCount(c => c + 1)` which doesn't depend on the captured value, or store the latest value in a `useRef`. The bug is not a React bug — it is plain lexical scoping. Being able to explain it *as a closure* is a strong signal.
+
+## Memory & leaks
+
+Closures keep their entire reachable outer scope alive as long as the closure itself is reachable. Usually that is exactly what you want, but it can pin large objects in memory:
+
+```js
+function attach() {
+  const huge = new Array(1_000_000).fill('*'); // big
+  document.getElementById('btn').onclick = function () {
+    console.log('clicked'); // closes over `huge` even though it never uses it
+  };
+}
+```
+
+The handler captures the whole environment, so `huge` can't be garbage-collected while the listener lives. Mitigations: null out large references you don't need, scope big data so the closure doesn't capture it, and always remove event listeners / clear timers on teardown. (Engines do some scope pruning, but don't rely on it.)
+
+## Common gotchas
+
+- **The `var` loop bug** — `var` shares one binding; `let` creates one per iteration.
+- **TDZ surprises** — `typeof` does *not* save you inside the TDZ; it throws.
+- **Capturing the loop variable, not its value** — closures capture *bindings*, not snapshots. If you need the value, copy it (parameter, `let`, or a local `const`).
+- **Accidental globals** — assigning to an undeclared variable in sloppy mode creates a global; it escapes your intended scope. Use strict mode.
+- **Stale closures** in event listeners / intervals / React effects reading old state.
+- **Over-capturing** large objects and forgetting to release them.
+
+## Interview questions & model answers
+
+**Q: What exactly is a closure?**
+A function together with the lexical environment it was defined in, giving it persistent access to outer variables even after the outer function has returned.
+
+**Q: Why does the `var` loop print the final value?**
+`var` is function-scoped, so all iterations share one binding. By the time the async callbacks run, the loop has finished and that single `i` holds its final value. `let` creates a fresh block-scoped binding per iteration.
+
+**Q: Difference between hoisting of `var`, `let`/`const`, and function declarations?**
+Function declarations are hoisted fully (callable before their line). `var` is hoisted name-only and initialized to `undefined`. `let`/`const` are hoisted but uninitialized — accessing them before declaration throws (TDZ).
+
+**Q: How do you create private state in JS?**
+A closure (module pattern / factory function) or `#private` class fields. The private variable lives in a scope no external code can reach.
+
+**Q: Do closures cause memory leaks?**
+They can, by keeping referenced outer variables alive. It's a leak only if the closure outlives its usefulness — e.g. an un-removed listener pinning large data. Remove listeners and clear timers on cleanup.
+
+**Q: What's a stale closure and how do you fix it in React?**
+A callback captured in an earlier render still reads that render's variables. Fix with correct dependency arrays, functional state updaters, or refs.
+
+## Where you already use closures
+
+Event handlers, `setTimeout` callbacks, React hooks (`useState` closes over `setState`), the module pattern, memoization, currying, and debounce/throttle all *are* closures. Naming three real uses signals you actually understand it.

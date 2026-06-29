@@ -1,0 +1,387 @@
+---
+title: "Output Questions: Coercion, Operators & Equality"
+track: js-output
+summary: "Predict the output — type coercion puzzles, == vs ===, + operator surprises, typeof edge cases, and bitwise/logical traps."
+order: 5
+est: 25
+difficulty: hard
+priority: must
+tags: [coercion, operators, equality, typeof, NaN, spread, destructuring]
+whyAsked: "Type coercion questions appear in every phone screen because they quickly reveal JS depth. The surprising answers are precisely what interviewers look for."
+followUps:
+  - "What does + do when one operand is a string?"
+  - "Why is [] + [] an empty string?"
+  - "Why is [] + {} '[object Object]' but {} + [] is 0?"
+  - "What is the double negation !! trick?"
+  - "What is the nullish coalescing operator?"
+resources:
+  - { label: "javascript.info: Type conversions", url: "https://javascript.info/type-conversions" }
+  - { label: "MDN: Equality comparisons", url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Equality_comparisons_and_sameness" }
+---
+import JsPlayground from '../../../components/JsPlayground.astro';
+
+---
+
+## Q1 — the + operator with mixed types
+
+<JsPlayground code={`console.log(1 + '2');        // ?
+console.log('3' - 1);       // ?
+console.log(1 + 2 + '3');   // ?
+console.log('1' + 2 + 3);   // ?
+console.log(+'3');           // ?
+console.log(+true);          // ?
+console.log(+null);          // ?
+console.log(+undefined);     // ?
+console.log(+[]);            // ?
+console.log(+{});            // ?`} height={220} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+"12"
+2
+"33"
+"123"
+3
+1
+0
+NaN
+0
+NaN
+```
+- `+` prefers concatenation when either operand is a string.
+- `-` always converts to numbers (no string subtraction).
+- `1 + 2 + '3'` → left to right: `3 + '3'` → `'33'`.
+- `'1' + 2 + 3` → `'12' + 3` → `'123'`.
+- Unary `+` calls `ToNumber`: `+true` = 1, `+null` = 0, `+undefined` = NaN, `+[]` = `+''` = 0, `+{}` = NaN.
+</details>
+
+---
+
+## Q2 — loose equality zoo
+
+<JsPlayground code={`console.log(0 == false);       // ?
+console.log('' == false);      // ?
+console.log(null == false);    // ?
+console.log(null == undefined); // ?
+console.log(null == 0);        // ?
+console.log(undefined == 0);   // ?
+console.log(NaN == NaN);       // ?
+console.log([] == false);      // ?
+console.log([] == ![]);        // ?`} height={200} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+true
+true
+false
+true
+false
+false
+false
+true
+true
+```
+- `0 == false` → both → `0 == 0` → `true`
+- `'' == false` → `'' == 0` → `0 == 0` → `true`
+- `null == false` → **false** — `null` only equals `undefined` with `==`, nothing else.
+- `null == undefined` → **true** — special rule.
+- `null == 0` → **false** — null's only `==` partner is `undefined`.
+- `NaN == NaN` → **false** — NaN is never equal to anything including itself.
+- `[] == false` → `'' == false` → `0 == 0` → `true`
+- `[] == ![]` → `[] == false` → (above) → `true`
+</details>
+
+---
+
+## Q3 — typeof gotchas
+
+<JsPlayground code={`console.log(typeof null);          // ?
+console.log(typeof undefined);     // ?
+console.log(typeof NaN);           // ?
+console.log(typeof []);            // ?
+console.log(typeof {});            // ?
+console.log(typeof function(){});  // ?
+console.log(typeof typeof 1);      // ?
+console.log(typeof undeclared);    // ?`} height={190} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+"object"
+"undefined"
+"number"
+"object"
+"object"
+"function"
+"string"
+"undefined"
+```
+- `typeof null` → `'object'` — historical bug, never fixed.
+- `typeof NaN` → `'number'` — NaN is the "Not a Number" number.
+- Arrays and objects both → `'object'`.
+- Functions → `'function'` (special case).
+- `typeof typeof 1` → `typeof 'number'` → `'string'`.
+- `typeof undeclaredVar` → `'undefined'` (not a ReferenceError — `typeof` is safe).
+</details>
+
+---
+
+## Q4 — increment/decrement operators
+
+<JsPlayground code={`let a = 5;
+console.log(a++); // ?
+console.log(a);   // ?
+console.log(++a); // ?
+console.log(a--); // ?
+console.log(a);   // ?`} height={155} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+5
+6
+7
+7
+6
+```
+- `a++` (post-increment) — returns current value **then** increments: returns `5`, `a` becomes `6`.
+- `++a` (pre-increment) — increments **then** returns: `a` becomes `7`, returns `7`.
+- `a--` (post-decrement) — returns current value `7`, then decrements to `6`.
+</details>
+
+---
+
+## Q5 — short-circuit evaluation
+
+<JsPlayground code={`console.log(0 || 'default');       // ?
+console.log('' || 'fallback');     // ?
+console.log(null || undefined || 'ok'); // ?
+console.log(1 || 'never');         // ?
+console.log(0 && 'never');         // ?
+console.log(1 && 'yes');           // ?
+console.log(null ?? 'fallback');   // ?
+console.log(0 ?? 'not this');      // ?
+console.log(false ?? 'not this');  // ?`} height={210} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+"default"
+"fallback"
+"ok"
+1
+0
+"yes"
+"fallback"
+0
+false
+```
+- `||` returns the first truthy value (or the last value if all falsy).
+- `&&` returns the first falsy value (or the last value if all truthy).
+- `??` (nullish coalescing) — only falls through on `null` or `undefined` (not `0`, `''`, `false`). This is the key difference from `||`.
+</details>
+
+---
+
+## Q6 — [] + [] and [] + {}
+
+<JsPlayground code={`console.log([] + []);   // ?
+console.log([] + {});   // ?
+// console.log({} + []); // try in browser console — different result!
+console.log(({}) + []); // ?`} height={120} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+""
+"[object Object]"
+"[object Object]"
+```
+- `[] + []` → `'' + ''` → `''` (both arrays convert to empty strings).
+- `[] + {}` → `'' + '[object Object]'` → `'[object Object]'`.
+- `{} + []` in a statement context — `{}` is parsed as an empty block, then `+[]` is the expression → `+'' = 0`. But `({}) + []` forces `{}` to be an object expression → `'[object Object]'`.
+</details>
+
+---
+
+## Q7 — truthy/falsy surprises
+
+<JsPlayground code={`const values = [0, -0, '', '0', false, null, undefined, NaN, [], {}, Infinity, -Infinity];
+
+values.forEach(v => {
+  // Only log if truthy to see which ones pass the if check
+  if (v) process.stdout ? process.stdout.write(JSON.stringify(v) + ' ') : console.log(JSON.stringify(v) + ' is truthy');
+});
+console.log('');
+console.log('truthy count:', values.filter(Boolean).length);`} height={170} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+(logs truthy values: "0", [], {}, Infinity, -Infinity)
+truthy count: 5
+```
+Falsy: `0`, `-0`, `''`, `false`, `null`, `undefined`, `NaN` — 7 values. Everything else is truthy, including `"0"` (non-empty string), `[]` (empty array), `{}` (empty object), `Infinity`, `-Infinity`.
+</details>
+
+---
+
+## Q8 — comparison oddities
+
+<JsPlayground code={`console.log(null > 0);   // ?
+console.log(null == 0);  // ?
+console.log(null >= 0);  // ?
+console.log(undefined > 0);  // ?
+console.log(undefined < 0);  // ?
+console.log(undefined == 0); // ?`} height={160} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+false
+false
+true
+false
+false
+false
+```
+This is the most counterintuitive coercion result. For `>`, `<`, `>=`, `<=`, `null` converts to `0`. So `null >= 0` → `0 >= 0` → `true`. But `==` has special rules — `null` only equals `undefined`. So `null == 0` is `false` even though `null >= 0` is `true`. This inconsistency is a known JS quirk.
+
+`undefined` converts to `NaN` for comparisons → any comparison with NaN is `false`. And `undefined == 0` is `false` (only `null == undefined`).
+</details>
+
+---
+
+## Q9 — destructuring output
+
+<JsPlayground code={`const [a, b, ...rest] = [1, 2, 3, 4, 5];
+console.log(a, b, rest);  // ?
+
+const { x = 10, y = 20, z } = { x: 5, z: 30 };
+console.log(x, y, z);    // ?
+
+const [, second, , fourth] = [1, 2, 3, 4];
+console.log(second, fourth); // ?`} height={165} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+1 2 [3, 4, 5]
+5 20 30
+2 4
+```
+- Rest element collects remaining items into an array.
+- `y = 20` — default values apply only when the property is `undefined`. `y` is not in the source → `20`.
+- `x = 10` — `x` IS in the source (`5`), so the default is ignored: `5`.
+- `z` — present in source as `30`.
+- `[, second, , fourth]` — skip positions with empty slots.
+</details>
+
+---
+
+## Q10 — spread edge cases
+
+<JsPlayground code={`const a = [1, 2, 3];
+const b = [...a];
+b.push(4);
+
+console.log(a);  // ?
+console.log(b);  // ?
+
+const obj = { x: 1, nested: { y: 2 } };
+const copy = { ...obj };
+copy.nested.y = 99;
+
+console.log(obj.nested.y);  // ?`} height={185} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+[1, 2, 3]
+[1, 2, 3, 4]
+99
+```
+Array spread creates a **shallow copy** — `b` is a new array, pushing to it doesn't affect `a`. Object spread is also **shallow** — `copy.nested` and `obj.nested` point to the **same object**. Mutating `copy.nested.y` mutates `obj.nested.y` too.
+</details>
+
+---
+
+## Q11 — optional chaining and nullish
+
+<JsPlayground code={`const user = {
+  profile: {
+    name: 'Alice',
+    address: null,
+  }
+};
+
+console.log(user?.profile?.name);            // ?
+console.log(user?.profile?.address?.city);   // ?
+console.log(user?.settings?.theme);          // ?
+console.log(user?.profile?.age ?? 18);       // ?
+console.log(user?.profile?.name ?? 'Anonymous'); // ?`} height={185} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+"Alice"
+undefined
+undefined
+18
+"Alice"
+```
+- `?.` short-circuits to `undefined` when it hits `null` or `undefined` without throwing.
+- `address?.city` — `address` is `null`, so `null?.city` → `undefined` (no error).
+- `settings` doesn't exist → `undefined`, then `?.theme` → `undefined`.
+- `?? 18` — `age` is `undefined`, so nullish coalescing returns `18`.
+- `name ?? 'Anonymous'` — `name` is `'Alice'` (not nullish) → `'Alice'`.
+</details>
+
+---
+
+## Q12 — comma operator and void
+
+<JsPlayground code={`let x = (1, 2, 3);
+console.log(x);           // ?
+
+let y = void 0;
+console.log(y);           // ?
+
+console.log(void 'anything'); // ?
+
+// What does this log?
+for (let i = 0, j = 10; i < 3; i++, j--) {
+  if (i === 1) console.log(i, j); // ?
+}`} height={185} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+3
+undefined
+undefined
+1 9
+```
+- The **comma operator** evaluates each operand left-to-right and returns the value of the **last** one. `(1, 2, 3)` → `3`.
+- `void expression` always evaluates the expression and returns `undefined`. Common use: `void 0` as a reliable `undefined`.
+- In `for (let i = 0, j = 10; ...)`, the comma in the init and update sections is part of the `for` syntax (initializes/updates multiple variables), not the comma operator.
+</details>
+
+<div class="callout key">
+  <div class="ct">The coercion short list</div>
+  <code>+</code> string-wins. <code>-/*//</code> always ToNumber. <code>==</code> coerces — null only equals undefined, NaN equals nothing. <code>??</code> is null-or-undefined only (not falsy). <code>||</code>/<code>&&</code> return operands, not booleans. <code>typeof null === 'object'</code> (bug). <code>typeof undeclared === 'undefined'</code> (safe). Spread is shallow — nested objects still share references.
+</div>

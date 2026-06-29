@@ -1,0 +1,374 @@
+---
+title: "The Page Object Model (POM)"
+track: qa-framework
+summary: "The most-asked framework pattern — encapsulate each page's locators and actions in a class so tests stay readable, DRY, and maintenance lives in one place."
+order: 1
+est: 22
+difficulty: medium
+priority: must
+tags: [pom, design, maintainability, selenium, playwright]
+whyAsked: "POM is the default structure for UI automation. Expect to explain it, justify every layer, and sketch one on a whiteboard in under five minutes."
+followUps:
+  - "What problem does POM actually solve?"
+  - "What is Page Factory and is it still recommended?"
+  - "Where do assertions live — in the page or the test?"
+  - "How do you model a header that appears on every page?"
+  - "What is the Loadable Component pattern?"
+resources:
+  - { label: "Selenium POM guide", url: "https://www.selenium.dev/documentation/test_practices/encouraged/page_object_models/" }
+  - { label: "Martin Fowler — PageObject", url: "https://martinfowler.com/bliki/PageObject.html" }
+  - { label: "Playwright Page Object Models", url: "https://playwright.dev/docs/pom" }
+---
+
+The Page Object Model is the single most-asked design topic in automation interviews. It is not a library — it is a **discipline** for organising UI test code so that the suite survives contact with a changing product. If you can explain *why* each rule exists (not just recite the rules), you signal senior judgement.
+
+## The problem it solves
+
+Picture a suite with no structure. The selector for the login button — `By.id("login-button")` — appears in 40 tests because 40 flows start by logging in. The product team renames the id to `submit-login`. You now edit 40 files, miss two, and ship a red pipeline.
+
+This is the **duplication-and-coupling problem**. Tests are coupled directly to the DOM, so every UI change ripples across the entire suite. The cost of change scales with the *number of tests*, not the *number of pages* — exactly backwards.
+
+POM inverts that. Each page (or meaningful screen) becomes a class that owns its locators and the operations you can perform on it. The button's selector lives in **one** place: `LoginPage`. When the id changes, you edit one line. The cost of change now scales with the number of *pages*, which is small and stable.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  A Page Object hides <em>how</em> to interact with a screen and exposes <em>what</em> a user can do there. Tests speak the language of the business ("log in", "add to cart"); the page speaks the language of the DOM (ids, XPaths, waits).
+</div>
+
+## Full POM structure
+
+A mature POM has three layers, not one:
+
+```
+BasePage          # shared mechanics: waits, click/type wrappers, navigation
+   └─ LoginPage   # a real page: locators + business actions
+   └─ InventoryPage
+ComponentObjects  # reusable widgets that appear on many pages (header, modal, datepicker)
+```
+
+### BasePage — the shared engine
+
+Every page extends a `BasePage` that wraps the raw driver in safe, waited interactions. This is where you centralise explicit waits so no individual page ever calls `Thread.sleep`.
+
+```java
+public abstract class BasePage {
+    protected final WebDriver driver;
+    protected final WebDriverWait wait;
+
+    protected BasePage(WebDriver driver) {
+        this.driver = driver;
+        this.wait = new WebDriverWait(driver, Duration.ofSeconds(10));
+    }
+
+    protected WebElement visible(By locator) {
+        return wait.until(ExpectedConditions.visibilityOfElementLocated(locator));
+    }
+
+    protected void click(By locator) {
+        wait.until(ExpectedConditions.elementToBeClickable(locator)).click();
+    }
+
+    protected void type(By locator, String text) {
+        WebElement el = visible(locator);
+        el.clear();
+        el.sendKeys(text);
+    }
+
+    protected String text(By locator) {
+        return visible(locator).getText();
+    }
+}
+```
+
+### A real page — LoginPage
+
+The page declares locators as private fields and exposes intention-revealing methods. Notice that a successful login **returns the next page object** — that is the fluent pattern that lets a whole flow chain into a readable sentence.
+
+```java
+public class LoginPage extends BasePage {
+    private final By username = By.id("user-name");
+    private final By password = By.id("password");
+    private final By loginBtn = By.id("login-button");
+    private final By errorBanner = By.cssSelector("[data-test='error']");
+
+    public LoginPage(WebDriver driver) {
+        super(driver);
+    }
+
+    public LoginPage open() {
+        driver.get("https://www.saucedemo.com/");
+        return this;
+    }
+
+    // happy path: returns the page you land on
+    public InventoryPage loginAs(String user, String pass) {
+        type(username, user);
+        type(password, pass);
+        click(loginBtn);
+        return new InventoryPage(driver);
+    }
+
+    // negative path: you STAY on LoginPage, so return this
+    public LoginPage loginExpectingFailure(String user, String pass) {
+        type(username, user);
+        type(password, pass);
+        click(loginBtn);
+        return this;
+    }
+
+    // a query method the test can assert on — page exposes data, not WebElements
+    public String errorMessage() {
+        return text(errorBanner);
+    }
+}
+```
+
+### The test reads like English
+
+```java
+public class LoginTest extends BaseTest {
+
+    @Test
+    public void standardUserCanLogIn() {
+        InventoryPage inventory = new LoginPage(driver)
+                .open()
+                .loginAs("standard_user", "secret_sauce");
+
+        Assert.assertTrue(inventory.isLoaded(), "Inventory page should load after login");
+    }
+
+    @Test
+    public void lockedOutUserSeesError() {
+        String error = new LoginPage(driver)
+                .open()
+                .loginExpectingFailure("locked_out_user", "secret_sauce")
+                .errorMessage();
+
+        Assert.assertTrue(error.contains("locked out"), "Expected locked-out message");
+    }
+}
+```
+
+The test contains **zero selectors** and **zero waits**. It orchestrates pages and asserts on the values they return. That is the whole goal.
+
+## Action methods returning the next page (fluent flow)
+
+The convention "an action method returns the page object you end up on" is what makes POM fluent and self-documenting:
+
+- A method that navigates forward returns the **destination** page (`loginAs` → `InventoryPage`).
+- A method that stays put returns **`this`** (`loginExpectingFailure` → `LoginPage`).
+- A method that can branch (e.g. login *might* succeed or fail) should be split into two methods, each with one honest return type. Do not return a wishy-washy base type.
+
+This gives you compile-time safety: you literally cannot call `inventory.addToCart()` until you have a method that hands you an `InventoryPage`.
+
+## Where assertions live
+
+This is a guaranteed follow-up. The clean answer:
+
+- **Assertions belong in the test (or in a step layer), not in the page.** Pages perform actions and *return state*; tests *verify* state. Mixing them couples a page to one verification and makes it un-reusable in flows that need a different check.
+- **The pragmatic exception:** a tiny `isLoaded()` / `isDisplayed()` self-check on a page is acceptable, because "did I actually arrive?" is the page's own concern and prevents the test from racing ahead.
+
+```java
+// GOOD — page returns data, test asserts
+String price = productPage.priceFor("Sauce Labs Backpack");
+Assert.assertEquals(price, "$29.99");
+
+// AVOID — assertion buried in the page
+public void verifyPrice() {   // now this page only knows how to check ONE thing
+    Assert.assertEquals(text(price), "$29.99");
+}
+```
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Pages <em>do</em>; tests <em>verify</em>. If a page imports an assertion library, pause and ask whether that check really belongs to the test.
+</div>
+
+## PageFactory (`@FindBy`) vs plain `By`
+
+Selenium ships two ways to declare locators.
+
+**PageFactory** uses annotated `WebElement` fields and lazy proxies, initialised once:
+
+```java
+public class LoginPagePF extends BasePage {
+    @FindBy(id = "user-name") private WebElement username;
+    @FindBy(id = "password")  private WebElement password;
+    @FindBy(id = "login-button") private WebElement loginBtn;
+
+    public LoginPagePF(WebDriver driver) {
+        super(driver);
+        PageFactory.initElements(driver, this); // wires the proxies
+    }
+}
+```
+
+**Plain `By`** stores the locator, not the element, and resolves it fresh on each use (as shown earlier).
+
+Which to use? The modern consensus — and the answer that scores points — is **prefer plain `By`**:
+
+- PageFactory's lazy proxies cache the element reference and are a classic source of `StaleElementReferenceException` on dynamic pages.
+- `@FindBy` hides *when* the lookup happens, making waits harder to reason about.
+- The official Selenium docs no longer recommend PageFactory for new code.
+- Plain `By` makes the explicit wait obvious and re-resolves the element every time, which is what you usually want.
+
+Know PageFactory exists (you will meet it in legacy suites), but justify choosing plain `By`.
+
+## The Loadable Component pattern
+
+A page object can lie: you construct `new InventoryPage(driver)` before the page has actually rendered, then the first action flakes. The **Loadable Component** pattern makes "am I loaded?" a first-class, enforced contract.
+
+```java
+public abstract class LoadableComponent<T extends LoadableComponent<T>> {
+    public T get() {
+        try { isLoaded(); }
+        catch (Error e) { load(); isLoaded(); }
+        @SuppressWarnings("unchecked") T self = (T) this;
+        return self;
+    }
+    protected abstract void load();       // how to navigate here
+    protected abstract void isLoaded();   // throws Error if not ready
+}
+```
+
+The practical takeaway for an interview: a page should be able to verify its own readiness (a self `isLoaded()` check that waits for a stable, page-defining element) so flows fail fast with a clear message instead of flaking deep inside the next action.
+
+## Component objects for reusable widgets
+
+Not everything is a page. A header, nav bar, cookie banner, search box, or modal appears on *many* pages. Duplicating its locators into every page reintroduces the very duplication POM exists to kill. Model it as a **component object** and compose it into pages.
+
+```java
+public class HeaderComponent extends BasePage {
+    private final By cartIcon  = By.cssSelector(".shopping_cart_link");
+    private final By cartCount = By.cssSelector(".shopping_cart_badge");
+
+    public HeaderComponent(WebDriver driver) { super(driver); }
+
+    public CartPage openCart() {
+        click(cartIcon);
+        return new CartPage(driver);
+    }
+
+    public int cartItemCount() {
+        List<WebElement> badge = driver.findElements(cartCount);
+        return badge.isEmpty() ? 0 : Integer.parseInt(badge.get(0).getText());
+    }
+}
+
+public class InventoryPage extends BasePage {
+    public final HeaderComponent header; // composition, not inheritance
+
+    public InventoryPage(WebDriver driver) {
+        super(driver);
+        this.header = new HeaderComponent(driver);
+    }
+    public boolean isLoaded() {
+        return !driver.findElements(By.cssSelector(".inventory_list")).isEmpty();
+    }
+}
+```
+
+Now the test reads `inventory.header.openCart()`. The header's locators exist once and every page reuses them by composition.
+
+## POM with Playwright (class-based, TypeScript)
+
+The pattern carries over to modern tools, with a twist: Playwright's `Locator` is **lazy and auto-waiting**, so you store locators on the class and Playwright handles the waiting for you. No `BasePage` wait wrappers needed.
+
+```typescript
+// pages/LoginPage.ts
+import { Page, Locator, expect } from '@playwright/test';
+import { InventoryPage } from './InventoryPage';
+
+export class LoginPage {
+  readonly page: Page;
+  readonly username: Locator;
+  readonly password: Locator;
+  readonly loginBtn: Locator;
+  readonly errorBanner: Locator;
+
+  constructor(page: Page) {
+    this.page = page;
+    this.username = page.getByPlaceholder('Username');
+    this.password = page.getByPlaceholder('Password');
+    this.loginBtn = page.getByRole('button', { name: 'Login' });
+    this.errorBanner = page.locator('[data-test="error"]');
+  }
+
+  async open(): Promise<void> {
+    await this.page.goto('https://www.saucedemo.com/');
+  }
+
+  async loginAs(user: string, pass: string): Promise<InventoryPage> {
+    await this.username.fill(user);
+    await this.password.fill(pass);
+    await this.loginBtn.click();
+    return new InventoryPage(this.page);
+  }
+
+  async errorMessage(): Promise<string> {
+    return (await this.errorBanner.textContent()) ?? '';
+  }
+}
+```
+
+```typescript
+// tests/login.spec.ts
+import { test, expect } from '@playwright/test';
+import { LoginPage } from '../pages/LoginPage';
+
+test('standard user can log in', async ({ page }) => {
+  const login = new LoginPage(page);
+  await login.open();
+  const inventory = await login.loginAs('standard_user', 'secret_sauce');
+  await expect(inventory.title).toHaveText('Products');
+});
+```
+
+Two senior notes for Playwright POM: prefer **user-facing locators** (`getByRole`, `getByLabel`, `getByTestId`) over brittle CSS/XPath, and remember that because Playwright auto-waits, the BasePage abstraction shrinks to optional shared helpers rather than a wait engine.
+
+## Anti-patterns to call out
+
+- **Assertions inside page objects** — couples a page to one verification; the test loses its job. (See the assertions section.)
+- **Fat page objects / God pages** — one 800-line class for a complex screen. Split by component or by tab. A page object should be cohesive, not a dumping ground.
+- **Exposing `WebElement` / `Locator` from page methods** — leaks the DOM back into the test, defeating the encapsulation. Expose **data and behaviours** (strings, booleans, next pages), never raw elements.
+- **Hardcoded waits (`Thread.sleep`) inside pages** — flaky and slow. Centralise explicit waits in `BasePage`.
+- **Page objects that navigate AND assert AND read config** — a page should do one job: model interactions with one screen.
+- **Mirroring the DOM instead of the user's mental model** — name methods after user intent (`checkout()`), not widgets (`clickGreenButton()`).
+
+## Interview questions & model answers
+
+**1. What problem does POM solve?**
+Direct DOM coupling. Without it, a selector is duplicated across every test that touches a screen, so a single UI change forces edits across the whole suite and the cost of change scales with the number of tests. POM moves each selector into one page class, so change cost scales with the (small, stable) number of pages instead. It also makes tests readable by expressing them in business language.
+
+**2. Where do assertions belong, and why?**
+In the test (or a step layer), not the page. Pages perform actions and return state; tests verify it. Putting an assertion in a page hard-codes one check into a reusable component and breaks reuse in flows that need a different verification. A small self `isLoaded()` check on a page is the accepted exception, because page readiness is the page's own concern.
+
+**3. Should an action method return something?**
+Yes — return the page object you end up on. Forward navigation returns the destination page; staying put returns `this`. This enables fluent, self-documenting flows and gives compile-time safety: you can only call methods that exist on the page you actually have. If an action can branch, split it into two methods so each has one honest return type.
+
+**4. PageFactory or plain `By` — which and why?**
+Plain `By` for new code. PageFactory's `@FindBy` proxies cache element references and are a common cause of `StaleElementReferenceException` on dynamic pages, and they obscure when the lookup happens. Plain `By` re-resolves the element on each use and keeps explicit waits visible. PageFactory still appears in legacy suites, so know it, but I would not adopt it today.
+
+**5. How do you handle a component that appears on every page, like a header?**
+Model it as a component object — its own class with the header's locators and actions — and compose it into pages via a field (`page.header.openCart()`), not inheritance. This keeps the widget's locators in one place and lets every page reuse it, avoiding the duplication POM exists to eliminate.
+
+**6. What is the Loadable Component pattern?**
+A pattern where a page enforces its own load contract: `get()` checks `isLoaded()`, and if it fails, calls `load()` to navigate and checks again. The interview-level takeaway is that pages should verify their own readiness so flows fail fast with a clear "page not loaded" message rather than flaking inside the next action.
+
+**7. How does POM differ in Playwright versus Selenium?**
+The structure is identical — a class per screen, locators as fields, intention-revealing methods, returning the next page. The difference is that Playwright `Locator`s are lazy and auto-waiting, so you store locators and let the engine wait, shrinking the BasePage wait-wrapper layer that Selenium needs. Playwright also pushes user-facing locators (`getByRole`, `getByTestId`) that are far less brittle than CSS/XPath.
+
+## Common mistakes
+
+- Treating POM as "a class per page" only, and forgetting the BasePage and component layers.
+- Putting assertions in pages, then wondering why pages aren't reusable.
+- Returning raw `WebElement`/`Locator` from page methods, leaking the DOM into tests.
+- One enormous God page for a complex screen instead of splitting into components.
+- Using `@FindBy` everywhere out of habit, then fighting stale-element flakiness.
+- Hardcoding `Thread.sleep` in page methods instead of centralising explicit waits.
+- Naming methods after widgets (`clickButton3`) instead of user intent (`submitOrder`).
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  POM is a structuring discipline, not a silver bullet for flakiness. You still need a sound waiting strategy and stable locators underneath it. A perfectly structured POM over <code>Thread.sleep</code> and XPath-by-position is still a flaky suite.
+</div>

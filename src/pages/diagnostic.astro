@@ -1,0 +1,211 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { DIAGNOSTIC, DIAG_AREAS, DIAG_ACTIONS } from '../data/diagnostic';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const total = DIAGNOSTIC.length;
+---
+<BaseLayout title="Diagnostic · SDE-2 Launchpad" active="">
+  <div class="wrap" style="padding-top:28px;max-width:700px">
+
+    <!-- ════ INTRO ════ -->
+    <div id="dgIntro">
+      <h1>Readiness diagnostic</h1>
+      <p class="sub">{total} quick questions — JavaScript, DSA, system design, React, and behavioral. It takes about 10 minutes and gives you an honest starting picture: what's solid, and exactly where to focus first. Nothing here is graded against anyone but yourself.</p>
+      <div class="panel" style="margin-top:18px">
+        <div class="row" style="gap:18px;flex-wrap:wrap">
+          <div class="dg-fact"><b>{total}</b><span>questions</span></div>
+          <div class="dg-fact"><b>~10</b><span>minutes</span></div>
+          <div class="dg-fact"><b>5</b><span>areas scored</span></div>
+        </div>
+        <p class="muted" style="font-size:13px;margin-top:14px">Answer honestly — guessing only fools yourself. You'll see explanations for anything you miss, and your focus areas will be flagged on your dashboard.</p>
+        <button class="btn btn-primary" id="dgStart" style="margin-top:16px;font-size:15px;padding:11px 22px">Start diagnostic ▶</button>
+        <a class="btn" href={`${base}/`} style="margin-left:8px">Skip for now</a>
+      </div>
+    </div>
+
+    <!-- ════ QUIZ ════ -->
+    <div id="dgQuiz" class="hide">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <span class="tag" id="dgArea"></span>
+        <span class="muted" style="font-size:13px;font-family:var(--mono)" id="dgProg"></span>
+      </div>
+      <div class="qz-progbar"><i id="dgBar"></i></div>
+      <div class="panel" style="margin-top:12px">
+        <div style="font-size:18px;font-weight:600;line-height:1.4" id="dgQ"></div>
+        <pre class="qz-code hide" id="dgCode" style="margin-top:12px"></pre>
+        <div class="dg-options" id="dgOptions" style="margin-top:16px"></div>
+        <div class="row" style="margin-top:16px">
+          <button class="btn" id="dgBack">← Back</button>
+          <div class="spacer"></div>
+          <button class="btn btn-primary" id="dgNext" disabled>Next →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════ RESULTS ════ -->
+    <div id="dgResults" class="hide">
+      <h1>Your diagnostic</h1>
+      <p class="sub" id="dgOverall"></p>
+
+      <div class="panel" style="margin-top:16px">
+        <div id="dgBars"></div>
+      </div>
+
+      <div class="panel" id="dgFocusPanel" style="margin-top:14px">
+        <h3 style="font-size:15px;color:var(--accent);margin-bottom:4px">🎯 Focus here first</h3>
+        <p class="muted" style="font-size:13px;margin-bottom:12px">Your lowest areas — the fastest points to gain.</p>
+        <div id="dgFocus"></div>
+      </div>
+
+      <details class="panel" style="margin-top:14px" id="dgReviewPanel">
+        <summary style="cursor:pointer;font-weight:600">Review what you missed</summary>
+        <div id="dgReview" style="margin-top:12px"></div>
+      </details>
+
+      <div class="row" style="margin-top:18px">
+        <button class="btn btn-primary" id="dgFinish">Save &amp; go to dashboard →</button>
+        <button class="btn" id="dgRetake">Retake</button>
+      </div>
+    </div>
+  </div>
+
+  <style is:global>
+    .qz-progbar { height:4px; background:rgba(255,255,255,.08); border-radius:3px; overflow:hidden; margin-top:10px; }
+    .qz-progbar i { display:block; height:100%; width:0%; background:linear-gradient(90deg,var(--accent),var(--accent-2)); transition:width .3s; }
+    .qz-code { background:#0b0e16; border:1px solid var(--line); border-radius:10px; padding:14px; font-family:var(--mono); font-size:13px; line-height:1.55; color:var(--text); white-space:pre-wrap; margin:0; }
+    .dg-fact { display:flex; flex-direction:column; }
+    .dg-fact b { font-size:26px; font-weight:800; line-height:1; }
+    .dg-fact span { font-size:12px; color:var(--muted); font-family:var(--mono); margin-top:3px; }
+    .dg-options { display:flex; flex-direction:column; gap:9px; }
+    .dg-opt { text-align:left; padding:13px 15px; border:1px solid var(--line); border-radius:11px; background:rgba(255,255,255,.02); color:var(--text); font-size:14px; cursor:pointer; transition:.14s; font-family:var(--mono); }
+    .dg-opt:hover { border-color:var(--accent); }
+    .dg-opt.sel { background:var(--accent-deep); border-color:var(--accent); color:#fff; }
+    .dg-bar-row { margin-bottom:14px; }
+    .dg-bar-row:last-child { margin-bottom:0; }
+    .dg-bar-head { display:flex; justify-content:space-between; font-size:13.5px; margin-bottom:5px; }
+    .dg-bar-head b { font-family:var(--mono); }
+    .dg-bar-track { height:9px; background:var(--panel-4); border-radius:5px; overflow:hidden; }
+    .dg-bar-fill { height:100%; border-radius:5px; transition:width .5s; }
+    .dg-focus-item { padding:12px 0; border-top:1px solid var(--line); }
+    .dg-focus-item:first-child { border-top:none; }
+    .dg-focus-item b { font-size:14px; }
+    .dg-focus-item .dg-acts { margin-top:7px; display:flex; gap:8px; flex-wrap:wrap; }
+    .dg-rev { padding:12px 0; border-top:1px solid var(--line); }
+    .dg-rev:first-child { border-top:none; }
+    .dg-rev pre { background:#0b0e16; border:1px solid var(--line); border-radius:8px; padding:10px; font-family:var(--mono); font-size:12px; white-space:pre-wrap; margin:6px 0; color:var(--text); }
+    .dg-rev .dg-rev-q { font-size:13.5px; font-weight:600; }
+    .dg-rev .dg-rev-a { font-size:13px; font-family:var(--mono); margin-top:4px; }
+    .dg-rev .dg-rev-why { font-size:13px; color:var(--muted); margin-top:6px; line-height:1.5; }
+  </style>
+
+  <script define:vars={{ base, QS: DIAGNOSTIC, AREAS: DIAG_AREAS, ACTIONS: DIAG_ACTIONS }}>
+    const store = window.SDE2;
+    const el = (id) => document.getElementById(id);
+    const answers = {}; // id -> { label, value }
+    let idx = 0;
+
+    function esc(s) { return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+    function mdLite(s) {
+      return esc(s).replace(/`([^`]+)`/g, '<code style="background:var(--panel-3);padding:1px 5px;border-radius:4px;font-family:var(--mono);font-size:12px">$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+    }
+
+    function showQ() {
+      const q = QS[idx];
+      el('dgArea').textContent = (AREAS[q.area]?.icon || '') + ' ' + (AREAS[q.area]?.label || q.area);
+      el('dgProg').textContent = `${idx + 1} / ${QS.length}`;
+      el('dgBar').style.width = (idx / QS.length * 100) + '%';
+      el('dgQ').textContent = q.q;
+      if (q.code) { el('dgCode').textContent = q.code; el('dgCode').classList.remove('hide'); }
+      else el('dgCode').classList.add('hide');
+      el('dgOptions').innerHTML = q.options.map((o, i) =>
+        `<button class="dg-opt ${answers[q.id]?.label === o.label ? 'sel' : ''}" data-i="${i}">${esc(o.label)}</button>`).join('');
+      el('dgOptions').querySelectorAll('.dg-opt').forEach((b) => b.addEventListener('click', () => {
+        const o = q.options[+b.dataset.i];
+        answers[q.id] = { label: o.label, value: o.value };
+        el('dgOptions').querySelectorAll('.dg-opt').forEach((x) => x.classList.remove('sel'));
+        b.classList.add('sel');
+        el('dgNext').disabled = false;
+      }));
+      el('dgNext').disabled = !answers[q.id];
+      el('dgNext').textContent = idx === QS.length - 1 ? 'See results →' : 'Next →';
+      el('dgBack').style.visibility = idx === 0 ? 'hidden' : 'visible';
+    }
+
+    function computeScores() {
+      const byArea = {};
+      QS.forEach((q) => {
+        (byArea[q.area] ||= { sum: 0, n: 0 });
+        const a = answers[q.id];
+        let s = 0;
+        if (q.type === 'mcq') s = a && a.label === q.correct ? 1 : 0;
+        else s = a ? (a.value || 0) : 0;
+        byArea[q.area].sum += s; byArea[q.area].n += 1;
+      });
+      const areas = {};
+      Object.keys(byArea).forEach((k) => { areas[k] = Math.round(byArea[k].sum / byArea[k].n * 100); });
+      const overall = Math.round(Object.values(areas).reduce((a, b) => a + b, 0) / Object.keys(areas).length);
+      return { areas, overall };
+    }
+
+    function showResults() {
+      const { areas, overall } = computeScores();
+      el('dgQuiz').classList.add('hide');
+      el('dgResults').classList.remove('hide');
+      window.scrollTo(0, 0);
+
+      el('dgOverall').textContent = overall >= 75 ? `Strong baseline — ${overall}/100 overall. Polish the dips and start mocks.`
+        : overall >= 50 ? `Solid foundation — ${overall}/100 overall. Clear focus areas below.`
+        : `Lots of upside — ${overall}/100 overall. The plan below is exactly where to start.`;
+
+      const col = (v) => v >= 70 ? 'var(--accent-2)' : v >= 45 ? 'var(--warn)' : 'var(--hot)';
+      const order = Object.keys(areas).sort((a, b) => areas[a] - areas[b]);
+      el('dgBars').innerHTML = Object.keys(AREAS).filter((k) => areas[k] !== undefined).map((k) => `
+        <div class="dg-bar-row">
+          <div class="dg-bar-head"><span>${AREAS[k].icon} ${AREAS[k].label}</span><b style="color:${col(areas[k])}">${areas[k]}%</b></div>
+          <div class="dg-bar-track"><div class="dg-bar-fill" style="width:${areas[k]}%;background:${col(areas[k])}"></div></div>
+        </div>`).join('');
+
+      // focus = two lowest areas under 70
+      const focus = order.filter((k) => areas[k] < 70).slice(0, 2);
+      if (!focus.length) {
+        el('dgFocusPanel').querySelector('#dgFocus').innerHTML = '<p class="muted" style="font-size:14px">No weak areas — you\'re broadly ready. Run timed mocks and keep recall fresh.</p>';
+      } else {
+        el('dgFocus').innerHTML = focus.map((k) => `
+          <div class="dg-focus-item">
+            <b>${AREAS[k].icon} ${AREAS[k].label} — ${areas[k]}%</b>
+            <div class="dg-acts">${(ACTIONS[k] || []).map((a) => `<a class="btn" href="${base}${a.href}" style="font-size:12.5px">${a.label} →</a>`).join('')}</div>
+          </div>`).join('');
+      }
+
+      // review missed MCQs
+      const missed = QS.filter((q) => q.type === 'mcq' && answers[q.id] && answers[q.id].label !== q.correct);
+      if (!missed.length) { el('dgReviewPanel').classList.add('hide'); }
+      else {
+        el('dgReviewPanel').classList.remove('hide');
+        el('dgReview').innerHTML = missed.map((q) => `
+          <div class="dg-rev">
+            <div class="dg-rev-q">${esc(q.q)}</div>
+            ${q.code ? `<pre>${esc(q.code)}</pre>` : ''}
+            <div class="dg-rev-a"><span style="color:var(--hot)">You: ${esc(answers[q.id].label)}</span> &nbsp;·&nbsp; <span style="color:var(--accent-2)">Correct: ${esc(q.correct)}</span></div>
+            <div class="dg-rev-why">${mdLite(q.explain || '')}</div>
+          </div>`).join('');
+      }
+
+      // persist into profile (refine confidence + record diagnostic)
+      const toConf = (v) => v < 40 ? 1 : v < 75 ? 2 : 3;
+      const profile = store.profile() || {};
+      const confidence = Object.assign({}, profile.confidence || {});
+      if (areas.dsa !== undefined) confidence.dsa = toConf(areas.dsa);
+      if (areas['system-design'] !== undefined) confidence.system = toConf(areas['system-design']);
+      if (areas.behavioral !== undefined) confidence.behavioral = toConf(areas.behavioral);
+      store.saveProfile({ confidence, diagnostic: { date: new Date().toISOString().slice(0, 10), overall, areas } });
+    }
+
+    el('dgStart').addEventListener('click', () => { el('dgIntro').classList.add('hide'); el('dgQuiz').classList.remove('hide'); idx = 0; showQ(); });
+    el('dgNext').addEventListener('click', () => { if (idx < QS.length - 1) { idx++; showQ(); } else showResults(); });
+    el('dgBack').addEventListener('click', () => { if (idx > 0) { idx--; showQ(); } });
+    el('dgRetake').addEventListener('click', () => { for (const k in answers) delete answers[k]; el('dgResults').classList.add('hide'); el('dgQuiz').classList.remove('hide'); idx = 0; showQ(); });
+    el('dgFinish').addEventListener('click', () => { location.href = base + '/'; });
+  </script>
+</BaseLayout>

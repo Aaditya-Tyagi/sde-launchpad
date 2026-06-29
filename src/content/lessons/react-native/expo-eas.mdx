@@ -1,0 +1,175 @@
+---
+title: "Expo, EAS Build & OTA Updates"
+track: react-native
+summary: "Managed vs bare workflow, when to use Expo, EAS Build for production apps, and how CodePush/OTA updates work and what they can't update."
+order: 16
+est: 20
+difficulty: medium
+priority: must
+tags: [expo, eas-build, ota, codepush, managed-workflow, bare-workflow, expo-go]
+whyAsked: "Most production RN teams use Expo or have opinions about it. Interviewers ask to verify you understand the tradeoffs and have deployed real apps."
+followUps:
+  - "What's the difference between Expo managed and bare workflow?"
+  - "When would you eject from the managed workflow?"
+  - "What can an OTA update change and what can't it change?"
+  - "What is EAS Build and how does it differ from local builds?"
+  - "How does Expo Go limit what you can do?"
+resources:
+  - { label: "Expo docs", url: "https://docs.expo.dev" }
+  - { label: "EAS Build", url: "https://docs.expo.dev/build/introduction/" }
+  - { label: "EAS Update", url: "https://docs.expo.dev/eas-update/introduction/" }
+---
+
+## Managed vs Bare workflow
+
+| | Managed workflow | Bare workflow |
+|---|---|---|
+| Native code | Hidden — Expo manages it | Fully accessible |
+| Customization | Limited to Expo SDK | Unlimited |
+| Adding native deps | Must use Expo config plugins | `pod install` / `gradle sync` |
+| Expo Go support | Yes | No (use Expo Dev Client) |
+| Build | EAS Build | EAS Build or local Xcode/Android Studio |
+| When to use | New apps, standard features | Custom native code, existing RN projects |
+
+**Managed workflow** is the fastest way to start — Expo handles the native project, you write only JavaScript. The tradeoff: you can only use native capabilities that Expo's SDK provides (or that have Expo config plugins).
+
+**Bare workflow** is just a standard React Native project with Expo tooling layered on top. Full access to native code, any library, any config.
+
+## When to leave managed (eject)
+
+You need to leave managed when:
+- A native library requires custom native code with no config plugin
+- You need to modify `AppDelegate.swift`, `MainActivity.kt`, or deep build config
+- A required SDK or API isn't in the Expo SDK and has no config plugin
+
+**Ejecting** is now called "prebuild" — `npx expo prebuild` generates the native `ios/` and `android/` folders without changing your JS code. You keep Expo Router, Expo SDK, and EAS Build — you just now have full native control.
+
+## Expo Go — for development, not production
+
+**Expo Go** is a pre-built RN runtime you install on your device. It lets you scan a QR code and instantly run your dev app — no compilation needed.
+
+Limitation: it can only run Expo-managed apps using the Expo SDK. If your app has custom native code, Expo Go can't run it — you need **Expo Dev Client** (a custom Expo Go you build yourself that includes your native dependencies).
+
+## EAS Build — cloud builds
+
+EAS (Expo Application Services) Build runs your builds on Expo's cloud servers — iOS and Android — without needing a Mac for iOS builds.
+
+```bash
+npx expo install eas-cli
+eas login
+eas build:configure          # generates eas.json
+
+# Build for production
+eas build --platform ios     # sends to App Store
+eas build --platform android # generates .apk or .aab
+
+# Build for testing (internal distribution)
+eas build --platform all --profile preview
+```
+
+**`eas.json`** controls build profiles:
+
+```json
+{
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "distribution": "internal"
+    },
+    "production": {}
+  }
+}
+```
+
+EAS Submit can also handle App Store and Play Store submissions:
+
+```bash
+eas submit --platform ios     # submits the latest build to App Store Connect
+```
+
+## OTA Updates — what they can and can't change
+
+**OTA (Over-The-Air) updates** push JavaScript bundle changes to users without going through the App Store review process. Both **EAS Update** (Expo's solution) and **CodePush** (Microsoft/App Center) work this way.
+
+### What OTA CAN update
+- All JavaScript code — components, business logic, navigation
+- Asset files that are bundled in JavaScript (images imported as `require('./icon.png')`)
+- Third-party JS libraries
+
+### What OTA CANNOT update
+- **Native code** (Swift, Kotlin, C++) — changes here always require a new binary
+- **Native dependencies** — adding or updating a library with native code requires a store release
+- **App permissions** — declared in `Info.plist` and `AndroidManifest.xml`
+- **App icon, splash screen** — native assets
+- The Expo SDK version itself
+
+This is the critical constraint: OTA is for JS hotfixes, not architecture changes.
+
+### EAS Update setup
+
+```bash
+npx expo install expo-updates
+eas update:configure
+```
+
+```ts
+// In your app — check for updates on launch
+import * as Updates from 'expo-updates';
+
+async function checkForUpdates() {
+  if (!Updates.isEmbeddedLaunch) return; // already on a downloaded update
+  try {
+    const update = await Updates.checkForUpdateAsync();
+    if (update.isAvailable) {
+      await Updates.fetchUpdateAsync();
+      await Updates.reloadAsync(); // restart to apply
+    }
+  } catch (err) {
+    console.error('Update check failed:', err);
+  }
+}
+```
+
+```bash
+# Push an update
+eas update --branch production --message "Fix login crash"
+```
+
+### CodePush (Microsoft App Center)
+
+```ts
+import CodePush from 'react-native-code-push';
+
+// Wrap the root component — checks and applies updates automatically
+export default CodePush({
+  checkFrequency: CodePush.CheckFrequency.ON_APP_RESUME,
+  updateDialog: { title: 'Update Available', optionalInstallButtonLabel: 'Install' },
+  installMode: CodePush.InstallMode.ON_NEXT_RESUME,
+})(App);
+```
+
+## The full CI/CD pipeline
+
+```
+Developer pushes code
+        ↓
+GitHub Actions / CI — run tests, type check, lint
+        ↓
+EAS Build (on merge to main) — build iOS + Android binaries
+        ↓
+EAS Submit — upload to TestFlight / Google Play Internal
+        ↓
+QA approval
+        ↓
+EAS Submit — production release
+        ↓ (for JS-only hotfixes)
+EAS Update / CodePush — push OTA update
+```
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Managed workflow hides native code — you work in JS only and Expo handles builds; bare workflow gives full native access. Expo Go is a pre-built runtime for development, not production — custom native code requires Expo Dev Client. EAS Build runs cloud builds without needing a Mac. OTA updates (EAS Update or CodePush) push JS bundle changes to users without store review — but they cannot touch native code, native dependencies, or permissions, which always require a new binary. The practical rule: OTA for JS hotfixes, EAS Build for everything that touches native."
+</div>

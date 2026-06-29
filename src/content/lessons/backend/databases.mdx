@@ -1,0 +1,195 @@
+---
+title: "Databases: SQL, NoSQL, Sharding, Indexing & Query Tuning"
+track: backend
+summary: "The database knowledge an SDE-2 is expected to own: SQL vs NoSQL by access pattern, ACID vs BASE, normalization tradeoffs, B-tree indexing and the leftmost-prefix rule, reading EXPLAIN, killing N+1 and full scans, transaction isolation and locking, replication lag, and why you delay sharding."
+order: 3
+est: 32
+difficulty: medium
+priority: must
+tags: [databases, sql, nosql, indexing, sharding, transactions, replication, query-tuning]
+whyAsked: "Every backend service is a thin layer over a database. Interviewers probe databases to see whether you pick a store by access pattern, design schemas that survive growth, make queries fast with the right index, and reason about transactions, replication lag, and sharding before they bite you in production."
+followUps:
+  - "When would you pick NoSQL over a relational database?"
+  - "You have a slow query — how do you debug it?"
+  - "Explain composite indexes and the leftmost-prefix rule."
+  - "What isolation level would you use and why?"
+  - "When do you shard, and what breaks when you do?"
+resources:
+  - { label: "Use the Index, Luke (B-tree indexing)", url: "https://use-the-index-luke.com/" }
+  - { label: "PostgreSQL EXPLAIN docs", url: "https://www.postgresql.org/docs/current/using-explain.html" }
+  - { label: "PostgreSQL transaction isolation", url: "https://www.postgresql.org/docs/current/transaction-iso.html" }
+---
+
+Every backend service is a thin layer over a database, and most production incidents trace back to one — a missing index, replication lag, a lock storm, a shard gone hot. This lesson is the backend-dev deep dive: schema, indexing, query tuning, transactions, replication, and sharding. It complements the [system-design databases lesson](/lessons/system-design/databases), which covers the same families from a whiteboard-sizing angle.
+
+## SQL vs NoSQL: pick by access pattern, not hype
+
+"NoSQL scales and SQL doesn't" is wrong — a sharded Postgres handles enormous load, and a single-node Mongo doesn't magically scale. The real axis is **data model and access pattern**.
+
+| Family | Examples | Data model | Best for |
+|---|---|---|---|
+| **Relational** | Postgres, MySQL | Tables, rows, joins, fixed schema | Complex queries, joins, strong consistency, transactions |
+| **Document** | MongoDB, DynamoDB | JSON-ish documents, flexible schema | Aggregate-per-document reads, evolving schema |
+| **Key-value** | Redis, DynamoDB | Opaque value by key | O(1) lookups, caching, sessions, counters |
+| **Wide-column** | Cassandra, Bigtable | Rows with dynamic columns, partitioned | Massive write throughput, time-series, known query keys |
+| **Graph** | Neo4j, Neptune | Nodes + edges | Relationship traversal — social graphs, fraud, recommendations |
+
+**ACID vs BASE** is the consistency contract:
+
+- **ACID** (relational) — Atomicity, Consistency, Isolation, Durability. A transaction is all-or-nothing and sees a consistent snapshot. You pay with coordination cost.
+- **BASE** (many NoSQL) — Basically Available, Soft state, Eventually consistent. The system stays available and converges later. You trade immediate consistency for availability and write throughput.
+
+The honest framing: **reach for relational by default** — joins, ad-hoc queries, and transactions are free, and most apps fit. Choose a NoSQL store when a specific access pattern demands it: a key-value cache for hot lookups, wide-column for firehose writes with a known partition key, a document store when each read maps to one aggregate, or a graph DB when the query *is* a traversal.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Default to a <b>relational database</b>. Switch to NoSQL when a concrete access pattern — O(1) key lookups, write firehose, or relationship traversal — outgrows what indexes and read replicas on Postgres can give you. "We might scale someday" is not a reason.
+</div>
+
+## Schema design: normalize, then denormalize on purpose
+
+**Normalization** removes redundancy — each fact lives in exactly one place (3NF is the working target). It keeps writes cheap and consistent: change a customer's address once, not in ten order rows. The cost is **joins** to reassemble data on read.
+
+**Denormalization** duplicates data to avoid joins on hot read paths — store the product name on the order row so the order list renders without a join. The cost is write complexity (update in N places) and drift risk. The rule: **normalize for write-heavy / correctness-critical data, denormalize read-heavy paths** where the join is the bottleneck and staleness is tolerable. Document and wide-column stores push you toward denormalized aggregates by design.
+
+## Indexing: the single biggest query lever
+
+An index is a sorted side-structure that turns an O(n) scan into an O(log n) lookup. The default is a **B-tree** (balanced, sorted, supports `=`, `<`, `>`, `BETWEEN`, `ORDER BY`, and prefix `LIKE 'abc%'`).
+
+**Composite indexes and the leftmost-prefix rule.** An index on `(a, b, c)` is sorted by `a`, then `b`, then `c`. It can serve queries that filter a **left-anchored prefix**: `a`, `a+b`, or `a+b+c` — but *not* `b` alone, or `c` alone. Column order is everything: put equality/high-selectivity columns first, range columns last (a range on a middle column stops the index from using columns after it).
+
+```sql
+-- Serves WHERE tenant_id = ? AND status = ? ORDER BY created_at
+CREATE INDEX idx_orders_tenant_status_created
+  ON orders (tenant_id, status, created_at);
+
+-- Uses the index:  WHERE tenant_id = 9 AND status = 'OPEN'
+-- Uses the index:  WHERE tenant_id = 9                     (left prefix)
+-- CANNOT use it:   WHERE status = 'OPEN'                   (skips tenant_id)
+```
+
+**Covering index.** If the index contains every column the query needs, the DB answers from the index alone and never touches the table heap — an "index-only scan." Add payload columns with `INCLUDE` (Postgres) to make a read covering.
+
+**When an index HURTS:**
+- **Write amplification** — every `INSERT`/`UPDATE`/`DELETE` must maintain every index. Ten indexes mean ten extra trees to update per write.
+- **Low-cardinality columns** — indexing a boolean or a `status` with three values rarely helps; the planner scans the table anyway because the index points at most rows.
+- **Wasted space and cache** — unused indexes still consume RAM and disk and slow vacuum/maintenance.
+
+Index the columns you filter, join, and sort on — then drop indexes nothing uses.
+
+## Reading EXPLAIN and tuning queries
+
+`EXPLAIN` shows the planner's chosen plan; `EXPLAIN ANALYZE` actually runs it and shows real timings and row counts. The skill is spotting where it goes wrong.
+
+```sql
+EXPLAIN ANALYZE
+SELECT id, total FROM orders
+WHERE tenant_id = 42 AND status = 'OPEN';
+
+-- BAD:  Seq Scan on orders  (rows=2,000,000)  -> full table scan, no index used
+-- GOOD: Index Scan using idx_orders_tenant_status_created
+--       Index Cond: (tenant_id = 42 AND status = 'OPEN')  (rows=37)
+```
+
+What to look for: a **Seq Scan** on a large table where you expected an index (often a missing index, or a function/cast on the column that disables it — `WHERE lower(email) = ?` won't use a plain index on `email`); a wide gap between **estimated and actual rows** (stale statistics — run `ANALYZE`); and slow sorts or nested loops over big inputs.
+
+**Common query killers:**
+- **N+1 queries** — fetch a list (1 query), then loop and query each item's children (N queries). Fix with a join or an `IN (...)` batch / ORM eager-load. This is the most common ORM-induced perf bug. See [caching](/lessons/backend/caching) for when batching isn't enough.
+- **`SELECT *`** — pulls columns you don't need, defeats covering indexes, and breaks when schema changes. Project only what you use.
+- **`OFFSET` pagination at depth** — `LIMIT 20 OFFSET 100000` scans and discards 100k rows every page. Use **keyset / cursor pagination** instead:
+
+```sql
+-- Page forward from the last row seen — O(log n), index-friendly
+SELECT id, created_at FROM orders
+WHERE (created_at, id) < ('2026-06-01 10:00', 88123)
+ORDER BY created_at DESC, id DESC
+LIMIT 20;
+```
+
+Turn on the **slow query log** (`log_min_duration_statement` in Postgres, `slow_query_log` in MySQL) to find the queries worth tuning instead of guessing.
+
+## Transactions, isolation levels & locking
+
+A transaction groups operations into an atomic, durable unit. **Isolation** controls what concurrent transactions see of each other, and weaker levels permit specific anomalies:
+
+| Isolation level | Dirty read | Non-repeatable read | Phantom read |
+|---|---|---|---|
+| Read Uncommitted | possible | possible | possible |
+| Read Committed | no | possible | possible |
+| Repeatable Read | no | no | possible* |
+| Serializable | no | no | no |
+
+- **Dirty read** — see another transaction's uncommitted write.
+- **Non-repeatable read** — re-read a row, get a different value (someone committed an update between).
+- **Phantom read** — re-run a range query, new rows appear. (*Postgres's Repeatable Read uses snapshots and blocks phantoms too.)
+
+Most databases default to **Read Committed**, which is fine for the majority of apps. Step up to **Serializable** for money-movement and invariant-critical logic where you can't tolerate skew — at the cost of more conflicts and retries.
+
+**Locking strategy:**
+- **Pessimistic** — lock the row up front (`SELECT ... FOR UPDATE`), block others until you commit. Use under high contention where retries would thrash.
+- **Optimistic** — don't lock; carry a `version` column and on write do `UPDATE ... WHERE version = :v`; if zero rows changed, someone else won — reload and retry. Best under low contention, and the natural fit for stateless HTTP where you can't hold a lock across requests.
+
+## Replication: read replicas and the lag trap
+
+**Leader-follower** replication has one primary taking writes, streaming its change log to read-only **replicas** you point read traffic at to scale reads and survive a node loss.
+
+- **Synchronous** replication waits for a replica to acknowledge before the write commits — no data loss on failover, but higher write latency.
+- **Asynchronous** is the common default — the leader commits immediately and ships changes after, so it's fast but a crash can lose the last unreplicated writes.
+
+The gotcha is **replication lag**: a user writes to the leader, then reads from a lagging replica and doesn't see their own change. This breaks **read-your-writes** consistency — they post a comment and it "disappears." Fixes: route a user's reads to the leader for a short window after they write, or read from the leader for that specific session/key. Distinguish this from failover and quorum, covered in [distributed systems](/lessons/backend/distributed-systems).
+
+## Sharding & partitioning: delay it, then do it carefully
+
+When one node can't hold the data or absorb the write rate, you **shard** — split rows across nodes by a **shard key**.
+
+| Strategy | How | Strength | Weakness |
+|---|---|---|---|
+| **Hash** | `hash(key) % N` | Even spread | Range queries hit every shard; resharding reshuffles everything |
+| **Range** | key ranges per shard | Efficient range scans | Hot shards if keys are skewed (e.g. recent timestamps) |
+| **Geo / directory** | lookup table maps key→shard | Flexible, data locality | Extra hop; the directory is a dependency |
+
+**The hot-partition / celebrity problem:** if the shard key concentrates traffic — one viral user, one popular product, "today's" date range — that shard melts while others idle. Mitigate by choosing a high-cardinality, evenly-distributed key, or salting hot keys.
+
+**Resharding is the pain you're delaying.** Changing the shard count or key on a live system means moving data while serving traffic, and cross-shard joins and transactions become application problems. So the senior playbook is: **scale vertically first** (bigger box), **add read replicas** to offload reads, introduce **caching**, and only shard when those run out. Don't shard on day one to "be ready."
+
+**Connection pooling** is the cheap win people forget: each DB connection is expensive (memory + a backend process in Postgres), and thousands of app instances can exhaust the limit. Put a pooler like **PgBouncer** in front to multiplex many client connections over a small pool of real ones — often the difference between a database that falls over under load and one that doesn't.
+
+## Interview questions & model answers
+
+**Q: When would you pick NoSQL over a relational database?**
+"When a specific access pattern outgrows what relational gives me. Key-value like Redis for O(1) hot lookups, sessions, counters. Wide-column like Cassandra for a write firehose with a known partition key — time-series, event logs. Document like Mongo when each read is one self-contained aggregate and the schema evolves fast. Graph when the query is a traversal. Otherwise I default to relational — joins, ad-hoc queries, and ACID transactions are free, and most apps fit."
+
+**Q: A query is slow — how do you debug it?**
+"Run `EXPLAIN ANALYZE` and read the plan. A Seq Scan on a big table usually means a missing index, or a function on the column disabling one — like `lower(email)`. I check whether estimated vs actual rows diverge, which means stale stats, and I run `ANALYZE`. Then I add or fix the index — right column order for the filter and sort — and look for N+1 patterns or `SELECT *`. The slow query log tells me which queries are even worth this."
+
+**Q: Explain composite indexes and the leftmost-prefix rule.**
+"An index on `(a, b, c)` is sorted by a, then b, then c. It serves filters on a left-anchored prefix — a, or a+b, or a+b+c — but not b or c alone. So column order matters: equality and high-selectivity columns first, range columns last, because a range in the middle stops the index from using columns after it. If the index also contains every column the query reads, it's covering and never touches the table."
+
+**Q: What isolation level would you use, and why?**
+"Read Committed for most things — it's the common default and avoids dirty reads. I step up to Serializable for money movement or any invariant I can't let two transactions skew, accepting more conflicts and retries. For app-level concurrency I usually prefer optimistic locking with a version column over holding database locks across an HTTP request."
+
+**Q: How do you avoid an N+1 query problem?**
+"Spot it first — a list query followed by one query per row in a loop, usually from a lazy ORM relationship. Fix it by fetching children in one shot: a join, or an `IN (...)` batch keyed by the parent ids, or the ORM's eager-load. It collapses N+1 queries into two."
+
+**Q: When do you shard, and what breaks when you do?**
+"Only after vertical scaling, read replicas, and caching are exhausted — sharding is expensive and hard to undo. I pick a high-cardinality shard key to avoid hot partitions, knowing cross-shard joins and transactions become application problems and resharding means moving live data. Until then, a bigger box plus replicas plus a connection pooler goes a long way."
+
+**Q: What is replication lag and how do you handle read-your-writes?**
+"With async leader-follower replication, replicas trail the leader by some delay. A user who writes then reads from a lagging replica won't see their change. To preserve read-your-writes I route that user's reads to the leader for a short window after a write, or pin their session reads to the leader, so they always see their own data."
+
+## Common mistakes / what weak candidates do
+
+- **"NoSQL scales, SQL doesn't"** — false. The real choice is data model and access pattern, not raw scalability.
+- **Indexing everything** — every index taxes writes and burns cache; index what you filter, join, and sort on, then drop the rest.
+- **Ignoring index column order** — putting a low-selectivity or range column first wastes a composite index; leftmost-prefix decides what it can serve.
+- **`SELECT *` everywhere** — pulls dead weight, defeats covering indexes, and breaks on schema change.
+- **`OFFSET` pagination at depth** — re-scans and discards every prior row; keyset/cursor pagination is O(log n).
+- **Never reading EXPLAIN** — tuning by guesswork instead of looking at the actual plan and row estimates.
+- **Treating read replicas as strongly consistent** — forgetting replication lag breaks read-your-writes.
+- **Sharding too early** — adding distributed-systems pain before exhausting vertical scaling, replicas, and caching.
+- **No connection pooling** — letting thousands of app connections exhaust the database instead of multiplexing through PgBouncer.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "I default to a <b>relational database</b> and switch to NoSQL only when an access pattern demands it. I normalize for correctness and <b>denormalize hot read paths</b> on purpose. I index what I filter, join, and sort on — minding <b>leftmost-prefix</b> and covering indexes — and tune with <b>EXPLAIN ANALYZE</b>, killing full scans, N+1, and OFFSET pagination. I pick isolation by risk, prefer <b>optimistic locking</b> for HTTP, watch <b>replication lag</b> for read-your-writes, and I delay sharding behind vertical scaling, read replicas, caching, and a connection pooler."
+</div>

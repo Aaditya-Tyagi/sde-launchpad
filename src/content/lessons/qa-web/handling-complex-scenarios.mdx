@@ -1,0 +1,346 @@
+---
+title: "Handling complex UI scenarios"
+track: qa-web
+summary: "The tricky things interviewers probe — nested iframes, multiple tabs, file upload/download verification, drag & drop, hover menus, AJAX/infinite scroll, web tables, shadow DOM, date pickers, autocomplete, permissions, new-tab auth and broken-link checks — with Selenium + Playwright snippets for each."
+order: 6
+est: 32
+difficulty: hard
+priority: deep
+tags: [iframes, drag-drop, tables, shadow-dom, file-upload, scenarios]
+whyAsked: "These are the live-coding traps in QA interviews. 'How would you automate a drag-and-drop / a file download / an infinite scroll?' separates people who've shipped real suites from those who've only done login demos."
+followUps:
+  - "How do you verify a file actually downloaded?"
+  - "How do you handle HTML5 drag-and-drop that ignores dragAndDrop()?"
+  - "How do you test infinite scroll / lazy loading?"
+  - "How do you handle a link that opens a new tab for auth?"
+resources:
+  - { label: "Practice: the-internet", url: "https://the-internet.herokuapp.com/" }
+  - { label: "Playwright frames", url: "https://playwright.dev/docs/frames" }
+  - { label: "Playwright downloads", url: "https://playwright.dev/docs/downloads" }
+---
+
+These are the scenarios interviewers reach for once login demos are out of the way. Know the *mechanism* behind each so you can adapt — and know the Playwright shortcut and the Selenium workaround.
+
+## Iframes (including nested)
+
+An iframe is a separate document; you must switch into it.
+
+```java
+// Selenium
+driver.switchTo().frame("outer");
+driver.switchTo().frame("inner");          // nested: one level at a time
+driver.findElement(By.id("field")).sendKeys("x");
+driver.switchTo().parentFrame();           // up one
+driver.switchTo().defaultContent();        // back to top
+```
+
+```ts
+// Playwright — no context switching; frameLocator chains
+const inner = page.frameLocator('#outer').frameLocator('#inner');
+await inner.getByLabel('Field').fill('x');
+```
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Forgetting <code>defaultContent()</code> in Selenium is the #1 cause of NoSuchElement after iframe work — your next lookup runs inside the frame. Playwright's <code>frameLocator</code> avoids the stateful switch entirely.
+</div>
+
+## Multiple windows / tabs
+
+```java
+// Selenium
+String orig = driver.getWindowHandle();
+driver.findElement(By.id("open")).click();
+for (String h : driver.getWindowHandles())
+    if (!h.equals(orig)) driver.switchTo().window(h);
+// work, then:
+driver.close();
+driver.switchTo().window(orig);
+```
+
+```ts
+// Playwright — wait for the popup event
+const [popup] = await Promise.all([
+  page.waitForEvent('popup'),
+  page.getByRole('link', { name: 'Open report' }).click(),
+]);
+await popup.waitForLoadState();
+await expect(popup).toHaveTitle(/Report/);
+```
+
+## File upload
+
+If it's a real `<input type="file">`, send the path — never automate the OS dialog.
+
+```java
+driver.findElement(By.id("upload")).sendKeys("/abs/path/file.pdf"); // Selenium
+```
+
+```ts
+await page.getByLabel('Upload').setInputFiles('file.pdf');           // Playwright
+// hidden input or custom button:
+const [chooser] = await Promise.all([
+  page.waitForEvent('filechooser'),
+  page.getByRole('button', { name: 'Choose file' }).click(),
+]);
+await chooser.setInputFiles('file.pdf');
+```
+
+## File download verification
+
+Don't just click — assert the file landed and is valid.
+
+```ts
+// Playwright — first-class download API
+const [download] = await Promise.all([
+  page.waitForEvent('download'),
+  page.getByRole('link', { name: 'Export CSV' }).click(),
+]);
+const path = await download.path();           // saved temp path
+await download.saveAs('out/report.csv');
+expect(download.suggestedFilename()).toBe('report.csv');
+```
+
+```java
+// Selenium — set a download dir, then poll for the file
+// (configure prefs: download.default_directory, prompt_for_download=false)
+File dir = new File("/abs/downloads");
+Awaitility-style poll: wait until a file matching "report*.csv" exists AND length > 0
+```
+
+Verify: filename, that it's non-zero, and ideally parse it (CSV row count / PDF text) to confirm content.
+
+## Drag & drop
+
+```java
+// Selenium — try the convenience method first
+new Actions(driver).dragAndDrop(source, target).perform();
+
+// HTML5 DnD often ignores the above — do it manually:
+new Actions(driver)
+   .clickAndHold(source)
+   .moveToElement(target)
+   .moveByOffset(1, 1)     // nudge to trigger dragover
+   .release()
+   .perform();
+```
+
+```ts
+// Playwright
+await page.getByText('Drag me').dragTo(page.getByText('Drop here'));
+// or manual for stubborn HTML5:
+await source.hover(); await page.mouse.down();
+await target.hover(); await page.mouse.up();
+```
+
+## Mouse-hover menus
+
+```java
+new Actions(driver).moveToElement(menu).perform();          // Selenium hover
+wait.until(ExpectedConditions.visibilityOf(submenu));
+submenu.click();
+```
+
+```ts
+await page.getByRole('menuitem', { name: 'Account' }).hover(); // Playwright
+await page.getByRole('menuitem', { name: 'Settings' }).click();
+```
+
+## Dynamic / AJAX elements
+
+Wait for the result, not a fixed time. Wait for spinner gone + content present.
+
+```java
+wait.until(ExpectedConditions.invisibilityOfElementLocated(By.css(".spinner")));
+wait.until(ExpectedConditions.visibilityOfElementLocated(By.css(".results")));
+```
+
+```ts
+await expect(page.locator('.spinner')).toBeHidden();
+await expect(page.locator('.results')).toBeVisible();   // auto-retries
+```
+
+## Infinite scroll & lazy loading
+
+Scroll, wait for new items, repeat until the target appears or the count stops growing.
+
+```ts
+// Playwright
+let prev = 0;
+for (;;) {
+  await page.mouse.wheel(0, 4000);
+  await page.waitForTimeout(500);                  // let lazy content load
+  const count = await page.locator('.card').count();
+  if (count === prev) break;                        // no more items
+  prev = count;
+}
+```
+
+```java
+// Selenium — scroll to last element until count stabilises or target found
+js.executeScript("arguments[0].scrollIntoView();", lastCard);
+```
+
+For verifying a specific item: scroll until `getByText('Item 250')` is visible, then assert. For lazy images, assert `naturalWidth > 0` via JS once scrolled into view.
+
+## Web tables — read, sort, paginate
+
+```java
+// Read all rows
+List<WebElement> rows = driver.findElements(By.cssSelector("table#data tbody tr"));
+for (WebElement r : rows) {
+    List<WebElement> c = r.findElements(By.tagName("td"));
+    // c.get(0).getText() ...
+}
+// Verify sort: click header, collect a column, assert it's ordered in code
+// Pagination: loop clicking "Next" until it's disabled, accumulating rows
+```
+
+```ts
+// Playwright — row-scoped action and sort check
+await page.getByRole('row', { name: 'Widget' }).getByRole('button', { name: 'Edit' }).click();
+const prices = await page.locator('table tbody tr td:nth-child(3)').allTextContents();
+const nums = prices.map(p => parseFloat(p.replace('$','')));
+expect(nums).toEqual([...nums].sort((a,b)=>a-b));   // ascending
+```
+
+## Shadow DOM
+
+```java
+// Selenium 4 — getShadowRoot returns a search context (open roots only)
+WebElement host = driver.findElement(By.cssSelector("my-widget"));
+host.getShadowRoot().findElement(By.cssSelector(".btn")).click();
+```
+
+```ts
+// Playwright — pierces OPEN shadow DOM automatically
+await page.getByRole('button', { name: 'Submit' }).click();
+```
+
+Neither tool can reach a **closed** shadow root.
+
+## Date pickers
+
+Two strategies: type into the input if it accepts text, or click through the calendar widget.
+
+```ts
+// Typeable input
+await page.getByLabel('Date').fill('2026-06-14');
+// Widget: open, navigate months, click the day cell
+await page.getByLabel('Date').click();
+await page.getByRole('button', { name: 'Next month' }).click();
+await page.getByRole('gridcell', { name: '14', exact: true }).click();
+```
+
+Prefer typing where the field allows it — far more stable than clicking calendar cells.
+
+## Autocomplete / typeahead
+
+Type, wait for the suggestion list, click the option (don't blind-press Enter).
+
+```ts
+await page.getByLabel('City').fill('Ban');
+await page.getByRole('option', { name: 'Bangalore' }).click();
+```
+
+```java
+field.sendKeys("Ban");
+wait.until(ExpectedConditions.visibilityOfElementLocated(By.css(".suggestions")));
+driver.findElement(By.xpath("//li[normalize-space()='Bangalore']")).click();
+```
+
+## Browser notifications & permissions
+
+```ts
+// Playwright — grant/deny at the context level
+const context = await browser.newContext({
+  permissions: ['geolocation'],
+  geolocation: { latitude: 12.97, longitude: 77.59 },
+});
+```
+
+```java
+// Selenium — disable/allow via prefs
+Map<String,Object> prefs = new HashMap<>();
+prefs.put("profile.default_content_setting_values.notifications", 1); // 1=allow,2=block
+options.setExperimentalOption("prefs", prefs);
+```
+
+## Handling new-tab auth (e.g. OAuth popup)
+
+```ts
+const [authPopup] = await Promise.all([
+  page.waitForEvent('popup'),
+  page.getByRole('button', { name: 'Sign in with Google' }).click(),
+]);
+await authPopup.getByLabel('Email').fill(user);
+await authPopup.getByRole('button', { name: 'Next' }).click();
+// after success the popup closes; continue on the main page
+await expect(page.getByText('Welcome')).toBeVisible();
+```
+
+In Selenium: capture handles before/after the click, `switchTo().window(newHandle)`, authenticate, then switch back to the original. Often it's faster/stabler to bypass UI auth entirely with a saved session (`storageState`) — see Playwright lesson.
+
+## Broken-link checking
+
+Collect hrefs, fire HTTP HEAD/GET requests, assert status codes — don't click each one.
+
+```ts
+const links = await page.locator('a[href^="http"]').evaluateAll(
+  els => els.map(a => (a as HTMLAnchorElement).href));
+for (const url of links) {
+  const res = await page.request.head(url);
+  expect(res.status(), url).toBeLessThan(400);
+}
+```
+
+```java
+// Selenium — collect hrefs, use HttpURLConnection HEAD per link, assert < 400
+```
+
+## Screenshots & visual checks
+
+```ts
+await page.screenshot({ path: 'full.png', fullPage: true });
+await expect(page).toHaveScreenshot('home.png');   // PW visual baseline + diff
+```
+
+```java
+File f = ((TakesScreenshot) driver).getScreenshotAs(OutputType.FILE); // Selenium
+```
+
+For real visual regression, pair Playwright's `toHaveScreenshot` (or tools like Applitools/Percy) with masking of dynamic regions.
+
+## Interview questions & model answers
+
+**Q: How do you verify a file actually downloaded?**
+Configure a known download dir (Selenium) or use Playwright's download event; then assert the filename, that the file is non-zero, and ideally parse its content (row count / text) rather than trusting the click.
+
+**Q: dragAndDrop() does nothing — why and what next?**
+HTML5 drag-and-drop uses dragstart/dragover/drop events the convenience method may not fire. Do it manually: clickAndHold → moveToElement → small offset nudge → release (Selenium) or hover+mouse.down/up (Playwright).
+
+**Q: How do you test infinite scroll?**
+Scroll, wait for new items to load, and repeat until the count stops growing or the target item is visible; assert on the target. Don't use a fixed sleep — wait on the item count.
+
+**Q: A link opens a new tab for OAuth — how do you handle it?**
+Capture the popup (waitForEvent('popup') / new window handle), authenticate there, return to the original page, and assert the post-login state. Where possible I skip UI auth with a saved storageState for speed and stability.
+
+**Q: How do you check a table is sorted?**
+Read the column into an array, parse to the right type, and assert it equals its sorted copy — in code, not by eyeballing.
+
+**Q: How do you check for broken links efficiently?**
+Collect all hrefs and send HTTP HEAD/GET requests asserting status `< 400`, instead of navigating to each link.
+
+## Common mistakes
+
+- Not switching back out of an iframe (Selenium) before the next lookup.
+- Automating the native OS file dialog instead of `sendKeys`/`setInputFiles` on the input.
+- Asserting a download by the click alone, never checking the file exists/has content.
+- Using a fixed sleep for AJAX/infinite scroll instead of waiting on observable state.
+- Pressing Enter on an autocomplete before the option list rendered.
+- Clicking every link to check it instead of HTTP-requesting hrefs.
+
+<div class="callout key">
+  <div class="ct">Project</div>
+  On the-internet.herokuapp.com, automate: nested frames, the dynamic-loading page, the file upload + download, drag-and-drop, the sortable table, and the hover page — once in Selenium, once in Playwright. This single repo answers most "tricky scenario" interview questions.
+</div>

@@ -1,0 +1,229 @@
+---
+title: "Defect lifecycle & writing great bug reports"
+track: qa-foundations
+summary: "The states a defect moves through, severity vs priority, the anatomy of a report developers act on immediately, defect metrics, triage, root-cause analysis and bug advocacy."
+order: 3
+est: 24
+difficulty: easy
+priority: must
+tags: [defect, bug-report, severity, priority, metrics, triage, rca]
+whyAsked: "Logging clear, reproducible defects is daily QA work. Severity vs priority is a near-guaranteed question, and metrics/triage separate juniors from seniors."
+followUps:
+  - "Give an example of high severity but low priority, and vice versa."
+  - "What makes a bug report good?"
+  - "What is a deferred defect?"
+  - "How do you calculate Defect Removal Efficiency?"
+resources:
+  - { label: "Ministry of Testing", url: "https://www.ministryoftesting.com/" }
+  - { label: "Cem Kaner — Bug advocacy", url: "https://kaner.com/" }
+  - { label: "Atlassian — Jira bug workflow", url: "https://www.atlassian.com/software/jira" }
+---
+
+A defect that a developer can't reproduce gets closed. A defect with the wrong severity gets fixed too late — or too early. This lesson is about turning "it's broken" into precise, actionable information, and about the metrics and meetings that surround it. Reproducibility is your credibility.
+
+## The defect lifecycle
+
+A defect moves through states from discovery to closure. Exact names vary by tool (Jira, Azure DevOps, Bugzilla), but the flow is consistent. A typical lifecycle:
+
+```
+                 (invalid/works-as-designed)
+        ┌────────────────► Rejected ──────────► Closed
+        │
+[New] ─► Assigned ─► Open(In Progress) ─► Fixed ─► Retest ─┬─► Verified ─► Closed
+                                                            │
+                                                  (fix failed) ─► Reopened ─► Open ...
+        │
+        ├──► Deferred ────────────────► (revisited later)
+        └──► Duplicate ───────────────► Closed
+```
+
+| State | Meaning |
+|---|---|
+| **New** | Just logged by the tester; not yet reviewed |
+| **Assigned / Triaged** | Accepted as valid and assigned to a developer |
+| **Open / In Progress** | Developer is working on the fix |
+| **Fixed / Resolved** | Developer believes it's fixed; awaiting verification |
+| **Retest / Ready for QA** | QA re-verifies the fix in the right build/env |
+| **Verified** | QA confirms the fix works |
+| **Closed** | Done — verified or otherwise resolved |
+| **Reopened** | Verification failed; fix didn't work or regressed |
+| **Rejected / Not a bug** | Invalid, works-as-designed, or cannot reproduce |
+| **Duplicate** | Already reported elsewhere; linked to the original |
+| **Deferred / Backlog** | Valid but intentionally postponed (low priority, future release) |
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  A bug "Rejected — cannot reproduce" is often a reporting failure, not a non-bug. Before it's rejected, improve the repro: exact build, environment, data, and steps. Reopen-rate and reject-rate are quality signals about *your* reports, too.
+</div>
+
+## Severity vs priority
+
+This is the single most-asked defect question. Keep them strictly separate:
+
+- **Severity** = the *technical* impact of the defect on the system. Set by QA. (Crash? Data loss? Cosmetic?)
+- **Priority** = how *urgently* it should be fixed, a *business* decision. Set by PM/lead. (Fix now? Next sprint? Someday?)
+
+They're independent — all four combinations are real:
+
+| Scenario | Severity | Priority | Why |
+|---|---|---|---|
+| App crashes on a rarely-used admin export | **High** | **Low** | Severe technically, but almost nobody hits it |
+| Company name misspelled on the home page / login | **Low** | **High** | Trivial code impact, but huge brand embarrassment, everyone sees it |
+| Checkout fails for all users | **High** | **High** | Severe and blocks revenue — fix immediately |
+| Typo in a help tooltip few read | **Low** | **Low** | Minor and rarely seen |
+| Payment succeeds but receipt email never sends | **High** | **High** | Data/process gap affecting trust |
+| Wrong icon color in dark mode | **Low** | **Medium** | Cosmetic but visible to many |
+
+The two classic interview prompts: **High severity + low priority** = crash on an obscure feature nobody uses. **Low severity + high priority** = wrong logo/brand text on the landing page. If you can give both crisply, you've answered the most common defect question.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Severity is "how bad is the breakage?" (QA decides). Priority is "how soon must we fix it?" (business decides). Don't let them collapse into one number.
+</div>
+
+## Anatomy of a great bug report
+
+Every field exists to help the developer reproduce and fix without a single round-trip question:
+
+1. **Title / summary** — concise, specific, searchable. Pattern: *what fails + where + under what condition*. "Checkout returns 500 when promo code field is empty (web, Chrome)."
+2. **Environment** — build/version, browser/OS/device, URL, account/role, region/locale.
+3. **Preconditions** — the state required before the steps (logged in as X, cart has Y).
+4. **Steps to reproduce** — numbered, exact, minimal. Strip anything not needed to trigger it.
+5. **Expected result** — what should happen, ideally citing the requirement/AC.
+6. **Actual result** — what actually happened.
+7. **Evidence** — screenshot/video, console + network logs, stack trace, request/response IDs, timestamps.
+8. **Severity & priority** — each with a one-line justification.
+9. **Reproducibility** — always / intermittent (e.g., "3 of 5 attempts").
+10. **Extras** — workaround if any, related/duplicate links, affected versions.
+
+### A complete sample bug report
+
+```
+Title: Checkout returns HTTP 500 when promo code field is submitted empty
+
+Environment: Build 4.12.0 · Chrome 124 / Windows 11 · staging.shop.com
+             User: standard customer (id 88213) · Region: US
+
+Preconditions:
+  - Logged in as a standard customer
+  - Cart has 1 item ($49.99), shipping address saved
+
+Steps to reproduce:
+  1. Open cart and click "Checkout"
+  2. Leave the "Promo code" field empty
+  3. Click "Apply" (instead of skipping it)
+  4. Click "Place order"
+
+Expected: Order is placed; an empty promo code is ignored with no error.
+Actual:   Page shows "Something went wrong"; server returns HTTP 500.
+          Network: POST /api/v2/checkout → 500, requestId a91f-22d.
+          Console: TypeError: Cannot read property 'trim' of undefined.
+
+Evidence: screenshot.png, har-file.har, server log excerpt (attached)
+Severity: High (checkout blocked; data not saved)
+Priority: High (revenue path, reproducible on every attempt)
+Reproducibility: 5/5 attempts
+Workaround: Don't click "Apply" on an empty field — skip straight to "Place order".
+```
+
+That report can be fixed without a single clarifying question — the null-check bug is even pinpointed by the console trace. That's the standard.
+
+## Defect metrics
+
+Seniors are expected to reason with numbers. Know these by formula and meaning:
+
+- **Defect Removal Efficiency (DRE)** = defects found *before* release ÷ total defects (before + after release) × 100. Example: 90 found internally, 10 escaped to prod → DRE = 90 / 100 = **90%**. Higher is better; it measures how well testing caught issues before customers did.
+- **Defect Density** = number of defects ÷ size of module (per KLOC or per function point). Highlights the buggiest modules (defect clustering — see fundamentals).
+- **Defect Age (latency)** = time from when a defect was *introduced* (or *detected*) to when it was *fixed/closed*. Long age = slow turnaround or hard bugs.
+- **Defect Leakage / Escape rate** = defects found in production ÷ total defects found, ×100. The inverse-ish of DRE; lower is better.
+- **Defect Rejection Ratio** = rejected defects ÷ total reported, ×100. High = noisy/poor reports.
+- **Defect Reopen Ratio** = reopened ÷ total fixed, ×100. High = weak fixes or weak verification.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  If asked "is 100% DRE good?", be skeptical: it may mean you shipped to few users or measured a short window. Metrics are signals, not targets — Goodhart's law applies. Never let a metric become a number to game.
+</div>
+
+## Defect triage meetings
+
+**Triage** is a regular meeting (QA lead, dev lead, PM/PO, sometimes support) to review new/open defects and decide, for each: is it valid? what severity/priority? who owns it? which release? (fix now / defer / reject / needs-more-info). The output is an agreed, prioritized defect list so engineering works on the right things. Your job in triage: present the bug crisply, justify severity, and surface customer/business impact.
+
+## Root cause analysis (RCA) — the 5 Whys
+
+Don't just fix the symptom — find *why* it happened so it can't recur. The **5 Whys** drills past symptoms:
+
+```
+Problem: Checkout returned 500 for empty promo code.
+1. Why? The server tried to call .trim() on an undefined value.
+2. Why? The promo field can be sent as undefined, but the code assumed a string.
+3. Why? There was no input validation on the promo field.
+4. Why? The validation story was descoped late and no test covered the empty case.
+5. Why? Acceptance criteria didn't list the empty-promo path.
+Root cause: Missing acceptance criterion + missing negative test for empty input.
+Fix: add null-guard, add validation, add negative test, and add "empty optional
+     fields" to the AC checklist used in story refinement.
+```
+
+Good RCA produces a systemic fix (better AC, a new test, a lint/guard) — not just a patch. **Fishbone (Ishikawa) diagrams** are the other common RCA tool when causes span categories (people/process/tools/data).
+
+## Bug advocacy
+
+A defect report is a *sales pitch*: you're persuading a busy team this is worth fixing. **Bug advocacy** (Cem Kaner) means making the bug look as serious and clear as it truly is — never exaggerated, never undersold:
+
+- Reproduce reliably and minimally so it can't be waved away as a fluke.
+- Generalize: show it affects more than one narrow case (e.g., empty promo *and* whitespace-only promo) to raise perceived impact.
+- Frame the *user and business* impact, not just the technical glitch.
+- Stay neutral and factual — no blame, no "the dev broke it." You advocate for the *fix*, not against a person.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Advocacy is not inflating severity to get attention. Mislabeling a cosmetic bug as critical burns your credibility — and credibility is the only currency that makes the *next* bug get fixed fast.
+</div>
+
+## Worked example — a real defect story (STAR-ready)
+
+"On a payments project, intermittent 'payment failed' errors were getting rejected as non-reproducible. **Situation/Task:** I needed to make it reproducible. **Action:** I correlated failures with request IDs in the logs and noticed they only happened when two requests with the same idempotency key arrived within ~200 ms — a double-click. I scripted a rapid double-submit and reproduced it 5/5 times, attached the HAR and server logs, and ran a 5 Whys that traced it to a missing idempotency lock. **Result:** It was reclassified High/High, fixed with a server-side lock, and I added a negative test plus an AC for duplicate submissions. Reopen rate on that module dropped to zero."
+
+That's how to tell a defect story: reproducibility, evidence, RCA, and a systemic fix.
+
+## Interview questions & model answers
+
+**Q: Difference between severity and priority?**
+"Severity is the technical impact of the defect, set by QA. Priority is how urgently it must be fixed, a business call. They're independent — a crash on an obscure admin screen is high severity, low priority; a misspelled company name on the login page is low severity, high priority."
+
+**Q: Give an example of high severity, low priority — and the reverse.**
+"High sev/low pri: the app crashes when exporting a report format only two internal users ever use. Low sev/high pri: the company logo or brand name is misspelled on the landing page — trivial to fix, but every visitor sees it, so it's urgent."
+
+**Q: What makes a good bug report?**
+"A specific title, the exact environment, preconditions, minimal numbered repro steps, expected vs actual, evidence like logs and a screenshot, and a justified severity/priority with reproducibility. The test: a developer can fix it without asking me anything."
+
+**Q: What's a deferred defect?**
+"A valid defect the team consciously postpones — usually low priority or out of scope for this release — and parks in the backlog to address later, rather than rejecting it."
+
+**Q: How do you calculate DRE?**
+"Defects found before release divided by total defects found before plus after release, times 100. 90 internal and 10 escaped to production gives 90% — it measures how effectively testing caught issues before customers did."
+
+**Q: A developer keeps rejecting your bugs as 'cannot reproduce.' What do you do?**
+"Treat it as a reporting gap first: nail the exact build, environment, data, and minimal steps, capture logs and a video, and note reproducibility ratio. If it's genuinely intermittent, I gather the conditions that correlate with failure — often timing, data, or concurrency — and pair with the dev to reproduce together."
+
+**Q: What is defect triage?**
+"A recurring meeting where QA, dev, and product review open defects and decide validity, severity/priority, ownership, and target release, so engineering works on the highest-impact issues."
+
+**Q: Walk me through root cause analysis.**
+"I use the 5 Whys to get past the symptom to the systemic cause, then fix that cause — for example, a missing acceptance criterion and missing negative test, not just the null check. The goal is to prevent the whole class of bug from recurring."
+
+## Common mistakes / what weak candidates say
+
+- Defining severity and priority the same way, or swapping them.
+- Only giving the "high/high" example and freezing on "high sev/low pri."
+- Vague titles ("login broken") and non-minimal, unreproducible steps.
+- No evidence — no logs, no screenshots, no environment.
+- Treating "cannot reproduce" as the dev's fault rather than improving the report.
+- Reciting DRE without knowing what it tells you, or treating metrics as targets to hit.
+- Inflating severity to force attention (kills credibility).
+- Fixing only the symptom with no RCA, so the bug recurs next sprint.
+
+<div class="callout tip">
+  <div class="ct">Interview-ready summary</div>
+  "I log defects that need zero follow-up questions: specific title, environment, minimal repro, expected vs actual, logs, and a justified severity (technical impact) versus priority (business urgency). I track DRE and reopen rate, bring crisp impact framing to triage, and run a 5-Whys RCA so we fix the cause — a missing AC or test — not just the symptom."
+</div>

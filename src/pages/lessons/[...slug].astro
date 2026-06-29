@@ -1,0 +1,33 @@
+---
+import { getCollection, render } from 'astro:content';
+import LessonLayout from '../../layouts/LessonLayout.astro';
+import { TRACKS } from '../../data/curriculum';
+
+export async function getStaticPaths() {
+  const all = (await getCollection('lessons')).filter((l) => !l.data.draft);
+  const order = TRACKS.map((t) => t.id);
+  // global ordering: by track order, then lesson order
+  const programOf = (tid) => TRACKS.find((t) => t.id === tid)?.program ?? 'sde2';
+  const sorted = all.slice().sort((a, b) => {
+    const ta = order.indexOf(a.data.track), tb = order.indexOf(b.data.track);
+    if (ta !== tb) return ta - tb;
+    return a.data.order - b.data.order;
+  });
+  // prev/next scoped to the same program so navigation never crosses paths
+  return sorted.map((entry) => {
+    const prog = programOf(entry.data.track);
+    const within = sorted.filter((l) => programOf(l.data.track) === prog);
+    const i = within.findIndex((l) => l.id === entry.id);
+    return {
+      params: { slug: entry.id },
+      props: { entry, lessons: all, prev: within[i - 1] || null, next: within[i + 1] || null },
+    };
+  });
+}
+
+const { entry, lessons, prev, next } = Astro.props;
+const { Content } = await render(entry);
+---
+<LessonLayout entry={entry} lessons={lessons} prev={prev} next={next}>
+  <Content />
+</LessonLayout>

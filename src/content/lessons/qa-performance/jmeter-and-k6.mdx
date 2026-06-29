@@ -1,0 +1,210 @@
+---
+title: "Load testing tools: JMeter & k6"
+track: qa-performance
+summary: "The two dominant load-testing tools in depth. JMeter (thread groups, samplers, listeners, assertions, timers, config elements, correlation with regex/JSON extractors, CSV parameterization, distributed testing, GUI-build/CLI-run, plugins) and k6 (JS scripting, VUs, ramping stages, thresholds, checks, scenarios, CI integration) — with real scripts, a comparison table, and where Gatling/Locust fit."
+order: 2
+est: 28
+difficulty: medium
+priority: deep
+tags: [jmeter, k6, load-testing, correlation, ci, thresholds]
+whyAsked: "Almost any performance-testing role names one of these tools. Interviewers check whether you understand the building blocks (thread groups, samplers, correlation) rather than just clicking record, and whether you can script a maintainable k6 test with thresholds in CI."
+followUps:
+  - "Why run JMeter from the command line instead of the GUI?"
+  - "What is correlation and why do you need it?"
+  - "What are k6 thresholds and how do they fail a build?"
+  - "When would you pick k6 over JMeter, or vice versa?"
+  - "How do you parameterize test data?"
+resources:
+  - { label: "Apache JMeter — User Manual", url: "https://jmeter.apache.org/usermanual/index.html" }
+  - { label: "k6 docs", url: "https://grafana.com/docs/k6/latest/" }
+  - { label: "k6 — thresholds", url: "https://grafana.com/docs/k6/latest/using-k6/thresholds/" }
+  - { label: "Gatling", url: "https://gatling.io/docs/" }
+  - { label: "Locust", url: "https://docs.locust.io/" }
+---
+
+A load tool's job is to generate concurrent virtual users, send realistic requests, measure response times and throughput, and assert against targets. **JMeter** is the long-standing GUI-driven incumbent; **k6** is the modern code-first challenger. Knowing both — and *why* each is built the way it is — covers almost any performance role.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Both tools answer the same question (how does the system behave under N concurrent users?), but they sit at opposite ends of a spectrum: JMeter is <strong>configuration in a GUI/XML</strong> (point-and-click, huge plugin ecosystem); k6 is <strong>a test as JavaScript code</strong> (versionable, reviewable, CI-native). The trend is toward code-first, but JMeter's protocol breadth and entrenchment keep it everywhere.
+</div>
+
+## Apache JMeter
+
+A Java desktop app. You build a **Test Plan** as a tree of elements, each with a role.
+
+### The building blocks
+
+- **Thread Group** — the core. One *thread = one virtual user.* You set **number of threads** (users), **ramp-up period** (seconds to start them all — 100 threads / 20s = 5 new users/sec), and **loop count** (iterations). Newer "Concurrency Thread Group" (plugin) ramps to a target concurrency.
+- **Samplers** — the actual requests a thread sends: **HTTP Request** (the common one), plus JDBC, FTP, JMS, gRPC, etc. Each sampler is one measured action.
+- **Logic Controllers** — control flow: If, Loop, Transaction (groups several samplers into one measured "transaction"), Throughput controller.
+- **Config Elements** — shared setup: **HTTP Request Defaults** (base host/port so you don't repeat it), **HTTP Cookie Manager** (essential for sessions), **HTTP Header Manager** (auth headers, content-type), **CSV Data Set Config** (read test data from a file).
+- **Timers** — insert **think time** between requests. *Constant Timer*, *Uniform Random Timer*, *Gaussian Random Timer*. Without timers your threads hammer with zero pause — unrealistic.
+- **Assertions** — pass/fail checks: **Response Assertion** (body contains text, status code), **Duration Assertion** (response under X ms), **JSON Assertion**. An assertion failure marks the sample as an error.
+- **Listeners** — collect/visualize results: **View Results Tree** (debug only — never in a real run), **Summary Report**, **Aggregate Report** (gives percentiles). **Listeners are expensive** — disable heavy ones for the actual load run and analyze from the raw `.jtl` results file afterward.
+- **Pre/Post Processors** — run before/after a sampler. The key one is the **extractor** (a post-processor) used for correlation.
+
+### Correlation (the senior topic)
+
+Real apps hand out **dynamic values** — a CSRF token, session id, or a generated order id — that you must capture from one response and replay in the next request. Hardcoding a token recorded yesterday fails today. **Correlation** = extract the dynamic value at runtime and reuse it via a variable.
+
+- **Regular Expression Extractor** — pull a value from an HTML/text body with a regex capture group.
+- **JSON Extractor** — pull a value from a JSON response with a JSONPath (`$.data.token`). Preferred for JSON APIs.
+- **Boundary Extractor** — grab text between a left and right boundary (simpler than regex for many cases).
+
+You store the captured value in a variable (e.g. `authToken`) and reference it later as `${authToken}` in a header or body.
+
+### Parameterization with CSV
+
+Don't log in 100 virtual users as the same user. Drive unique data from a file with **CSV Data Set Config**: each thread reads the next row. The CSV columns become variables.
+
+```text
+# users.csv
+username,password
+alice,Passw0rd!
+bob,Hunter2xx
+carol,S3cret99
+```
+
+Reference the columns as `${username}` / `${password}` in the HTTP Request. Set "Recycle on EOF" and "Sharing mode" to control wrap-around and per-thread vs shared reading.
+
+### GUI to build, CLI to run
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Build and debug in the GUI, but <strong>never run a real load test from the GUI</strong> — it is single-threaded Swing, consumes huge memory rendering live results, and will itself become the bottleneck, distorting your numbers. Always run headless from the command line.
+</div>
+
+```bash
+# headless (non-GUI) run, write results to results.jtl, generate an HTML dashboard
+jmeter -n -t TestPlan.jmx -l results.jtl -e -o ./report
+#  -n non-GUI   -t test plan   -l results file   -e + -o  HTML report dir
+```
+
+### Distributed testing
+
+One load generator can't simulate, say, 50,000 users (it runs out of CPU/memory/ports). JMeter scales out in a **controller/worker (master/slave) model**: a controller orchestrates several remote `jmeter-server` worker nodes, each generating a share of the load, and aggregates results. (For very large scale, many teams instead run JMeter in containers on Kubernetes or use a cloud runner.)
+
+### Plugins
+
+The **JMeter Plugins Manager** adds essentials missing from core: Concurrency/Ultimate Thread Groups (better load shaping), PerfMon (collect server CPU/memory), richer graphs, dummy samplers for debugging.
+
+## k6 (Grafana k6)
+
+A test is a **JavaScript** file run by a Go engine — fast, low-footprint, and built for CI. No GUI; everything is code you commit and review.
+
+### Core script
+
+```js
+import http from 'k6/http';
+import { check, sleep } from 'k6';
+
+export const options = {
+  stages: [                       // ramping load profile
+    { duration: '30s', target: 50 },   // ramp up to 50 VUs
+    { duration: '2m',  target: 50 },   // hold (steady state)
+    { duration: '30s', target: 0 },    // ramp down
+  ],
+  thresholds: {                   // pass/fail criteria — fail the build if breached
+    http_req_duration: ['p(95)<500'],   // 95% of requests under 500ms
+    http_req_failed:   ['rate<0.01'],   // error rate under 1%
+  },
+};
+
+export default function () {
+  const res = http.get('https://test.k6.io');
+  check(res, {                    // soft assertions — record, don't abort
+    'status is 200':       (r) => r.status === 200,
+    'body has welcome':    (r) => r.body.includes('Welcome'),
+    'fast enough (<400ms)':(r) => r.timings.duration < 400,
+  });
+  sleep(Math.random() * 3 + 1);   // think time: 1–4s
+}
+```
+
+### Key concepts
+
+- **VUs (virtual users)** — concurrent JS execution contexts, each running `default` in a loop.
+- **Stages** — the ramping load profile (ramp up / hold / ramp down), shaping the test over time.
+- **Thresholds** — the killer feature. SLOs expressed as code; if a threshold is breached, **k6 exits with a non-zero code**, which *fails your CI pipeline*. This turns a load test into an automated quality gate.
+- **Checks** — `check()` records pass/fail rates of conditions but **does not stop the test** (unlike a test-framework assertion). A high check-failure rate signals trouble; combine with a threshold on `checks` to actually fail the run.
+- **Scenarios** — advanced: run multiple workloads with different executors in one test. Mix a `ramping-vus` browse flow with a `constant-arrival-rate` checkout flow (arrival-rate executors hold a fixed *throughput* regardless of latency — the most realistic model). Scenarios also let you A/B different traffic patterns.
+- **`setup()` / `teardown()`** — run once before/after the whole test (seed data, auth, cleanup).
+- **Metrics & extraction** — built-in metrics (`http_req_duration`, `http_req_failed`, `iterations`) plus custom `Trend`/`Counter`/`Rate`. Correlation in k6 is plain JS: `const token = res.json('data.token');` then use it in the next request's headers.
+
+### Parameterization & CI
+
+```js
+import { SharedArray } from 'k6/data';
+const users = new SharedArray('users', () =>
+  JSON.parse(open('./users.json')));            // load data once, share across VUs
+
+export default function () {
+  const u = users[Math.floor(Math.random() * users.length)];
+  http.post('https://api.example.com/login',
+    JSON.stringify({ user: u.name, pass: u.pass }),
+    { headers: { 'Content-Type': 'application/json' } });
+}
+```
+
+In CI, it's one line — `k6 run --out json=results.json smoke.js` — and the non-zero exit on threshold breach gates the merge. Results stream to Grafana Cloud / InfluxDB / Prometheus for dashboards.
+
+## JMeter vs k6
+
+| Dimension | JMeter | k6 |
+|---|---|---|
+| Test definition | GUI / XML (`.jmx`) | JavaScript code |
+| Learning curve | Low to start (clicks), gnarly XML later | Need basic JS |
+| Version control / review | Awkward (huge XML diffs) | Native (it's code) |
+| CI integration | Possible (CLI), clunkier | First-class, built for it |
+| Protocols | Very broad (HTTP, JDBC, JMS, FTP, gRPC…) | HTTP-first (+ gRPC, WS, browser module) |
+| Resource footprint | Heavy (JVM, thread-per-VU) | Light (Go, efficient VUs) |
+| Pass/fail gating | Assertions + external parsing | Built-in thresholds → exit code |
+| Distributed load | Controller/worker, or k8s | k6 Cloud / multiple runners |
+| Plugins/ecosystem | Huge, mature | Smaller, growing (extensions in Go) |
+| Best for | Broad protocols, GUI teams, legacy estates | Dev-owned, code-first, CI-gated perf |
+
+<div class="callout tip">
+  <div class="ct">How to choose</div>
+  Pick <strong>k6</strong> when developers own performance, tests live in the repo, and you want a CI quality gate — the default for modern web/API stacks. Pick <strong>JMeter</strong> when you need protocols beyond HTTP (JDBC, JMS), a non-coding QA team builds the tests, or you're maintaining an existing JMeter estate. They're not mutually exclusive — many shops run both.
+</div>
+
+## Other tools worth naming
+
+- **Gatling** — code-first like k6 but Scala/Java DSL; excellent HTML reports, strong for JVM shops.
+- **Locust** — load tests written in **Python**; "user behavior as code," easy to extend, good when your team lives in Python.
+- **Cloud runners** — BlazeMeter (runs JMeter at scale), k6 Cloud, Grafana Cloud k6 — for generating massive distributed load without managing your own fleet.
+
+## Interview questions & model answers
+
+**Q1. Why run JMeter from the CLI instead of the GUI?**
+The GUI is single-threaded Swing and spends huge memory rendering live listeners; under real load it becomes the bottleneck and skews results. Standard practice is build/debug in the GUI, then run headless with `jmeter -n -t plan.jmx -l results.jtl -e -o report`, and analyze from the results file.
+
+**Q2. What is correlation and why do you need it?**
+Servers issue dynamic values — CSRF tokens, session ids, generated ids — that change every run. You must capture them from a response and replay them in subsequent requests; hardcoding a recorded value fails. In JMeter you use a Regular Expression / JSON / Boundary Extractor into a variable; in k6 it's plain JS (`res.json('data.token')`).
+
+**Q3. What's the difference between a JMeter assertion and a k6 check?**
+Both verify a response, but a k6 `check()` only *records* pass/fail and never stops the iteration, whereas it's a JMeter assertion that marks the sample as an error. To actually fail a k6 run you add a **threshold** (e.g. on `checks` or `http_req_duration`) — thresholds drive k6's exit code and thus CI pass/fail.
+
+**Q4. What are k6 thresholds and how do they fail a build?**
+Thresholds are SLOs as code — e.g. `http_req_duration: ['p(95)<500']`, `http_req_failed: ['rate<0.01']`. If any threshold is breached, k6 exits non-zero, which fails the CI step. That converts a load test into an automated quality gate that blocks a regression from merging.
+
+**Q5. How do you parameterize test data so VUs aren't identical?**
+JMeter: CSV Data Set Config feeds each thread the next row, columns become `${var}`. k6: load a dataset with `SharedArray` (parsed once, shared across VUs) and index it per iteration. Both avoid the anti-pattern of 100 VUs logging in as the same user, which gives unrealistic caching/locking behavior.
+
+**Q6. How do you scale beyond one machine's load capacity?**
+JMeter uses a controller/worker model: a controller drives several remote `jmeter-server` workers and aggregates results (or run it containerized on Kubernetes). k6 scales via k6 Cloud or multiple runners. A single generator runs out of CPU/memory/ephemeral ports, so distributed load is required for very high VU counts.
+
+**Q7. When would you pick k6 over JMeter, or vice versa?**
+k6 when devs own perf, tests should be version-controlled and CI-gated, and the target is HTTP/API — its code-first model and threshold gating shine. JMeter when you need broad protocols (JDBC, JMS, FTP), a non-coding team builds tests via GUI, or you inherit an existing `.jmx` estate. Many teams use both.
+
+## Common mistakes
+
+- **Running JMeter load from the GUI** — the tool becomes the bottleneck; always run headless.
+- **Leaving View Results Tree / heavy listeners on during a load run** — massive memory/CPU overhead that distorts results.
+- **No correlation** — replaying a stale token, so every request after login fails and your "passing" test is meaningless.
+- **No think time / timers** — VUs hammer with zero pause, over-loading the system and measuring fiction.
+- **Same data for every VU** — unrealistic cache/lock behavior; parameterize from CSV/SharedArray.
+- **k6 checks without thresholds** — checks fail silently and the run still "passes" in CI because nothing drives the exit code.
+- **Generating load from one underpowered box** — ephemeral-port/CPU exhaustion on the *generator* masquerades as the system being slow.
+- **Testing against prod without permission** — load tests can take down real systems; always use a sanctioned, production-like environment.

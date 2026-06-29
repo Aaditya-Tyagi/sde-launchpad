@@ -1,0 +1,137 @@
+---
+title: "Frontend system design framework"
+track: system-design
+summary: "A repeatable method for frontend design rounds: requirements → API/data → component architecture → state → rendering (CSR/SSR/SSG/ISR) → performance budget → network/caching → a11y → offline."
+order: 6
+est: 30
+difficulty: medium
+priority: must
+tags: [frontend, system-design, state, rendering, performance, accessibility]
+whyAsked: "Frontend design rounds are open-ended; a framework keeps you from freezing and shows senior-level thinking about UI architecture, rendering, and performance — not just React trivia."
+followUps:
+  - "How would you structure component architecture for a complex widget?"
+  - "Client state vs server state — how do you manage each?"
+  - "CSR vs SSR vs SSG vs ISR — how do you choose?"
+  - "What's your performance budget and how do you hit it?"
+  - "How do you make it accessible and work offline?"
+resources:
+  - { label: "GreatFrontend system design", url: "https://www.greatfrontend.com/system-design" }
+  - { label: "patterns.dev", url: "https://www.patterns.dev/" }
+  - { label: "web.dev: Core Web Vitals", url: "https://web.dev/articles/vitals" }
+---
+
+Frontend design rounds ("design a news feed / autocomplete / photo gallery / Google Docs") aren't backend boxes-and-arrows. They're about **component architecture, data flow, state, rendering strategy, and performance**. This is the reusable *method*; the [frontend-system-design](/lessons/frontend-system-design) track has full worked designs. Narrate this structure out loud.
+
+## The framework
+
+### 1. Clarify requirements
+- **Functional:** the features ("type to search, see ranked results, keyboard-select").
+- **Non-functional:** devices (mobile + desktop?), expected item counts, real-time updates, **offline**, **accessibility**, internationalization, performance targets, SEO needs.
+
+Ask: "Mobile and desktop? Real-time? How many items — hundreds or millions? Does it need to work offline? SEO important?" Each answer flips a later decision (e.g. "SEO matters" → SSR/SSG).
+
+### 2. API & data contract
+Design the API **for the view's needs**, not the database's shape:
+- **Pagination:** cursor vs offset — prefer **cursor** for infinite/changing lists (offset duplicates/skips when the head shifts).
+- **Shape:** return exactly the fields the view renders; avoid over-fetching (mobile data) and under-fetching (waterfalls). GraphQL or a BFF (backend-for-frontend) can tailor the payload.
+- **Cadence:** debounced search, batched mutations, polling vs push for real-time.
+
+### 3. Component architecture
+Break the UI into a tree with clear responsibilities. Separate **presentational** (dumb, props-in, no data fetching) from **container** (data-fetching, stateful) components, and extract logic into **hooks**. Define the props/contract between components — that contract *is* the architecture. Name where data enters the tree and how it flows down (or via context for cross-cutting state).
+
+### 4. State management
+Distinguish **two fundamentally different kinds of state** — conflating them is the most common mistake:
+
+| | **Server state** | **Client/UI state** |
+|---|---|---|
+| Source | The API (you don't own it) | The user / the UI |
+| Examples | feed items, user profile, search results | modal open, selected tab, form input, optimistic flags |
+| Needs | caching, dedup, staleness/refetch, retry | just local reactivity |
+| Tool | React Query / SWR / RTK Query | `useState`, Context, or a light store (Zustand/Jotai) |
+
+Don't dump server data into Redux by reflex — a server-cache library handles dedup, background refetch, and staleness far better. Keep UI state local and minimal.
+
+### 5. Rendering strategy (CSR / SSR / SSG / ISR)
+This is the senior differentiator — pick by content freshness + SEO + interactivity:
+
+| Strategy | Rendered | Best for | Tradeoff |
+|---|---|---|---|
+| **CSR** (client-side) | In browser after JS loads | Highly interactive apps behind login (dashboards) | Bad SEO, slow first paint (blank until JS) |
+| **SSR** (server-side, per request) | On the server each request | Personalized + SEO-critical, fresh data (feed, product page) | Server cost/latency per request |
+| **SSG** (static, build time) | At build → static HTML/CDN | Rarely-changing content (docs, marketing, blog) | Stale until rebuild |
+| **ISR** (incremental static regen) | SSG + revalidate on a TTL | Mostly-static but periodically updated (e-commerce listings) | Eventual freshness window |
+
+The combo answer: "SSR (or SSG) the first meaningful paint for SEO/speed, then **hydrate** and run as a CSR app for interactivity." Mention streaming SSR / React Server Components if relevant — they reduce the hydration cost.
+
+### 6. Performance budget
+State concrete targets and the levers that hit them. Core Web Vitals as anchors: **LCP `< 2.5s`**, **INP `< 200ms`**, **CLS `< 0.1`**.
+
+- **Virtualization / windowing** for long lists — render only what's visible (`react-window`, `FlashList`). The single biggest lever for big feeds.
+- **Code splitting & lazy loading** — small initial bundle; route- and component-level splits; defer below-the-fold.
+- **Image optimization** — responsive `srcset`, modern formats (WebP/AVIF), lazy-load, explicit dimensions (avoid CLS).
+- **Memoization** (`useMemo`/`memo`) to cut needless re-renders — but **measure first**; premature memoization adds noise.
+- **Debounce/throttle** inputs and scroll handlers; **prefetch** on hover/viewport.
+
+### 7. Network & caching
+- **HTTP caching:** `Cache-Control`/`ETag` for static + cacheable API responses; CDN for assets.
+- **Client cache:** server-state library caches by query key; dedupe in-flight requests; stale-while-revalidate for instant-feeling UI.
+- **Optimistic updates** with rollback so mutations feel instant.
+- **Request hygiene:** cancel stale in-flight requests (autocomplete race conditions), batch, retry with backoff.
+
+### 8. Accessibility & edge states
+- Every async region needs **loading / empty / error** states (skeletons, "no results," retry).
+- **Keyboard navigation**, focus management, ARIA roles (e.g. `combobox` for autocomplete), semantic HTML, color contrast, screen-reader labels.
+- Respect `prefers-reduced-motion`; support i18n/RTL if in scope.
+
+### 9. Offline (when in scope)
+- **Service worker** to cache the app shell and assets (cache-first for static, network-first for data).
+- **Optimistic local writes** queued and synced when back online (background sync); IndexedDB for structured offline data.
+- Clear online/offline UI affordances and conflict handling on resync.
+
+## Worked mini-example: an autocomplete
+
+- **Architecture:** `<SearchInput>` (controlled) + `<Suggestions>` (presentational list) + a `useAutocomplete` hook holding the logic.
+- **API/data:** `GET /suggest?q=` returning a ranked list; **debounce** input ~250ms; **cancel** in-flight requests when a newer query fires (race conditions).
+- **State:** query string + suggestions (server state, cached by query) + highlighted index (UI state).
+- **Rendering:** CSR (it lives inside an app, no SEO need).
+- **Performance:** cache results per query (instant on repeat), cap list length, virtualize if long, prefetch the top result's page on hover.
+- **A11y:** ARIA `combobox`/`listbox` roles, full keyboard support (↑/↓/Enter/Esc), `aria-activedescendant`, announce result count.
+- **Edge:** loading spinner, "no results," error fallback.
+
+## Interview questions & model answers
+
+**Q: How do you structure component architecture for a complex widget?**
+"A tree of small components with single responsibilities, splitting presentational (props-in, no fetching) from container (data + state), and extracting logic into hooks. I define the props contract between them first — that contract is the architecture. Data enters at the container and flows down; cross-cutting concerns go through context, not prop-drilling."
+
+**Q: Server state vs client state?**
+"Server state is data I don't own — it lives in the API and needs caching, dedup, staleness, and refetch, so I use React Query/SWR. Client state is UI-owned — modals, tabs, form inputs — handled by local `useState` or a light store. Putting server data in Redux is a classic mistake; a server-cache library does it better."
+
+**Q: CSR vs SSR vs SSG vs ISR?**
+"CSR for interactive apps behind auth where SEO doesn't matter. SSR when I need personalized, fresh content *and* SEO/fast first paint. SSG for rarely-changing content served from a CDN. ISR when content is mostly static but updates periodically — static speed with a revalidation window. Usually SSR/SSG the first paint, then hydrate into a CSR app."
+
+**Q: How do you keep a list of thousands of items smooth?**
+"Virtualization — render only the ~10 visible items plus a buffer and recycle DOM nodes. Combined with cursor pagination loaded via an IntersectionObserver sentinel, stable keys, and memoized rows. Rendering everything destroys memory and scroll FPS."
+
+**Q: What's your performance budget and how do you hit it?**
+"I anchor on Core Web Vitals — LCP under 2.5s, INP under 200ms, CLS under 0.1. Levers: small initial bundle via code splitting, virtualization for lists, optimized lazy-loaded images with explicit dimensions, debounced inputs, and measured memoization. I'd also set a bundle-size budget in CI."
+
+**Q: How do you handle a race condition in search-as-you-type?**
+"Debounce input, and cancel the previous in-flight request (AbortController) when a newer query fires — otherwise a slow earlier response can overwrite a faster later one. I also key the cache by query so stale responses for a different query are ignored."
+
+**Q: How would you make this work offline?**
+"A service worker caching the app shell (cache-first) and data (network-first with cache fallback), IndexedDB for structured data, optimistic local writes queued for background sync on reconnect, and clear offline UI plus conflict resolution on resync."
+
+## Common mistakes / what weak candidates do
+
+- **Jumping to components** without clarifying devices, scale, SEO, offline, or a11y first.
+- **Treating all state the same** — dumping server data into Redux instead of using a server-cache library.
+- **Never mentioning rendering strategy** (CSR/SSR/SSG/ISR) or defaulting to CSR even when SEO/first-paint matter.
+- **Rendering huge lists fully** instead of virtualizing.
+- **Forgetting loading/empty/error states** and accessibility — the marks of an unfinished answer.
+- **Designing the API around the DB** instead of the view (over/under-fetching, waterfalls).
+- **Memoizing everything** without measuring, or ignoring race conditions/request cancellation.
+
+<div class="callout key">
+  <div class="ct">The senior signal</div>
+  Clarify requirements (incl. SEO, offline, a11y), design the API <i>for the view</i>, separate server state from UI state, <b>choose a rendering strategy deliberately</b> (CSR/SSR/SSG/ISR), plan virtualization and code-splitting before you're asked, set a Core-Web-Vitals budget, and never ship without loading/empty/error states and accessibility. Narrating these unprompted is what distinguishes a senior frontend answer.
+</div>

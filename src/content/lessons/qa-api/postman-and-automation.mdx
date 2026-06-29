@@ -1,0 +1,290 @@
+---
+title: "API testing: Postman → automated in code"
+track: qa-api
+summary: "Master Postman end-to-end — requests, environments, pre-request & test scripts (pm.* API), request chaining, the Collection Runner, data-driven runs, mocks, monitors, Newman + CI — then learn when and why to graduate to code-based automation."
+order: 2
+est: 26
+difficulty: medium
+priority: deep
+tags: [postman, newman, pm-api, ci, automation, json-schema]
+whyAsked: "Hands-on API automation is a core SDET skill. Interviewers expect you to script Postman tests, chain a token across requests, run a collection in CI with Newman, and explain when to move to code."
+followUps:
+  - "How do you validate a JSON schema in Postman?"
+  - "How do you chain requests — use a token from one call in the next?"
+  - "How do you run Postman tests in CI?"
+  - "When would you move from Postman to code-based automation?"
+  - "How do you parameterize a collection to run over many data rows?"
+resources:
+  - { label: "Postman Learning Center", url: "https://learning.postman.com/" }
+  - { label: "pm.* scripting reference", url: "https://learning.postman.com/docs/tests-and-scripts/write-scripts/postman-sandbox-api-reference/" }
+  - { label: "Newman", url: "https://github.com/postmanlabs/newman" }
+  - { label: "REST Assured", url: "https://rest-assured.io/" }
+  - { label: "Practice: ReqRes", url: "https://reqres.in/" }
+---
+
+The workflow most teams use: **explore exploratorily in Postman**, then **move stable, regression-worthy checks into code that runs in CI**. Postman is the fastest way to poke at an API and prototype assertions; code is where durable, reviewable, version-controlled tests live. This lesson takes Postman as deep as interviews go, then explains the graduation to code.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Postman is two things at once: an interactive HTTP client, and a JavaScript test runtime (the `pm.*` sandbox) that executes before and after every request. Knowing the `pm.*` API is what separates "I click Send" from "I automate."
+</div>
+
+## Requests & the building blocks
+
+A Postman request mirrors raw HTTP: method + URL, **Params** (query string), **Authorization**, **Headers**, and **Body** (raw JSON, form-data, x-www-form-urlencoded, etc.). Organize requests into **Collections** (a folder/tree of related requests) so you can run and share them as a unit.
+
+## Environments & variables
+
+Variables let one collection run against dev, staging, and prod without edits. Scopes, from broadest to narrowest (narrower wins):
+
+- **Global** — available everywhere (use sparingly).
+- **Collection** — shared by all requests in a collection.
+- **Environment** — a named set you switch between (`dev`, `staging`, `prod`): `baseUrl`, `token`, etc.
+- **Local / data** — set in scripts or supplied by a data file during a run.
+
+Reference a variable with `{{baseUrl}}` in any field (URL, header, body):
+
+```text
+GET {{baseUrl}}/users/{{userId}}
+Authorization: Bearer {{token}}
+```
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Store secrets as <strong>environment</strong> variables marked <em>secret</em>, never hard-coded in the request or committed in an exported collection. When sharing/exporting, strip tokens.
+</div>
+
+## Pre-request scripts & test scripts (the pm.* API)
+
+Every request has two script slots, both JavaScript:
+
+- **Pre-request Script** runs *before* the request is sent — generate timestamps, compute signatures, set variables, build a dynamic body.
+- **Tests** (post-response) run *after* — assert on the response and extract values for the next call.
+
+The `pm` object is your toolkit:
+
+```js
+// --- Tests tab ---
+pm.test("status is 200", () => {
+  pm.response.to.have.status(200);
+});
+
+pm.test("content-type is JSON", () => {
+  pm.expect(pm.response.headers.get("Content-Type")).to.include("application/json");
+});
+
+pm.test("responds under 800ms", () => {
+  pm.expect(pm.response.responseTime).to.be.below(800);
+});
+
+const body = pm.response.json();
+pm.test("body has expected fields", () => {
+  pm.expect(body).to.have.property("id");
+  pm.expect(body.email).to.be.a("string");
+});
+```
+
+Key members: `pm.response` (status, `.json()`, `.headers`, `.responseTime`), `pm.expect()` (Chai assertions), `pm.test(name, fn)`, `pm.environment.get/set/unset`, `pm.collectionVariables.get/set`, `pm.globals.*`, `pm.request` (inspect/modify the outgoing request in pre-request), and `pm.sendRequest()` (fire an extra HTTP call from inside a script — handy for fetching a token in a pre-request).
+
+## Chaining requests — extract a token, use it next
+
+This is the most-asked Postman skill. Request A logs in and saves the token; request B reads it.
+
+```js
+// Request A — POST {{baseUrl}}/login   (Tests tab)
+const json = pm.response.json();
+pm.test("got a token", () => pm.expect(json.token).to.be.a("string"));
+pm.environment.set("token", json.token);          // persist for later requests
+```
+
+```js
+// Request B — GET {{baseUrl}}/me   (Authorization: Bearer {{token}})
+pm.test("authenticated call succeeds", () => pm.response.to.have.status(200));
+pm.expect(pm.response.json().email).to.eql(pm.environment.get("email"));
+```
+
+The same pattern captures a created resource's `id` for a follow-up GET/PUT/DELETE. You can also set the variable from a pre-request via `pm.sendRequest` so the token is fetched on demand.
+
+## JSON Schema validation in Postman
+
+Catch structural drift, not just individual fields. Postman bundles Ajv (`tv4`/Ajv depending on version); use `pm.response.to.have.jsonSchema`:
+
+```js
+const schema = {
+  type: "object",
+  required: ["id", "name", "job", "createdAt"],
+  properties: {
+    id:        { type: "string" },
+    name:      { type: "string" },
+    job:       { type: "string" },
+    createdAt: { type: "string" }
+  },
+  additionalProperties: false
+};
+
+pm.test("matches user schema", () => {
+  pm.response.to.have.jsonSchema(schema);
+});
+```
+
+`required` and `additionalProperties: false` are what make this strict — a missing field or an unexpected extra field fails the test.
+
+## Collection Runner & data-driven testing
+
+The **Collection Runner** executes every request in a collection in order (so chaining works), with configurable iterations and delays. Point it at a **data file** (CSV or JSON) and Postman runs the collection once per row, substituting columns as variables:
+
+```json
+[
+  { "name": "Ada",   "job": "qa",  "expectedStatus": 201 },
+  { "name": "Linus", "job": "dev", "expectedStatus": 201 }
+]
+```
+
+```js
+// Tests tab, using a data column
+pm.test("status matches data row", () => {
+  pm.response.to.have.status(Number(pm.iterationData.get("expectedStatus")));
+});
+```
+
+```js
+// Pre-request, build the body from data
+pm.variables.set("name", pm.iterationData.get("name"));
+pm.variables.set("job",  pm.iterationData.get("job"));
+```
+
+This is how you cover many input combinations (including negative rows) without duplicating requests.
+
+## Mocks & Monitors
+
+- **Mock servers** — Postman serves saved example responses at a generated URL. Useful for front-end work or testing against an API that isn't built yet (contract-first), and for forcing edge responses (e.g. a 500) that are hard to trigger on the real server.
+- **Monitors** — Postman runs a collection on a schedule (e.g. every 5 min) from the cloud and alerts on failures. Lightweight production/uptime + contract monitoring, distinct from your CI pipeline.
+
+## Newman + CI
+
+**Newman** is Postman's command-line runner — it executes an exported collection headlessly, perfect for pipelines.
+
+```bash
+# install
+npm install -g newman newman-reporter-htmlextra
+
+# run with an environment and a data file, emit JUnit + HTML reports
+newman run UsersAPI.postman_collection.json \
+  -e staging.postman_environment.json \
+  -d users-data.json \
+  --reporters cli,junit,htmlextra \
+  --reporter-junit-export results/newman.xml
+```
+
+Newman exits non-zero when any test fails, so CI marks the build red automatically. A minimal GitHub Actions job:
+
+```yaml
+name: api-tests
+on: [push, pull_request]
+jobs:
+  newman:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm install -g newman
+      - run: newman run UsersAPI.postman_collection.json -e staging.postman_environment.json --reporters cli,junit --reporter-junit-export results/newman.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: newman-report, path: results/ }
+```
+
+## Generating code from Postman
+
+Postman's **Code snippet** button (`</>`) exports the current request as curl, JavaScript fetch/axios, Python requests, Java OkHttp/REST Assured-ish, and more. Great for bootstrapping, but treat it as a starting point — generated code rarely includes proper assertions, setup/teardown, or reuse, which you'll add when moving to a real framework.
+
+## A realistic auth → CRUD → cleanup workflow
+
+This is the kind of end-to-end flow interviewers love. One collection, requests run in order by the Runner, state passed via variables.
+
+```js
+// 1) POST {{baseUrl}}/login  — authenticate, capture token   (Tests)
+const t = pm.response.json().token;
+pm.test("login ok", () => pm.response.to.have.status(200));
+pm.environment.set("token", t);
+```
+
+```js
+// 2) POST {{baseUrl}}/users  (Bearer {{token}})  — CREATE, capture id   (Tests)
+pm.test("created", () => pm.response.to.have.status(201));
+const created = pm.response.json();
+pm.expect(created.name).to.eql("sahil");
+pm.environment.set("userId", created.id);
+```
+
+```js
+// 3) GET {{baseUrl}}/users/{{userId}}  — READ, verify it persisted   (Tests)
+pm.test("read ok", () => pm.response.to.have.status(200));
+pm.expect(pm.response.json().id).to.eql(pm.environment.get("userId"));
+```
+
+```js
+// 4) PUT {{baseUrl}}/users/{{userId}}  body {"name":"sahil2"} — UPDATE   (Tests)
+pm.test("updated", () => pm.response.to.have.status(200));
+pm.expect(pm.response.json().name).to.eql("sahil2");
+```
+
+```js
+// 5) DELETE {{baseUrl}}/users/{{userId}}  — CLEANUP   (Tests)
+pm.test("deleted", () => pm.response.to.have.status(204));
+pm.environment.unset("userId");   // leave no orphaned state
+```
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Always clean up what you create. A test that creates a user but never deletes it pollutes the environment, can break the next run (duplicate-email 409s), and makes failures hard to diagnose. Create in setup, delete in teardown.
+</div>
+
+## When and why to move from Postman to code
+
+Postman is excellent for exploration, demos, and small smoke suites. Move to a code framework (REST Assured, requests+pytest, Playwright `request`) when you need:
+
+- **Version control & code review** — tests as `.java`/`.py` files in the same repo as the app, diffable in PRs. Exported Postman JSON is noisy to review.
+- **Reuse & abstraction** — request specs, base clients, POJOs, fixtures, helpers — far cleaner than copy-pasted requests.
+- **Complex logic & data setup** — DB seeding/cleanup, conditional flows, custom retries, parallelism.
+- **Tight CI integration & ecosystem** — JUnit/TestNG/pytest reporting, parallel execution, coverage, and sharing fixtures with unit tests.
+- **Scale & maintainability** — at hundreds of tests, scripts-in-tabs becomes hard to refactor.
+
+A common, healthy split: Postman/Newman for quick contract smoke checks and as living API docs; a code framework for the deep regression suite.
+
+## Interview questions & model answers
+
+**Q1. How do you chain requests in Postman?**
+In the first request's Tests tab I extract the value (e.g. `pm.environment.set("token", pm.response.json().token)`), then reference it in the next request via `{{token}}` in a header or URL. The Collection Runner executes requests in order so the variable is set before it's read. I can also fetch a token on demand in a pre-request script with `pm.sendRequest`.
+
+**Q2. Difference between a pre-request script and a test script?**
+Pre-request runs before the request is sent — I use it to build dynamic data, set timestamps/signatures, or fetch a token. Tests run after the response arrives — I use them for assertions and to extract values for later requests.
+
+**Q3. How do you validate a JSON schema in Postman?**
+I define a JSON Schema object and call `pm.response.to.have.jsonSchema(schema)`. With `required` and `additionalProperties: false` it fails on missing or unexpected fields, catching structural drift that field-by-field checks miss.
+
+**Q4. How do you run Postman tests in CI?**
+Export the collection and environment, then run them with Newman (`newman run collection.json -e env.json`). Newman exits non-zero on any failure so the pipeline fails the build. I emit JUnit XML for the CI test report and an HTML report as an artifact, and wire it into a GitHub Actions / Jenkins job.
+
+**Q5. How do you do data-driven testing in Postman?**
+I supply the Collection Runner a CSV or JSON data file; it runs the collection once per row, exposing columns via `pm.iterationData.get("col")`. I build the request body from those columns in a pre-request and assert against an expected-result column, including negative rows.
+
+**Q6. Variable scopes in Postman, and which wins?**
+Global, collection, environment, and local/data. Resolution goes narrowest-wins: local/data overrides environment, which overrides collection, which overrides global. I keep base URLs and tokens at environment scope so one collection runs against dev/staging/prod.
+
+**Q7. When would you move from Postman to a code framework?**
+When I need version control and PR review, real reuse/abstraction, complex setup like DB seeding, parallelism, and tight integration with the team's test ecosystem. Postman stays for exploration and smoke checks; the heavy regression suite moves to code.
+
+**Q8. How do mock servers and monitors help?**
+Mock servers return saved example responses at a URL — useful for front-end work before the API exists and for forcing hard-to-trigger responses like 500s. Monitors run a collection on a schedule from the cloud and alert on failures, giving lightweight uptime/contract monitoring separate from CI.
+
+## Common mistakes
+
+- Hard-coding base URLs or tokens in requests instead of using environment variables, so the collection only works in one place.
+- Committing exported collections with live secrets inside.
+- Writing requests that depend on order but running them individually (the token variable isn't set yet) — chaining needs the Collection Runner.
+- Asserting only the status code; skipping body, schema, and negative cases.
+- Creating resources without deleting them — orphaned state breaks the next run (duplicate 409s) and pollutes the environment.
+- Treating generated code snippets as finished tests; they lack assertions, setup/teardown, and reuse.
+- Forgetting that Newman must exit non-zero for CI to catch failures — verify the pipeline actually goes red on a failing test.

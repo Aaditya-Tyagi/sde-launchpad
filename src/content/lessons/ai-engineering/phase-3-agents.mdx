@@ -1,0 +1,326 @@
+---
+title: "Phase 3 — Tool Use, Agents & the ReAct Loop"
+track: ai-engineering
+summary: "Build production agents — tool use patterns, the ReAct loop, parallel tool calls, error recovery, and when to use deterministic workflows instead."
+order: 4
+est: 40
+difficulty: hard
+priority: must
+tags: [agents, tool-use, function-calling, react-loop, mcp, parallel-tools, agentic]
+whyAsked: "Agents are the defining AI engineering skill of 2025–26. Interviewers test whether you understand the tool loop, failure modes, and when NOT to use agents."
+followUps:
+  - "What is the ReAct pattern?"
+  - "How do you handle a tool call that fails?"
+  - "What is the difference between a workflow and an agent?"
+  - "How do you prevent an agent from running forever?"
+  - "What is MCP?"
+resources:
+  - { label: "Anthropic tool use docs", url: "https://docs.anthropic.com/en/docs/build-with-claude/tool-use" }
+  - { label: "Model Context Protocol", url: "https://modelcontextprotocol.io" }
+  - { label: "Anthropic agent patterns cookbook", url: "https://github.com/anthropics/anthropic-cookbook/tree/main/patterns/agents" }
+---
+
+## Workflow vs Agent — the most important distinction
+
+**Deterministic workflow:** you control the flow. The LLM is used as a step within a predetermined graph.
+```
+user_input → classify_intent() → if intent == 'refund': process_refund() 
+                                 if intent == 'question': rag_answer()
+```
+
+**Agent:** the LLM decides what to do next, including which tools to call, in what order.
+```
+user_input → LLM decides: "I need to check order status, then check refund policy, then respond"
+           → LLM calls tools in sequence → synthesizes final answer
+```
+
+**When to use agents:**
+- The sequence of steps is unpredictable (depends on what you find)
+- Tasks require self-correction (test your output, fix if wrong)
+- Open-ended research or multi-hop reasoning
+
+**When NOT to use agents:**
+- The steps are known in advance → use a workflow
+- Low latency requirement → agent loops add multiple round trips
+- High reliability requirement → agents fail in subtle, hard-to-debug ways
+
+<div class="callout warn">
+  <div class="ct">The core rule</div>
+  Prefer deterministic workflows. Reach for agents only when the task <em>genuinely requires dynamic step selection.</em> Every agentic step is an opportunity for the model to hallucinate, get confused, or loop.
+</div>
+
+---
+
+## Single tool use
+
+```python
+import anthropic, json
+
+client = anthropic.Anthropic()
+
+# Define tools the model can call
+tools = [
+    {
+        "name": "get_weather",
+        "description": "Get current weather for a city.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "City name"},
+                "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
+            },
+            "required": ["city"],
+        },
+    }
+]
+
+# Your actual tool implementation
+def get_weather(city: str, unit: str = "celsius") -> dict:
+    # In production: call a real weather API
+    return {"city": city, "temp": 22, "unit": unit, "condition": "sunny"}
+
+# Tool dispatch map
+TOOL_FUNCTIONS = {
+    "get_weather": get_weather,
+}
+
+def call_tool(tool_name: str, tool_input: dict) -> str:
+    fn = TOOL_FUNCTIONS[tool_name]
+    result = fn(**tool_input)
+    return json.dumps(result)
+```
+
+---
+
+## The agent loop (ReAct pattern)
+
+ReAct = **Re**asoning + **Act**ing. The model reasons about what to do, acts (calls a tool), observes the result, repeats.
+
+```python
+def run_agent(user_message: str, tools: list[dict], max_iterations: int = 10) -> str:
+    messages = [{"role": "user", "content": user_message}]
+    
+    for iteration in range(max_iterations):
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=4096,
+            tools=tools,
+            messages=messages,
+        )
+        
+        # Append assistant's response to history
+        messages.append({"role": "assistant", "content": response.content})
+        
+        # Check stop reason
+        if response.stop_reason == "end_turn":
+            # Model is done — extract final text response
+            for block in response.content:
+                if hasattr(block, "text"):
+                    return block.text
+            return ""
+        
+        if response.stop_reason == "tool_use":
+            # Model wants to call tools — execute them and send results back
+            tool_results = []
+            
+            for block in response.content:
+                if block.type == "tool_use":
+                    print(f"  → Calling {block.name}({block.input})")
+                    
+                    try:
+                        result = call_tool(block.name, block.input)
+                    except Exception as e:
+                        # Return error to model so it can self-correct
+                        result = json.dumps({"error": str(e)})
+                    
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result,
+                    })
+            
+            # Send tool results back to model
+            messages.append({"role": "user", "content": tool_results})
+        
+        else:
+            break  # Unexpected stop reason
+    
+    raise RuntimeError(f"Agent exceeded {max_iterations} iterations without completing")
+```
+
+---
+
+## Parallel tool calls — the key to fast agents
+
+When the model needs multiple independent data sources, it calls all tools simultaneously (one API round trip instead of N):
+
+```python
+# The model may return multiple tool_use blocks in a single response
+# Execute them all in parallel before sending results back
+
+import asyncio
+
+async def call_tool_async(tool_name: str, tool_input: dict, tool_use_id: str) -> dict:
+    try:
+        # Run sync tool function in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, call_tool, tool_name, tool_input)
+        return {"type": "tool_result", "tool_use_id": tool_use_id, "content": result}
+    except Exception as e:
+        return {"type": "tool_result", "tool_use_id": tool_use_id, "content": json.dumps({"error": str(e)}), "is_error": True}
+
+async def run_agent_async(user_message: str, tools: list[dict]) -> str:
+    messages = [{"role": "user", "content": user_message}]
+    
+    while True:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=4096,
+            tools=tools,
+            messages=messages,
+        )
+        messages.append({"role": "assistant", "content": response.content})
+        
+        if response.stop_reason == "end_turn":
+            return next(b.text for b in response.content if hasattr(b, "text"))
+        
+        if response.stop_reason == "tool_use":
+            tool_calls = [b for b in response.content if b.type == "tool_use"]
+            
+            # Run all tool calls in parallel
+            tool_results = await asyncio.gather(*[
+                call_tool_async(tc.name, tc.input, tc.id)
+                for tc in tool_calls
+            ])
+            
+            messages.append({"role": "user", "content": list(tool_results)})
+```
+
+---
+
+## Real example: research agent with 4 tools
+
+```python
+research_tools = [
+    {
+        "name": "web_search",
+        "description": "Search the web for current information.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "num_results": {"type": "integer", "default": 5},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "read_url",
+        "description": "Read the full text content of a URL.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"url": {"type": "string"}},
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "save_note",
+        "description": "Save an important fact or finding to memory.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string"},
+                "value": {"type": "string"},
+            },
+            "required": ["key", "value"],
+        },
+    },
+    {
+        "name": "finish",
+        "description": "Return the final research report. Call this when done.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "report": {"type": "string"},
+                "sources": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["report"],
+        },
+    },
+]
+
+# Typical agent trace for "Research the top 3 open-source LLMs in 2025":
+# Turn 1: model calls web_search("top open source LLMs 2025")
+# Turn 2: model calls read_url(url1), read_url(url2), read_url(url3) in parallel
+# Turn 3: model calls save_note("top3", "Llama 4, Qwen3, Gemma3") + save_note("sources", "...")
+# Turn 4: model calls finish(report="...", sources=[...])
+```
+
+---
+
+## Guardrails and production concerns
+
+**Max iterations:** always set a hard cap (10–20 iterations) to prevent infinite loops.
+
+**Token budget:** track cumulative token usage; abort if approaching limit:
+```python
+total_tokens = 0
+for turn in agent_loop():
+    total_tokens += response.usage.input_tokens + response.usage.output_tokens
+    if total_tokens > 100_000:
+        raise BudgetExceededError("Agent exceeded token budget")
+```
+
+**Tool timeouts:** wrap every tool call with a timeout:
+```python
+import asyncio
+result = await asyncio.wait_for(call_tool_async(...), timeout=30.0)
+```
+
+**Prompt injection:** if tools return external content (web pages, user input), it may contain instructions like "ignore previous instructions and...". Sanitize or use a sandboxed prompt:
+```python
+tool_result = f"<tool_output>{raw_result}</tool_output>"
+# Wrapping in XML tags signals to the model that this is data, not instructions
+```
+
+---
+
+## Model Context Protocol (MCP)
+
+MCP is an open standard for how models connect to tools and data sources. Instead of building custom tool integrations for every model, you expose an MCP server once and any compatible model can use it.
+
+```python
+# MCP server skeleton (Python SDK)
+from mcp.server import Server
+from mcp.server.models import InitializationOptions
+import mcp.types as types
+
+server = Server("my-tools")
+
+@server.list_tools()
+async def list_tools():
+    return [
+        types.Tool(
+            name="get_order_status",
+            description="Get the status of an order by ID.",
+            inputSchema={
+                "type": "object",
+                "properties": {"order_id": {"type": "string"}},
+                "required": ["order_id"],
+            },
+        )
+    ]
+
+@server.call_tool()
+async def call_tool(name: str, arguments: dict):
+    if name == "get_order_status":
+        order = db.get_order(arguments["order_id"])
+        return [types.TextContent(type="text", text=json.dumps(order))]
+```
+
+MCP servers can expose: tools (callable functions), resources (readable data), and prompts (reusable templates).
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "The agent loop: send messages → model returns tool_use blocks → execute tools (in parallel for independent calls) → append tool_results → repeat until stop_reason == 'end_turn'. Always set a max iteration cap and token budget. The key engineering insight is to prefer workflows over agents — if the steps are known, don't make them dynamic. For the agentic parts, return errors to the model as tool results so it can self-correct rather than crashing. MCP standardizes tool exposure so you write the server once and any MCP-compatible model can use it."
+</div>

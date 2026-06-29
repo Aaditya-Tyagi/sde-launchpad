@@ -1,0 +1,197 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+
+// The 6-step framework, with guiding prompts pulled from the HLD/FE-SD lessons.
+const STEPS = [
+  { key: 'req', n: 1, title: 'Requirements', hint: 'Functional (what it must do) vs non-functional (scale, latency, availability, consistency). State assumptions out loud.',
+    ph: '• Functional: ...\n• Non-functional: ... (e.g. 100M DAU, p99 < 200ms, read-heavy 100:1)\n• Out of scope: ...' },
+  { key: 'capacity', n: 2, title: 'Capacity estimation', hint: 'Traffic (QPS read/write), storage/year, bandwidth. Round aggressively — show the method, not precision.',
+    ph: '• Writes/sec: ...\n• Reads/sec: ...\n• Storage/year: ...\n• Bandwidth: ...' },
+  { key: 'api', n: 3, title: 'API design', hint: 'The core endpoints / RPCs. Method, path, params, response. Keep it to the essential operations.',
+    ph: 'POST /resource { ... } -> 201\nGET  /resource/:id -> { ... }' },
+  { key: 'data', n: 4, title: 'Data model & storage', hint: 'Key entities, relationships, and the SQL-vs-NoSQL decision with a reason. Note access patterns that drive it.',
+    ph: '• Entities: ...\n• Store choice: ... because ...\n• Indexes / partition key: ...' },
+  { key: 'arch', n: 5, title: 'High-level architecture', hint: 'Client → LB → services → cache → DB → queue/workers. Describe the read path and the write path.',
+    ph: '• Write path: ...\n• Read path: ...\n• Components: LB, cache, queue, CDN, ...' },
+  { key: 'deepdive', n: 6, title: 'Deep dives & trade-offs', hint: 'Pick 1–2 hard parts (bottleneck, hotspot, consistency). State the trade-off you chose and why.',
+    ph: '• Bottleneck: ...\n• Trade-off: chose X over Y because ...\n• Failure handling / scaling: ...' },
+];
+
+const STARTERS = [
+  'Design a URL shortener', 'Design Twitter / X feed', 'Design a rate limiter',
+  'Design a notification system', 'Design a chat app', 'Design a news feed',
+  'Design Google Docs', 'Design a video streaming service', 'Design an e-commerce cart',
+];
+---
+<BaseLayout title="System Design Canvas · SDE-2 Launchpad" active="design">
+  <div class="wrap" style="padding-top:28px;max-width:880px">
+    <h1>System Design Canvas</h1>
+    <p class="sub">A structured scaffold for the 6-step framework. Fill it in while you practice — out loud, ideally under a timer — and you'll never freeze on "where do I start?". Saves automatically; export when you're done. <a href={`${base}/lessons/hld/framework`}>Read the framework →</a></p>
+
+    <!-- list view -->
+    <div id="dzList">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-top:18px">
+        <h2 style="font-size:19px">Your designs</h2>
+        <button class="btn btn-primary" id="dzNew">＋ New design</button>
+      </div>
+      <div id="dzCards" style="margin-top:12px"></div>
+
+      <h3 style="margin-top:26px;font-size:14px;color:var(--faint);text-transform:uppercase;letter-spacing:.06em">Or start from a classic prompt</h3>
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:10px">
+        {STARTERS.map((s) => <button class="btn dz-starter" data-title={s}>{s}</button>)}
+      </div>
+    </div>
+
+    <!-- editor view -->
+    <div id="dzEditor" class="hide">
+      <div class="row" style="align-items:center;margin-top:16px;gap:10px">
+        <button class="btn" id="dzBack">← All designs</button>
+        <div class="spacer"></div>
+        <span class="muted" id="dzSaved" style="font-size:12px;font-family:var(--mono)"></span>
+        <span class="dz-timer" id="dzTimer">45:00</span>
+        <button class="btn" id="dzTimerBtn" style="font-size:12.5px">▶ Timer</button>
+        <button class="btn" id="dzExport" style="font-size:12.5px">⬇ Export</button>
+      </div>
+
+      <input type="text" id="dzTitle" class="dz-title-input" placeholder="System to design…" />
+
+      <div id="dzSteps"></div>
+
+      <div class="row" style="margin-top:18px">
+        <button class="btn" id="dzDelete" style="color:var(--hot);border-color:var(--hot)">Delete design</button>
+      </div>
+    </div>
+  </div>
+
+  <style is:global>
+    .dz-card { display:flex; align-items:center; gap:14px; padding:14px 16px; border:1px solid var(--line); border-radius:12px; background:var(--panel); margin-bottom:9px; cursor:pointer; transition:.15s; }
+    .dz-card:hover { border-color:var(--accent); background:var(--panel-2); }
+    .dz-card-body { flex:1; min-width:0; }
+    .dz-card-body b { font-size:15px; }
+    .dz-card-body div { font-size:12px; color:var(--muted); font-family:var(--mono); margin-top:2px; }
+    .dz-card-prog { font-family:var(--mono); font-size:12px; color:var(--accent-2); flex:0 0 auto; }
+    .dz-empty { padding:24px; text-align:center; color:var(--muted); border:1px dashed var(--line); border-radius:12px; font-size:13px; }
+
+    .dz-title-input { width:100%; margin-top:14px; padding:12px 14px; border-radius:12px; border:1px solid var(--line); background:var(--panel); color:var(--text); font-size:20px; font-weight:700; }
+    .dz-title-input:focus { outline:none; border-color:var(--accent); }
+
+    .dz-step { border:1px solid var(--line); border-radius:13px; margin-top:12px; overflow:hidden; background:var(--panel); }
+    .dz-step-head { display:flex; align-items:center; gap:11px; padding:13px 16px; }
+    .dz-step-n { flex:0 0 auto; width:26px; height:26px; border-radius:8px; background:var(--accent-deep); color:#fff; font-weight:800; font-size:13px; display:grid; place-items:center; }
+    .dz-step-title { font-size:15px; font-weight:600; }
+    .dz-step-hint { padding:0 16px 10px; font-size:12.5px; color:var(--muted); line-height:1.5; }
+    .dz-step textarea { width:100%; border:none; border-top:1px solid var(--line); background:#0b0e16; color:var(--text); padding:13px 16px; font-family:var(--mono); font-size:13px; line-height:1.6; resize:vertical; min-height:90px; }
+    .dz-step textarea:focus { outline:none; }
+    .dz-step.filled .dz-step-n { background:var(--accent-2); color:#06251a; }
+
+    .dz-timer { font-family:var(--mono); font-size:16px; font-weight:700; }
+    .dz-timer.warn { color:var(--warn); } .dz-timer.hot { color:var(--hot); }
+  </style>
+
+  <script define:vars={{ base, STEPS, STARTERS }}>
+    const store = window.SDE2;
+    const el = (id) => document.getElementById(id);
+    let curId = null, saveTimer = null, tId = null, tLeft = 45 * 60;
+
+    function esc(s) { return String(s || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+    const filledCount = (steps) => STEPS.filter((s) => (steps?.[s.key] || '').trim().length > 10).length;
+
+    /* ── list ── */
+    function paintList() {
+      const designs = store.designs();
+      if (!designs.length) { el('dzCards').innerHTML = '<div class="dz-empty">No designs yet. Start one above, or pick a classic prompt below.</div>'; return; }
+      el('dzCards').innerHTML = designs.map((d) => `
+        <div class="dz-card" data-id="${d.id}">
+          <div class="dz-card-body">
+            <b>${esc(d.title || 'Untitled design')}</b>
+            <div>updated ${d.updated}</div>
+          </div>
+          <span class="dz-card-prog">${filledCount(d.steps)} / ${STEPS.length} steps</span>
+        </div>`).join('');
+      el('dzCards').querySelectorAll('.dz-card').forEach((c) => c.addEventListener('click', () => openEditor(c.dataset.id)));
+    }
+
+    /* ── editor ── */
+    function openEditor(id) {
+      curId = id;
+      const d = store.designs().find((x) => x.id === id);
+      if (!d) return;
+      el('dzList').classList.add('hide');
+      el('dzEditor').classList.remove('hide');
+      el('dzTitle').value = d.title || '';
+      el('dzSteps').innerHTML = STEPS.map((s) => `
+        <div class="dz-step ${(d.steps?.[s.key] || '').trim().length > 10 ? 'filled' : ''}" data-step="${s.key}">
+          <div class="dz-step-head"><span class="dz-step-n">${s.n}</span><span class="dz-step-title">${s.title}</span></div>
+          <div class="dz-step-hint">${esc(s.hint)}</div>
+          <textarea data-key="${s.key}" placeholder="${esc(s.ph)}">${esc(d.steps?.[s.key] || '')}</textarea>
+        </div>`).join('');
+      el('dzSteps').querySelectorAll('textarea').forEach((t) => {
+        t.addEventListener('input', () => {
+          t.closest('.dz-step').classList.toggle('filled', t.value.trim().length > 10);
+          scheduleSave();
+        });
+      });
+      resetTimer();
+      window.scrollTo(0, 0);
+    }
+    function gather() {
+      const steps = {};
+      el('dzSteps').querySelectorAll('textarea').forEach((t) => { steps[t.dataset.key] = t.value; });
+      return { title: el('dzTitle').value.trim(), steps };
+    }
+    function scheduleSave() {
+      el('dzSaved').textContent = 'saving…';
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => {
+        store.updateDesign(curId, gather());
+        el('dzSaved').textContent = '✓ saved';
+        setTimeout(() => { if (el('dzSaved').textContent === '✓ saved') el('dzSaved').textContent = ''; }, 1500);
+      }, 500);
+    }
+    function backToList() {
+      if (curId) store.updateDesign(curId, gather());
+      stopTimer();
+      el('dzEditor').classList.add('hide');
+      el('dzList').classList.remove('hide');
+      paintList();
+    }
+
+    /* ── timer ── */
+    function fmt(s) { return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+    function paintTimer() {
+      el('dzTimer').textContent = fmt(tLeft);
+      el('dzTimer').className = 'dz-timer' + (tLeft <= 60 ? ' hot' : tLeft <= 300 ? ' warn' : '');
+    }
+    function resetTimer() { stopTimer(); tLeft = 45 * 60; paintTimer(); }
+    function startTimer() {
+      if (tId) return;
+      tId = setInterval(() => { tLeft = Math.max(0, tLeft - 1); paintTimer(); if (tLeft === 0) { stopTimer(); } }, 1000);
+      el('dzTimerBtn').textContent = '⏸ Pause';
+    }
+    function stopTimer() { if (tId) { clearInterval(tId); tId = null; el('dzTimerBtn').textContent = '▶ Timer'; } }
+
+    /* ── export ── */
+    function exportMd() {
+      const d = store.designs().find((x) => x.id === curId); if (!d) return;
+      let md = `# ${d.title || 'System Design'}\n\n`;
+      STEPS.forEach((s) => { md += `## ${s.n}. ${s.title}\n\n${(d.steps?.[s.key] || '_(empty)_')}\n\n`; });
+      const blob = new Blob([md], { type: 'text/markdown' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = (d.title || 'design').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '.md';
+      a.click();
+    }
+
+    /* ── wire ── */
+    el('dzTitle').addEventListener('input', () => { if (curId) scheduleSave(); });
+    el('dzNew').addEventListener('click', () => { const id = store.addDesign({ title: '' }); openEditor(id); el('dzTitle').focus(); });
+    document.querySelectorAll('.dz-starter').forEach((b) => b.addEventListener('click', () => { const id = store.addDesign({ title: b.dataset.title }); openEditor(id); }));
+    el('dzBack').addEventListener('click', backToList);
+    el('dzTimerBtn').addEventListener('click', () => tId ? stopTimer() : startTimer());
+    el('dzExport').addEventListener('click', exportMd);
+    el('dzDelete').addEventListener('click', () => { if (confirm('Delete this design?')) { store.delDesign(curId); curId = null; backToList(); } });
+
+    paintList();
+  </script>
+</BaseLayout>

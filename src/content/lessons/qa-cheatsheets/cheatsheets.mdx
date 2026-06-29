@@ -1,0 +1,445 @@
+---
+title: "QA automation cheat sheets"
+track: qa-cheatsheets
+summary: "Dense daily reference — CSS/XPath locators, Selenium 4 & Playwright APIs, waits, exceptions, HTTP, REST Assured, SQL, Git, Docker, Linux, regex, JSONPath, annotations, and Big-O."
+order: 1
+est: 18
+difficulty: easy
+priority: know
+tags: [cheatsheet, reference, selenium, playwright, sql, api, git]
+resources:
+  - { label: "CSS selectors (devhints)", url: "https://devhints.io/css" }
+  - { label: "XPath (devhints)", url: "https://devhints.io/xpath" }
+  - { label: "Selenium docs", url: "https://www.selenium.dev/documentation/" }
+  - { label: "Playwright docs", url: "https://playwright.dev/docs/api/class-page" }
+  - { label: "REST Assured", url: "https://github.com/rest-assured/rest-assured/wiki/Usage" }
+  - { label: "JSONPath", url: "https://github.com/json-path/JsonPath" }
+  - { label: "regex101", url: "https://regex101.com/" }
+---
+
+Bookmark this. Everything here is muscle memory worth building. Validate every locator in the DevTools console before it goes into code.
+
+## CSS selectors
+
+```
+#id              .class            tag         tag.class
+.a.b             (element with both classes a AND b)
+[name='q']       [href^='https']   [src$='.png']   [class*='btn']
+[type="text"]    [disabled]        [data-test='x']
+a b              descendant (any depth)
+a > b            direct child
+a + b            adjacent sibling (immediately after)
+a ~ b            general sibling (any after, same parent)
+li:nth-child(2)        :nth-of-type(2)        :first-child   :last-child
+:nth-child(odd)        :nth-last-child(1)     :only-child
+:not(.disabled)        input:checked          a:hover
+ul li:first-child a    (chain)
+```
+
+| Combinator | Meaning |
+|---|---|
+| (space) | Descendant — any depth |
+| `>` | Direct child only |
+| `+` | Immediately following sibling |
+| `~` | Any following sibling |
+
+<div class="callout tip"><div class="ct">Substring matchers</div> `^=` starts-with, `$=` ends-with, `*=` contains. CSS cannot select by visible text or traverse to a parent — use XPath for those.</div>
+
+## XPath
+
+```
+//tag                  any depth          /tag      direct child from context
+//*                    any element        .         current node       ..  parent
+//tag[@attr='val']     //*[@id='x']       //input[@type='submit']
+//button[text()='Login']         //*[.='Login']      (full text match)
+//*[contains(text(),'Log')]      //*[contains(@class,'btn')]
+//a[starts-with(@href,'/user')]  //*[normalize-space()='Save']
+(//input)[1]           first match        (//tr)[last()]      last
+//div[@id='x']//span   descendant span    //li[position()=2]
+//input[@name='q' and @type='text']      //*[@id='a' or @id='b']
+//label[text()='Email']/following-sibling::input
+//td[.='Active']/preceding-sibling::td
+```
+
+### XPath axes
+
+| Axis | Selects |
+|---|---|
+| `child::` | direct children (default axis) |
+| `descendant::` | all nodes below |
+| `parent::` | direct parent |
+| `ancestor::` | all nodes above |
+| `following-sibling::` | siblings after, same parent |
+| `preceding-sibling::` | siblings before |
+| `following::` | everything after in document |
+| `preceding::` | everything before in document |
+| `self::` | current node |
+| `ancestor-or-self::` | self + ancestors |
+
+### XPath functions
+
+```
+text()          contains(a,b)     starts-with(a,b)   normalize-space(s)
+last()          position()        count(//tr)        not(cond)
+string-length() substring(s,2,3)  translate(s,'A','a')  (lowercase trick)
+//*[contains(translate(@class,'ABC','abc'),'btn')]   (case-insensitive)
+```
+
+<div class="callout tip"><div class="ct">CSS vs XPath</div> Prefer CSS (faster, cleaner). Use XPath when you need: text match, parent/ancestor traversal, or axis navigation. Never use absolute XPath (<code>/html/body/div[2]/...</code>) — it is brittle.</div>
+
+## Selenium 4 API quick ref
+
+```java
+WebDriver driver = new ChromeDriver();
+driver.get("https://x.com");
+driver.manage().window().maximize();
+
+// Find
+driver.findElement(By.id("u"));            By.cssSelector("...");  By.xpath("...");
+By.name(), By.className(), By.tagName(), By.linkText(), By.partialLinkText()
+List<WebElement> els = driver.findElements(By.cssSelector(".row"));
+
+// Relative locators (Selenium 4)
+driver.findElement(with(By.tagName("input")).below(By.id("label")));
+// above / below / toLeftOf / toRightOf / near
+
+// Actions
+el.click();  el.sendKeys("text");  el.clear();  el.getText();
+el.getAttribute("value");  el.isDisplayed();  el.isEnabled();  el.isSelected();
+
+// Dropdown
+new Select(el).selectByVisibleText("X");  .selectByValue("x");  .selectByIndex(1);
+
+// Waits
+new WebDriverWait(driver, Duration.ofSeconds(10))
+   .until(ExpectedConditions.elementToBeClickable(By.id("b")));
+
+// Switch contexts
+driver.switchTo().frame("name");  .defaultContent();
+driver.switchTo().alert().accept();  .dismiss();  .sendKeys("x");  .getText();
+driver.switchTo().window(handle);   driver.getWindowHandles();
+
+// Actions class (keyboard/mouse)
+new Actions(driver).moveToElement(el).click().build().perform();
+.dragAndDrop(src,tgt)  .doubleClick(el)  .contextClick(el)  .sendKeys(Keys.ENTER)
+
+// JS, screenshot, navigation
+((JavascriptExecutor)driver).executeScript("arguments[0].click();", el);
+((TakesScreenshot)driver).getScreenshotAs(OutputType.FILE);
+driver.navigate().to(url) / .back() / .forward() / .refresh();
+driver.quit();   // close all   vs   driver.close();  // current window
+```
+
+## Playwright API quick ref (JS/TS)
+
+```js
+await page.goto('https://x.com');
+await page.click('text=Login');
+await page.fill('#email', 'a@b.com');
+
+// Auto-waiting actions
+await loc.click(); .fill('x'); .check(); .uncheck(); .selectOption('v');
+.hover(); .press('Enter'); .setInputFiles('f.png'); .dragTo(target);
+
+// getBy* (preferred, user-facing)
+page.getByRole('button', { name: 'Submit' });
+page.getByText('Welcome');          page.getByLabel('Email');
+page.getByPlaceholder('Search');    page.getByTestId('submit');
+page.getByTitle('Close');           page.getByAltText('logo');
+
+// Locators & filtering
+page.locator('.row').filter({ hasText: 'Active' }).first();
+page.locator('li').nth(2);   .last();   .count();
+
+// Web-first assertions (auto-retry)
+await expect(loc).toBeVisible();  .toHaveText('x');  .toContainText('x');
+.toHaveValue('x');  .toBeEnabled();  .toBeChecked();  .toHaveCount(3);
+await expect(page).toHaveURL(/dashboard/);  .toHaveTitle('X');
+
+// Network mock / auth reuse / waiting
+await page.route('**/api/**', r => r.fulfill({ json: {} }));
+await context.storageState({ path: 'auth.json' });   // save login
+await page.waitForResponse('**/api/data');  .waitForLoadState('networkidle');
+
+// Frames, dialogs, tabs
+page.frameLocator('#iframe').getByRole('button');
+page.on('dialog', d => d.accept());
+const [popup] = await Promise.all([context.waitForEvent('page'), loc.click()]);
+```
+
+## Selenium common exceptions & fixes
+
+| Exception | Cause | Fix |
+|---|---|---|
+| `NoSuchElementException` | Locator not found yet / wrong | Explicit wait `presenceOfElementLocated`; verify locator |
+| `StaleElementReferenceException` | DOM re-rendered, ref outdated | Re-find element; wait for stability; retry |
+| `ElementNotInteractableException` | Hidden/covered/not ready | Wait `elementToBeClickable`; scroll into view |
+| `ElementClickInterceptedException` | Overlay/modal on top | Dismiss overlay; JS click; wait |
+| `TimeoutException` | `until` condition not met in time | Increase wait; fix condition/locator |
+| `InvalidSelectorException` | Malformed CSS/XPath | Fix syntax |
+| `NoSuchFrameException` / `NoAlertPresentException` | switchTo target absent | Wait for frame/alert first |
+| `SessionNotCreatedException` | Driver/browser version mismatch | Align driver (use Selenium Manager) |
+| `WebDriverException` | Generic driver/comms failure | Check driver, browser, env |
+
+## Waits cheat
+
+| Type | Scope | Note |
+|---|---|---|
+| Implicit wait | Global, all `findElement` | Polls up to N sec; set once. Do not mix with explicit |
+| Explicit wait | One condition (`WebDriverWait` + `ExpectedConditions`) | Preferred; waits for a specific state |
+| Fluent wait | Like explicit + polling interval + ignore exceptions | Fine-grained control |
+| Playwright auto-wait | Built into every action/assertion | Default 30s; no manual sleeps needed |
+
+```
+ExpectedConditions: visibilityOfElementLocated, elementToBeClickable,
+  presenceOfElementLocated, invisibilityOf, textToBePresentInElement,
+  alertIsPresent, frameToBeAvailableAndSwitchToIt, titleContains
+```
+
+<div class="callout key"><div class="ct">Never Thread.sleep</div> Hard sleeps waste time (always wait full duration) and still flake (may be too short). Use conditional waits that return as soon as the condition is true.</div>
+
+## HTTP methods
+
+| Method | Purpose | Safe | Idempotent | Body |
+|---|---|---|---|---|
+| GET | Read | Yes | Yes | No |
+| POST | Create / action | No | No | Yes |
+| PUT | Replace (full update) | No | Yes | Yes |
+| PATCH | Partial update | No | No* | Yes |
+| DELETE | Remove | No | Yes | Optional |
+| HEAD | Headers only (no body) | Yes | Yes | No |
+| OPTIONS | Allowed methods / CORS | Yes | Yes | No |
+
+*PATCH is not guaranteed idempotent (depends on the patch).
+
+## HTTP status codes
+
+```
+2xx Success
+  200 OK   201 Created   202 Accepted   204 No Content
+3xx Redirect
+  301 Moved Permanently   302 Found   304 Not Modified   307/308 Temp/Perm
+4xx Client error
+  400 Bad Request   401 Unauthorized (not authenticated)
+  403 Forbidden (authenticated, not allowed)   404 Not Found
+  405 Method Not Allowed   409 Conflict   422 Unprocessable Entity
+  429 Too Many Requests
+5xx Server error
+  500 Internal Server Error   502 Bad Gateway
+  503 Service Unavailable   504 Gateway Timeout
+```
+
+<div class="callout tip"><div class="ct">401 vs 403</div> 401 = "I do not know who you are" (missing/bad credentials). 403 = "I know who you are, but you cannot do this".</div>
+
+## REST Assured — given / when / then
+
+```java
+import static io.restassured.RestAssured.*;
+import static org.hamcrest.Matchers.*;
+
+given()
+    .baseUri("https://api.example.com")
+    .header("Authorization", "Bearer " + token)
+    .contentType(ContentType.JSON)
+    .queryParam("page", 1)
+    .body("{ \"name\": \"Neo\" }")
+.when()
+    .post("/users")
+.then()
+    .statusCode(201)
+    .contentType(ContentType.JSON)
+    .header("Location", containsString("/users/"))
+    .body("name", equalTo("Neo"))
+    .body("id", notNullValue())
+    .body("roles", hasItem("admin"))
+    .time(lessThan(2000L))
+    .extract().path("id");
+```
+
+## API assertion checklist
+
+```
+[ ] Status code correct (200/201/204/4xx...)
+[ ] Content-Type / important response headers
+[ ] Response schema (JSON schema validation)
+[ ] Field values & types correct
+[ ] Required fields present, no nulls where not allowed
+[ ] Array length / pagination metadata
+[ ] Error responses: code + message + shape
+[ ] Auth: 401 without token, 403 wrong role
+[ ] Idempotency (PUT/DELETE twice), boundary inputs
+[ ] Response time within SLA
+```
+
+## SQL quick ref
+
+```sql
+SELECT col1, col2 FROM t WHERE x = 1 AND y > 2
+ORDER BY col1 DESC LIMIT 10;
+
+-- Aggregates + grouping
+SELECT dept, COUNT(*), AVG(salary)
+FROM emp GROUP BY dept HAVING COUNT(*) > 5;
+
+-- WHERE filters rows; HAVING filters groups (after GROUP BY)
+-- Logical order: FROM -> WHERE -> GROUP BY -> HAVING -> SELECT -> ORDER BY -> LIMIT
+```
+
+### Joins
+
+| Join | Returns |
+|---|---|
+| INNER JOIN | Matching rows in both tables |
+| LEFT JOIN | All left + matches (NULLs for no match) |
+| RIGHT JOIN | All right + matches |
+| FULL OUTER JOIN | All rows from both, NULLs where no match |
+| CROSS JOIN | Cartesian product |
+| SELF JOIN | Table joined to itself (alias) |
+
+```sql
+SELECT e.name, d.name
+FROM emp e INNER JOIN dept d ON e.dept_id = d.id;
+
+-- 2nd highest salary
+SELECT MAX(salary) FROM emp WHERE salary < (SELECT MAX(salary) FROM emp);
+-- or
+SELECT DISTINCT salary FROM emp ORDER BY salary DESC LIMIT 1 OFFSET 1;
+
+-- Nth highest (window)
+SELECT salary FROM (
+  SELECT salary, DENSE_RANK() OVER (ORDER BY salary DESC) rnk FROM emp
+) t WHERE rnk = 3;
+
+-- Duplicates
+SELECT email, COUNT(*) FROM users GROUP BY email HAVING COUNT(*) > 1;
+
+-- Common functions
+COUNT() SUM() AVG() MIN() MAX()  DISTINCT  LIKE '%x%'  IN (..)  BETWEEN a AND b
+IS NULL  COALESCE(a,b)  CASE WHEN .. THEN .. ELSE .. END
+```
+
+## Git commands
+
+```
+git clone <url>            git checkout -b feat/x     git switch main
+git add .                  git commit -m "msg"        git commit --amend
+git pull                   git push -u origin feat/x  git fetch
+git merge <b>              git rebase main            git cherry-pick <hash>
+git status                 git diff                   git diff --staged
+git restore <file>         git restore --staged <f>   git reset --soft HEAD~1
+git reset --hard <hash>    git revert <hash>          git clean -fd
+git stash                  git stash pop              git stash list
+git log --oneline --graph --all     git blame <file>     git tag v1.0
+```
+
+| Command | Effect |
+|---|---|
+| `reset --soft` | Move HEAD, keep changes staged |
+| `reset --mixed` (default) | Move HEAD, unstage, keep working changes |
+| `reset --hard` | Move HEAD, discard everything |
+| `revert` | New commit that undoes a commit (safe on shared history) |
+| `merge` | Preserves history, adds merge commit |
+| `rebase` | Linear history, rewrites commits (avoid on shared branches) |
+
+## Docker / CLI commands
+
+```
+docker build -t myapp:1 .          docker images
+docker run -d -p 8080:80 myapp:1   docker ps        docker ps -a
+docker exec -it <id> sh            docker logs -f <id>
+docker stop <id>   docker rm <id>  docker rmi <img>  docker pull <img>
+docker-compose up -d   down   logs -f   ps
+docker network ls      docker volume ls      docker system prune -a
+```
+
+## Test-runner annotations
+
+| Concept | TestNG | JUnit 5 | pytest | Playwright Test |
+|---|---|---|---|---|
+| Test | `@Test` | `@Test` | `def test_x():` | `test('x', ...)` |
+| Before each | `@BeforeMethod` | `@BeforeEach` | fixture (function) | `test.beforeEach` |
+| After each | `@AfterMethod` | `@AfterEach` | fixture teardown | `test.afterEach` |
+| Before all | `@BeforeClass` | `@BeforeAll` | fixture (module/class) | `test.beforeAll` |
+| After all | `@AfterClass` | `@AfterAll` | fixture teardown | `test.afterAll` |
+| Suite setup | `@BeforeSuite` | — | `conftest.py` | global setup |
+| Data-driven | `@DataProvider` | `@ParameterizedTest` | `@pytest.mark.parametrize` | params/projects |
+| Skip | `enabled=false` | `@Disabled` | `@pytest.mark.skip` | `test.skip` |
+| Group/tag | `groups=` | `@Tag` | `@pytest.mark.x` | tags / `grep` |
+| Priority/order | `priority=` | `@Order` | — | — |
+| Assert | `Assert.assertEquals` | `Assertions.assertEquals` | `assert x == y` | `expect(x)` |
+
+```
+TestNG soft assert:   SoftAssert sa = new SoftAssert(); sa.assertTrue(...); sa.assertAll();
+JUnit5 grouped:       assertAll(() -> assertEquals(...), () -> assertTrue(...));
+pytest fixtures:      @pytest.fixture -> yield resource -> teardown after yield
+```
+
+## Regex basics for testers
+
+```
+.        any char            \d \D    digit / non-digit
+\w \W    word / non-word     \s \S    whitespace / non
+^  $     start / end         \b       word boundary
+*  +  ?  0+, 1+, 0-or-1      {2}  {2,} {2,5}   counts
+[abc]    char set            [^abc]   negated set     [a-z0-9]   ranges
+(...)    capture group       (?:...)  non-capture     a|b   alternation
+\.  \\   escape literals
+```
+
+| Pattern | Matches |
+|---|---|
+| `^\d{3}-\d{4}$` | 123-4567 |
+| `[\w.-]+@[\w.-]+\.\w{2,}` | simple email |
+| `^https?://` | http or https URL start |
+| `\b\d{4}\b` | a standalone 4-digit number |
+| `(?i)error` | case-insensitive "error" |
+
+## JSONPath quick ref
+
+```
+$              root           @         current node
+.key  ['key']  child          ..key     recursive descent (any depth)
+[0]  [-1]      index / last   [0,1]     union     [0:3]   slice
+[*]            wildcard (all elements)
+$.store.book[*].author        all authors
+$..price                      every price anywhere
+$.book[?(@.price < 10)]       filter
+$..book[?(@.author=='Neo')]   filter by field
+$.items.length()              (impl-specific)
+```
+
+## Linux commands testers use
+
+```
+ls -la   cd   pwd   cat file   less file   head -n 20   tail -f log
+grep "ERROR" app.log        grep -ri "timeout" .        grep -c "200" access.log
+find . -name "*.log"        find . -mtime -1
+awk '{print $1}' file       sed 's/old/new/g' file      cut -d',' -f2 file
+sort | uniq -c | sort -rn   wc -l file                  diff a b
+chmod +x run.sh   chown   ps aux | grep java   kill -9 <pid>   top   df -h   du -sh
+curl -X POST url -H "..." -d '{}'   curl -i url   curl -s url | jq .
+export VAR=val   echo $VAR   tar -xzf x.tgz   zip   scp   ssh user@host
+journalctl -u svc -f        netstat -tulpn        lsof -i :8080
+```
+
+## Big-O cheat
+
+| Notation | Name | Example |
+|---|---|---|
+| O(1) | Constant | Hash lookup, array index |
+| O(log n) | Logarithmic | Binary search, balanced BST |
+| O(n) | Linear | Single loop, linear search |
+| O(n log n) | Linearithmic | Merge sort, quick sort (avg) |
+| O(n²) | Quadratic | Nested loops, bubble sort |
+| O(2ⁿ) | Exponential | Naive recursion (subsets) |
+| O(n!) | Factorial | Permutations, brute-force TSP |
+
+```
+Common structures:
+  Array      access O(1), search O(n), insert/delete O(n)
+  HashMap    avg get/put O(1), worst O(n)
+  BST (bal.) search/insert/delete O(log n)
+  Stack/Queue push/pop/enqueue/dequeue O(1)
+```
+
+<div class="callout tip"><div class="ct">Rule</div> Validate every locator in the DevTools console (<code>$$("css")</code> / <code>$x("xpath")</code>) before putting it in code, and never use <code>Thread.sleep</code> — always conditional waits.</div>

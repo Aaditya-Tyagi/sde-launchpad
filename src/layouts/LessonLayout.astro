@@ -1,0 +1,142 @@
+---
+import BaseLayout from './BaseLayout.astro';
+import { TRACKS } from '../data/curriculum';
+const { entry, lessons, prev, next } = Astro.props;
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const d = entry.data;
+const trackMeta = TRACKS.find((t) => t.id === d.track);
+const program = trackMeta?.program ?? 'sde2';
+const learnHref = program === 'qa' ? '/qa/tracks' : '/tracks';
+const brandSuffix = program === 'qa' ? 'QA · Automation Launchpad' : 'SDE-2 Launchpad';
+
+// group sidebar lessons by track in curriculum order — scoped to this lesson's program
+const order = TRACKS.filter((t) => t.program === program).map((t) => t.id);
+const grouped = order.map((tid) => ({
+  track: TRACKS.find((t) => t.id === tid),
+  items: lessons.filter((l) => l.data.track === tid).sort((a, b) => a.data.order - b.data.order),
+})).filter((g) => g.items.length);
+
+const diffClass = d.difficulty ? `p-${d.difficulty}` : '';
+const priClass = d.priority ? `p-${d.priority}` : '';
+---
+<BaseLayout title={`${d.title} · ${brandSuffix}`} desc={d.summary} active="tracks" program={program}>
+  <!-- Visualizer registry is only loaded on lesson pages that can use it. -->
+  <script is:inline slot="head" src={`${base}/viz-algos.js`}></script>
+  <div class="wrap" style="max-width:1180px">
+    <div class="lesson-shell">
+      <aside class="lesson-side">
+        {grouped.map((g) => (
+          <div>
+            <div class="grp">{g.track.icon} {g.track.name}</div>
+            {g.items.map((l) => (
+              <a href={`${base}/lessons/${l.id}`} class={l.id === entry.id ? 'active' : ''} data-side-id={l.id}>
+                <span class="side-check" data-side-check={l.id}></span>{l.data.title}
+              </a>
+            ))}
+          </div>
+        ))}
+      </aside>
+
+      <div class="lesson-main">
+        <div class="lesson-head">
+          <div class="crumbs"><a href={`${base}${learnHref}`}>Learn</a> › <a href={`${base}/tracks/${d.track}`}>{trackMeta?.name}</a></div>
+          <h1>{d.title}</h1>
+          <p class="sub">{d.summary}</p>
+          <div class="meta">
+            {d.priority && <span class={`pill ${priClass}`}>{d.priority}</span>}
+            {d.difficulty && <span class={`pill ${diffClass}`}>{d.difficulty}</span>}
+            <span class="tag">⏱ {d.est} min</span>
+            {d.tags.map((t) => <span class="tag">{t}</span>)}
+          </div>
+        </div>
+
+        <!-- progress controls -->
+        <div class="panel" style="padding:14px 16px;margin:18px 0;display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+          <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-size:14px">
+            <input type="checkbox" id="lessonDone" /> Mark complete
+          </label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span class="muted" style="font-size:12.5px">Mastery:</span>
+            <button class="btn mbtn" data-m="1" title="I've learned it">Learned</button>
+            <button class="btn mbtn" data-m="2" title="I've practiced it">Practiced</button>
+            <button class="btn mbtn" data-m="3" title="I could teach it">Can teach</button>
+          </div>
+          <div class="spacer"></div>
+          <button class="btn" id="addCard">＋ Add to flashcards</button>
+          <button class="btn" id="revBtn" title="Flag to revisit">☆ Revisit</button>
+        </div>
+
+        {d.whyAsked && (
+          <div class="callout key">
+            <div class="ct">Why interviewers ask this</div>
+            <div>{d.whyAsked}</div>
+          </div>
+        )}
+
+        <article class="prose">
+          <slot />
+        </article>
+
+        {d.followUps.length > 0 && (
+          <div class="callout warn" style="margin-top:28px">
+            <div class="ct">Likely follow-up questions</div>
+            <ul style="margin:6px 0 0 18px">
+              {d.followUps.map((f) => <li>{f}</li>)}
+            </ul>
+          </div>
+        )}
+
+        {d.resources.length > 0 && (
+          <div style="margin-top:24px">
+            <h3 style="font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:var(--faint)">References</h3>
+            <div class="row" style="margin-top:8px">
+              {d.resources.map((r) => <a class="tag" href={r.url} target="_blank" rel="noopener" style="text-decoration:none">↗ {r.label}</a>)}
+            </div>
+          </div>
+        )}
+
+        <div class="lesson-foot">
+          {prev ? (
+            <a class="navbtn" href={`${base}/lessons/${prev.id}`}><small>← Previous</small><div>{prev.data.title}</div></a>
+          ) : <span class="navbtn" style="opacity:.4"><small>Start of track</small><div>—</div></span>}
+          {next ? (
+            <a class="navbtn" href={`${base}/lessons/${next.id}`} style="text-align:right"><small>Next →</small><div>{next.data.title}</div></a>
+          ) : <span class="navbtn" style="opacity:.4;text-align:right"><small>End of track</small><div>🎉 Done</div></span>}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script define:vars={{ lessonId: entry.id }}>
+    const store = window.SDE2;
+    const doneBox = document.getElementById('lessonDone');
+    const revBtn = document.getElementById('revBtn');
+    const mbtns = [...document.querySelectorAll('.mbtn')];
+
+    function paint() {
+      doneBox.checked = store.isDone(lessonId);
+      const m = store.mastery(lessonId);
+      mbtns.forEach((b) => b.classList.toggle('btn-primary', Number(b.dataset.m) <= m));
+      revBtn.textContent = store.revisit()[lessonId] ? '★ Revisit' : '☆ Revisit';
+      // sidebar checks
+      document.querySelectorAll('[data-side-check]').forEach((el) => {
+        el.textContent = store.isDone(el.dataset.sideCheck) ? '✓ ' : '';
+        el.className = 'side-check ok';
+      });
+    }
+    doneBox.addEventListener('change', () => { store.setDone(lessonId, doneBox.checked); paint(); });
+    mbtns.forEach((b) => b.addEventListener('click', () => {
+      const lvl = Number(b.dataset.m);
+      store.setMastery(lessonId, store.mastery(lessonId) === lvl ? lvl - 1 : lvl);
+      if (lvl >= 1 && !store.isDone(lessonId)) store.setDone(lessonId, true);
+      paint();
+    }));
+    document.getElementById('addCard').addEventListener('click', (e) => {
+      store.trackSrs(lessonId); e.target.textContent = '✓ In flashcards';
+    });
+    revBtn.addEventListener('click', () => { store.toggleRevisit(lessonId); paint(); });
+    store.onChange(paint);
+    paint();
+  </script>
+  <style>.side-check{color:var(--accent-2)}</style>
+</BaseLayout>

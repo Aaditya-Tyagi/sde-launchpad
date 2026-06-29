@@ -1,0 +1,9 @@
+---
+const { type = 'key', title } = Astro.props;
+const labels = { tip: 'Tip', warn: 'Watch out', key: 'Key idea' };
+const heading = title || labels[type] || 'Note';
+---
+<div class={`callout ${type}`}>
+  <div class="ct">{heading}</div>
+  <div><slot /></div>
+</div>

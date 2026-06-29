@@ -1,0 +1,171 @@
+---
+title: "Frontend System Design Framework"
+track: frontend-system-design
+summary: "A 6-step framework for frontend system design interviews — requirements, architecture, component tree, data flow, performance, and trade-offs."
+order: 1
+est: 22
+difficulty: medium
+priority: must
+tags: [frontend-system-design, framework, architecture, requirements, trade-offs]
+whyAsked: "Senior frontend interviews always include a system design round. Interviewers expect a structured approach, not just listing technologies."
+followUps:
+  - "What is the difference between frontend system design and backend system design?"
+  - "How do you decide between SSR and CSR for a given problem?"
+  - "How do you design for mobile vs desktop?"
+  - "How do you handle real-time updates in a frontend system?"
+resources:
+  - { label: "Frontend System Design Guide", url: "https://www.systemdesignhandbook.com/guides/frontend-system-design-interview/" }
+  - { label: "GreatFrontEnd System Design", url: "https://www.greatfrontend.com/system-design" }
+---
+
+Frontend system design asks you to design the **client-side architecture** of a product — how the UI is structured, how data flows, how components communicate, and how performance and accessibility are maintained at scale.
+
+## The 6-step framework
+
+### Step 1: Clarify requirements (5 min)
+
+Always start with questions. Points to clarify:
+
+**Functional:** What must it do?
+- Core user journeys (list them explicitly)
+- Key interactions (search, real-time, offline?)
+- Data shape (static? paginated? streaming?)
+
+**Non-functional:** What constraints matter?
+- Scale: MAU, data volume, expected concurrency
+- Performance targets: LCP < 2.5s? 60fps scrolling?
+- Accessibility: WCAG level?
+- Platforms: web, mobile web, native app?
+- Auth: who sees what?
+
+**Out of scope:** What will you NOT cover?
+- State: "I'll skip auth implementation, focus on the feed"
+
+### Step 2: High-level architecture
+
+Draw the system boundary — what clients exist, what APIs they hit:
+
+```
+Browser                 CDN               Server
+┌─────────────────┐    ┌─────┐    ┌──────────────────┐
+│  React App (SPA)│───▶│ CDN │    │  REST / GraphQL  │
+│  - Next.js (SSR)│    │     │    │  API Gateway     │
+│  - React Native │    └─────┘    │  WebSocket (RT)  │
+└─────────────────┘               └──────────────────┘
+```
+
+Choose rendering strategy:
+| Strategy | When to use |
+|---|---|
+| **CSR (SPA)** | Dashboard, auth-gated, highly interactive |
+| **SSR** | SEO-critical, content-heavy, first-load perf critical |
+| **SSG** | Blog, docs, product pages — content doesn't change per user |
+| **ISR** | SSG with periodic revalidation (Next.js) |
+
+### Step 3: Component architecture
+
+Break the UI into a hierarchy:
+
+```
+<App>
+  <Header>                 ← global, nav
+  <FeedPage>
+    <FeedSidebar>
+    <FeedList>             ← virtualized
+      <PostCard> × N
+        <PostMedia>
+        <PostActions>
+    <InfiniteLoadTrigger>
+  </FeedPage>
+</App>
+```
+
+Identify which components are:
+- **Containers**: fetch data, manage state, pass down via props
+- **Presentational**: receive props, render only
+- **Shared**: design system components (Button, Avatar, Modal)
+
+### Step 4: Data & state management
+
+Categorize state:
+- **Server state**: data from the API — use TanStack Query / SWR
+- **UI state**: open/closed, selected tab — component-local `useState`
+- **Global client state**: theme, auth, user preferences — Zustand / Context
+- **URL state**: pagination cursor, filters — query params (shareable, bookmarkable)
+
+Define the data model for the main entity:
+```ts
+interface Post {
+  id: string;
+  author: { id: string; name: string; avatarUrl: string };
+  content: string;
+  mediaUrls: string[];
+  likeCount: number;
+  commentCount: number;
+  createdAt: string;
+  viewerHasLiked: boolean;
+}
+```
+
+Define API contract:
+```
+GET /api/feed?cursor=xxx&limit=20
+→ { items: Post[], nextCursor: string | null }
+
+POST /api/posts/:id/like
+→ { likeCount: number, viewerHasLiked: boolean }
+```
+
+### Step 5: Performance & optimization
+
+For every system, address:
+
+**Initial load:**
+- Code splitting per route (`React.lazy`, Next.js dynamic imports)
+- Critical CSS inlining; defer non-critical JS
+- Image optimization: WebP, correct sizes, lazy loading, `srcset`
+- Preconnect to API origin
+
+**Runtime:**
+- Virtualize long lists (FlatList / react-window)
+- Memoize expensive derived data (`useMemo`, `createSelector`)
+- Debounce inputs, throttle scroll handlers
+- Optimistic updates for mutations (perceived performance)
+- Prefetch next page when user is 80% through current page
+
+**Bundle:**
+- Tree shaking via ESM
+- Analyze with Webpack Bundle Analyzer / Rollup Visualizer
+- Load heavy libraries asynchronously
+
+**Real-time:**
+- WebSocket for live updates (chat, notifications, live feeds)
+- Server-Sent Events (SSE) for one-way streams (dashboards)
+- Polling as fallback (every 30s for less-critical updates)
+
+### Step 6: Accessibility, error states, and edge cases
+
+Always mention:
+- **Keyboard navigation**: focus management, ARIA roles
+- **Screen readers**: semantic HTML, `aria-label`, live regions
+- **Error states**: empty state, network error, partial failure
+- **Loading states**: skeleton screens vs spinners (skeleton for layout-heavy)
+- **Offline**: offline banner, cached data, queue mutations
+- **Responsive**: mobile-first, touch targets ≥ 44px
+
+## Evaluation rubric
+
+| Area | What interviewers assess |
+|---|---|
+| Requirements | Did you ask the right questions before designing? |
+| Architecture | Appropriate rendering strategy, clean separation of concerns |
+| Data flow | State management choice fits the problem |
+| Performance | List virtualization, code splitting, caching mentioned |
+| Accessibility | At least role/ARIA basics, keyboard nav |
+| Depth | Did you pick one area to go deep on? |
+| Trade-offs | Can you defend your choices against alternatives? |
+
+<div class="callout key">
+  <div class="ct">The senior signal</div>
+  Interviewers give credit for <strong>stating trade-offs</strong>, not for having all the right answers. "I chose cursor pagination over offset because offset has duplicates on live feeds — the trade-off is slightly more complex client code" scores higher than "I'd use pagination" with no justification.
+</div>

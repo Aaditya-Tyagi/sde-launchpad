@@ -1,0 +1,321 @@
+---
+title: "Designing a real automation framework"
+track: qa-framework
+summary: "Go from scripts to a production-shaped framework — framework types and tradeoffs, layered design, config & secrets, data-driven tests, thread-safe parallelism, logging, reporting, retries, and the README that makes it a portfolio piece."
+order: 2
+est: 32
+difficulty: hard
+priority: deep
+tags: [framework, data-driven, reporting, allure, parallel, architecture]
+whyAsked: "Senior automation interviews center on framework design. You'll be asked to architect one on a whiteboard and defend every choice — config, parallelism, reporting, retries."
+followUps:
+  - "Walk me through the layers of your framework."
+  - "How do you manage test data and multiple environments?"
+  - "How do you make WebDriver thread-safe for parallel runs?"
+  - "What goes in your reporting and why?"
+  - "When would you retry a test, and what's the danger?"
+resources:
+  - { label: "Allure Report", url: "https://allurereport.org/" }
+  - { label: "TestNG parallel execution", url: "https://testng.org/#_parallelism_and_time_outs" }
+  - { label: "Maven Surefire", url: "https://maven.apache.org/surefire/maven-surefire-plugin/" }
+---
+
+A framework is what turns a pile of scripts into something maintainable, scalable, and trustworthy. In a senior interview this topic is the main event: you will be asked to design one live and defend every decision. The winning move is to talk in **layers and tradeoffs**, not tools — name the concern, then name the option you chose and why.
+
+## Framework types and honest tradeoffs
+
+There is a well-known evolution of automation framework styles. Know all of them and where each breaks down.
+
+- **Linear (record-and-playback).** One long script per test, no abstraction. Fast to start, impossible to maintain — selectors and data are hardcoded inline, nothing is reused. Fine for a one-off smoke check, never for a suite.
+- **Modular.** Break flows into reusable functions/methods (this is the seed of POM). Removes duplication of *actions*. Still mixes test data into code.
+- **Data-driven.** Separate test *data* from test *logic*; one test method runs over many rows from an external source. Great for "same flow, many inputs" (login matrix, form validation). Adds the cost of a data layer and parameterisation.
+- **Keyword-driven.** Tests are described as keywords ("Login", "AddToCart") in a table, mapped to code. Lets non-coders author tests. Heavy to build and maintain the keyword engine; often over-engineered for the value.
+- **Hybrid.** Combine the useful pieces — POM (modular) + data-driven + a runner + reporting. **This is what almost every real framework is.** When asked "what kind of framework did you build", "hybrid: POM plus data-driven on TestNG/JUnit" is the honest, senior answer.
+- **BDD (Cucumber).** Business-readable Gherkin on top of step definitions. Good when business stakeholders genuinely collaborate on scenarios. Costly and pure overhead when it's just engineers writing Given/When/Then for themselves — see the BDD lesson.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  These are not mutually exclusive levels you pick one of — a real framework is a <strong>hybrid</strong> that layers data-driven execution on top of modular Page Objects, with reporting and parallelism wrapped around it.
+</div>
+
+## Layered structure
+
+Organise by responsibility so each layer has one job and depends only downward.
+
+```
+project-root
+├── pom.xml / build.gradle        # build + dependency management
+├── README.md                     # the portfolio piece (see below)
+├── testng.xml / suites/          # which tests run, parallelism config
+├── .github/workflows/ci.yml      # run on every push
+└── src
+    ├── main/java/...
+    │   ├── pages/                 # Page Objects — locators + actions
+    │   ├── components/            # reusable widgets (header, modal)
+    │   ├── driver/                # DriverFactory + ThreadLocal manager
+    │   ├── config/                # ConfigReader, env selection
+    │   ├── utils/                 # waits, JSON/CSV, API, DB, screenshots
+    │   └── listeners/             # TestNG/JUnit listeners (screenshots, retry)
+    └── test/
+        ├── java/tests/            # test classes — orchestrate + assert
+        └── resources/
+            ├── config/            # dev.properties, staging.properties
+            ├── data/              # test data (JSON/CSV/Excel)
+            └── log4j2.xml         # logging config
+```
+
+The golden rule: **tests depend on pages, pages depend on driver+utils, nothing depends on tests.** If a util imports a test, the layering is broken.
+
+## Config & secrets / multi-environment
+
+Hardcoding URLs, credentials, or tokens is an instant red flag. A framework must run the *same* suite against dev, staging, and prod by changing one input.
+
+The standard pattern: per-environment property files selected by a system property, with secrets injected from the environment (never committed).
+
+```java
+public final class Config {
+    private static final Properties props = new Properties();
+
+    static {
+        String env = System.getProperty("env", "staging"); // -Denv=prod
+        String file = "/config/" + env + ".properties";
+        try (InputStream in = Config.class.getResourceAsStream(file)) {
+            props.load(in);
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot load config for env=" + env, e);
+        }
+    }
+
+    public static String baseUrl() { return props.getProperty("base.url"); }
+
+    // secrets come from env vars / CI secret store, NEVER the properties file
+    public static String apiToken() {
+        String t = System.getenv("API_TOKEN");
+        if (t == null) throw new IllegalStateException("API_TOKEN not set");
+        return t;
+    }
+}
+```
+
+Run it: `mvn test -Denv=staging`. The precedence rule to state out loud: `CLI/system property > environment variable > properties file > sane default`. Commit `*.properties` for non-secret config; keep secrets in CI's secret store (GitHub Actions secrets, Vault) and read them via `System.getenv`. A `.env.example` documents required keys without leaking values.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Never commit real credentials or tokens — not even to a private repo. Interviewers explicitly probe this. Secrets come from the environment at runtime; the repo holds only the <em>names</em> of the keys it expects.
+</div>
+
+## Data-driven testing (external data sources)
+
+Keep logic and data apart so adding a case is a data edit, not a code edit.
+
+```java
+// TestNG DataProvider sourcing rows from a JSON file
+@DataProvider(name = "loginCases")
+public Object[][] loginCases() throws IOException {
+    return JsonData.read("/data/login.json", LoginCase.class)
+                   .stream()
+                   .map(c -> new Object[]{ c.user, c.password, c.shouldSucceed })
+                   .toArray(Object[][]::new);
+}
+
+@Test(dataProvider = "loginCases")
+public void login(String user, String pass, boolean shouldSucceed) {
+    InventoryPage inv = new LoginPage(driver).open().attemptLogin(user, pass);
+    Assert.assertEquals(inv.isLoaded(), shouldSucceed);
+}
+```
+
+```python
+# pytest equivalent
+@pytest.mark.parametrize("user,pwd,ok", load_cases("login.json"))
+def test_login(user, pwd, ok):
+    assert attempt_login(user, pwd) == ok
+```
+
+Common sources: JSON (clean, typed, version-controllable — preferred), CSV (simple tabular), Excel (stakeholder-friendly via Apache POI, but heavier), and databases or an API for data the test must generate fresh. Prefer **generating** test data over relying on fixed seed rows when isolation matters.
+
+## Thread-safe parallel execution
+
+This is the most technical part of the topic and a frequent deep-dive. WebDriver is **not thread-safe**: if parallel tests share one driver instance, they stomp on each other's browser. The fix is a `ThreadLocal<WebDriver>` so every thread gets its own driver.
+
+```java
+public final class DriverManager {
+    private static final ThreadLocal<WebDriver> TL = new ThreadLocal<>();
+
+    public static void set(WebDriver driver) { TL.set(driver); }
+    public static WebDriver get() { return TL.get(); }
+
+    public static void unload() {
+        WebDriver d = TL.get();
+        if (d != null) {
+            d.quit();
+            TL.remove();   // CRITICAL: prevents thread-pool memory leaks
+        }
+    }
+}
+
+public final class DriverFactory {
+    public static WebDriver create(String browser) {
+        return switch (browser.toLowerCase()) {
+            case "firefox" -> new FirefoxDriver(firefoxOpts());
+            case "chrome"  -> new ChromeDriver(chromeOpts());
+            default -> throw new IllegalArgumentException("Unknown browser: " + browser);
+        };
+    }
+}
+```
+
+```java
+public class BaseTest {
+    @BeforeMethod
+    public void setUp() {
+        DriverManager.set(DriverFactory.create(Config.browser()));
+    }
+    @AfterMethod
+    public void tearDown() {
+        DriverManager.unload(); // quit + remove, every time
+    }
+    protected WebDriver driver() { return DriverManager.get(); }
+}
+```
+
+Then enable parallelism in `testng.xml`:
+
+```xml
+<suite name="regression" parallel="methods" thread-count="4">
+  <test name="all"><classes>...</classes></test>
+</suite>
+```
+
+The senior points to make: WebDriver isn't thread-safe so each thread needs its own instance via `ThreadLocal`; **always `remove()` in teardown** (thread pools reuse threads, so a stale `ThreadLocal` leaks drivers and memory); and tests themselves must be **independent** — no shared mutable state, no ordering assumptions, isolated test data — or parallelism just surfaces hidden coupling as flakiness.
+
+## Logging
+
+Use a real logging framework (Log4j2 / SLF4J in Java, the `logging` module in Python), not `System.out.println`. Log at meaningful boundaries — test start/end, key actions, the value of dynamic data — so a CI failure is diagnosable from the log alone. Use levels deliberately: `INFO` for flow milestones, `DEBUG` for detail you enable when chasing a bug, `ERROR` on failures with the exception attached. Correlate logs per test/thread so a parallel run is still readable.
+
+## Reporting (Allure / Extent)
+
+A framework that can't communicate results to a stakeholder is half-built. Reports turn "12 failed" into an actionable story: which tests, which step, with a screenshot and the stack trace. (Full detail lives in the reporting lesson.)
+
+- **Allure** — language-agnostic, beautiful trend/history graphs, severity and step annotations, attachments. The default recommendation for a portfolio framework.
+- **Extent Reports** — Java-centric, rich interactive HTML, easy to embed screenshots; popular in TestNG suites.
+- **Playwright HTML report + trace viewer** — built-in, and the trace viewer (DOM snapshots + network + console per action) is best-in-class for debugging.
+
+A good report shows pass/fail counts and trend over time, per-test steps, the failing assertion and stack trace, an attached screenshot/video/trace, and the environment it ran against.
+
+## Screenshots / video on failure via listeners/hooks
+
+Capture evidence automatically on failure — never manually. In TestNG, an `ITestListener` hooks the failure event:
+
+```java
+public class ScreenshotListener implements ITestListener {
+    @Override
+    public void onTestFailure(ITestResult result) {
+        WebDriver d = DriverManager.get();
+        if (d instanceof TakesScreenshot ts) {
+            byte[] png = ts.getScreenshotAs(OutputType.BYTES);
+            Allure.addAttachment(result.getName(), new ByteArrayInputStream(png));
+        }
+    }
+}
+```
+
+In Playwright it's pure config — no listener code:
+
+```typescript
+// playwright.config.ts
+export default defineConfig({
+  use: {
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
+    trace: 'on-first-retry',
+  },
+});
+```
+
+## Retry strategy
+
+Retries are a sharp tool. The honest position to take: **retry only genuinely flaky externalities (network blips, third-party slowness); never retry to paper over a real bug or a race in your own test.** A passing-on-retry test should be tagged and investigated, not celebrated.
+
+```java
+public class Retry implements IRetryAnalyzer {
+    private int count = 0;
+    private static final int MAX = 1; // one retry, not five
+    @Override public boolean retry(ITestResult result) {
+        return count++ < MAX;
+    }
+}
+```
+
+Cap retries low (1, maybe 2), and surface retried-then-passed tests prominently in the report so flakiness stays visible. Auto-retrying with a high cap hides systemic problems and erodes trust in the suite.
+
+## Dependency injection note
+
+As the framework grows, manually `new`-ing drivers, config, and page objects everywhere becomes wiring noise. Lightweight DI (PicoContainer with Cucumber, Spring in larger Java suites, or constructor injection of a context object) lets shared state — the driver, the config, the logged-in user — be provided to steps/tests rather than constructed inline. The interview point: DI is how you **share state cleanly across steps without static globals**, which matters most in BDD (covered in the Cucumber lesson).
+
+## Building the project (Maven / Gradle)
+
+`pom.xml` / `build.gradle` declares dependencies (Selenium/Playwright, TestNG/JUnit, Allure, Log4j2) and binds the test phase to Surefire/Gradle test, which is what CI invokes. The whole suite must run from **one command** — `mvn clean test -Denv=staging` — with no manual setup. If running your suite takes a wiki page of steps, it isn't a framework yet.
+
+## The README (recruiters and interviewers read this)
+
+For a portfolio project the README is the cover letter. Cover: what it tests and the stack; one-command install and run; the folder structure and design rationale (why POM, why ThreadLocal); how to switch environments; a sample report screenshot; and the CI badge. A crisp README converts a repo from "some code" into evidence you can build and explain a system.
+
+## "Design a framework on the whiteboard" walkthrough
+
+When asked to design one live, narrate in this order — it shows you think in concerns, not tools:
+
+1. **Tech choice + why** — "Selenium + Java + TestNG, or Playwright + TS; I'll pick Playwright for auto-waiting and the trace viewer."
+2. **Structure** — sketch the layers: tests → pages/components → driver/utils/config.
+3. **POM** — pages own locators + actions, return next pages, no assertions inside.
+4. **Config & secrets** — per-env property files selected by `-Denv`, secrets from env vars.
+5. **Test data** — external JSON, data-driven via DataProvider/parametrize.
+6. **Parallelism** — `ThreadLocal` driver, independent tests, `remove()` in teardown.
+7. **Cross-cutting** — logging, screenshots-on-failure via listener, retry capped at 1.
+8. **Reporting** — Allure with steps, attachments, history.
+9. **CI** — GitHub Actions runs the suite on every push and publishes the report.
+10. **README** — ties it together as a portfolio artifact.
+
+Hit those ten and you've demonstrated the full surface area in five minutes.
+
+## Interview questions & model answers
+
+**1. What kind of framework did you build?**
+A hybrid: Page Object Model for structure, data-driven execution for input coverage, on TestNG (or Playwright Test), with config-per-environment, ThreadLocal parallelism, Allure reporting, and GitHub Actions CI. "Hybrid" is the honest answer because real frameworks combine modular pages with data-driven runs rather than being one pure style.
+
+**2. Walk me through your layers.**
+Tests orchestrate and assert; they depend on Page Objects, which own locators and actions; pages depend on a driver layer (DriverFactory + ThreadLocal manager) and utils (waits, data, screenshots); config is read from per-env property files; listeners handle cross-cutting concerns like screenshots and retries. Dependencies point one way — nothing depends on the tests.
+
+**3. How do you handle multiple environments and secrets?**
+Per-environment property files (`dev`, `staging`, `prod`) selected by a system property like `-Denv=staging`. Non-secret config lives in those files in the repo; secrets (tokens, passwords) come from environment variables or the CI secret store and are read via `System.getenv`, never committed. Precedence is `CLI property > env var > file > default`.
+
+**4. WebDriver isn't thread-safe — how do you run tests in parallel?**
+Each thread gets its own driver via a `ThreadLocal<WebDriver>`, set in `@BeforeMethod` and quit-and-removed in `@AfterMethod`. The `remove()` is essential because thread pools reuse threads, so a leftover ThreadLocal leaks drivers and memory. Tests must also be independent — no shared state, no ordering — or parallelism exposes hidden coupling as flakiness.
+
+**5. When do you retry a failed test, and what's the risk?**
+Only for genuinely flaky externalities like network or third-party slowness, capped at one retry. The risk is masking real bugs and races in my own tests: a high retry count hides systemic flakiness and erodes trust in the suite. I tag tests that pass only on retry and investigate them rather than treating green-on-retry as a pass.
+
+**6. What does your report contain and why?**
+Pass/fail counts and trend over time, per-test steps, the failing assertion with stack trace, an attached screenshot or trace, and the target environment. The point is that a stakeholder or on-call engineer can understand a failure without rerunning it — the report is the communication layer of the framework.
+
+**7. How do you capture a screenshot on failure?**
+Automatically via a listener/hook, never manually. In TestNG an `ITestListener.onTestFailure` grabs `TakesScreenshot` bytes and attaches them to the report; in Playwright it's config (`screenshot: 'only-on-failure'`, plus video and trace). Automatic capture means evidence exists for every failure, including ones in CI you can't reproduce locally.
+
+**8. How would you keep the framework maintainable as it grows to thousands of tests?**
+Strict layering and POM so change cost scales with pages not tests; component objects for shared widgets; data-driven tests so coverage grows by data not code; a base test/driver factory so setup logic lives once; consistent waits and locator strategy to keep flakiness low; and CI plus trend reporting so regressions and flaky tests are caught early rather than discovered manually.
+
+## Common mistakes
+
+- Naming tools instead of concerns when asked to design — list config, parallelism, reporting, retries explicitly.
+- Hardcoding URLs/credentials, or committing secrets to the repo.
+- Sharing one WebDriver across parallel threads, or forgetting `ThreadLocal.remove()` and leaking drivers.
+- Tests with hidden ordering dependencies that only break under parallel execution.
+- Treating retries as a fix for flakiness instead of investigating root causes.
+- A framework that needs a wiki page of manual steps to run instead of one command.
+- A thin or missing README on a portfolio project — interviewers read it first.
+- Building a heavy keyword-driven engine when a hybrid POM + data-driven suite would do.
+
+<div class="callout key">
+  <div class="ct">Deliverable</div>
+  One GitHub repo — POM + data-driven + per-env config + ThreadLocal parallelism + logging + Allure + a GitHub Actions workflow that runs on every push and publishes the report. This single project demonstrates ~70% of SDET skills at once and gives you concrete stories for every question above.
+</div>

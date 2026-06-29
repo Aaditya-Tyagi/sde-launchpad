@@ -1,0 +1,330 @@
+---
+title: "BDD with Cucumber & Gherkin"
+track: qa-framework
+summary: "Behaviour-Driven Development end to end — the three amigos, full Gherkin syntax, step definitions and glue, hooks, the runner, parameter types, sharing state via DI, and the honest case for when BDD helps versus when it's pure overhead."
+order: 3
+est: 28
+difficulty: medium
+priority: deep
+tags: [bdd, cucumber, gherkin, collaboration, picocontainer]
+whyAsked: "BDD comes up whenever a team mentions Cucumber or 'business-readable tests'. Interviewers want to know you understand the philosophy — and can say honestly when it's overkill."
+followUps:
+  - "What is BDD actually for — who is it for?"
+  - "What's the difference between a Scenario Outline and a Background?"
+  - "How do you share state between step definitions?"
+  - "Declarative vs imperative steps — which is right?"
+  - "When is Cucumber the wrong choice?"
+resources:
+  - { label: "Cucumber docs", url: "https://cucumber.io/docs/cucumber/" }
+  - { label: "Gherkin reference", url: "https://cucumber.io/docs/gherkin/reference/" }
+  - { label: "Cucumber for Java", url: "https://cucumber.io/docs/installation/java/" }
+---
+
+Behaviour-Driven Development (BDD) is a collaboration practice first and a testing tool second. The most common interview mistake is treating Cucumber as "tests written in English". The senior framing: **BDD is about getting business, dev, and QA to agree on behaviour in a shared language *before* code is written** — the automation is a by-product of that agreement.
+
+## BDD philosophy & the three amigos
+
+BDD grew out of TDD to fix a communication gap: developers, testers, and product people described the same feature differently and discovered the mismatch late. BDD creates a **ubiquitous language** — concrete examples of behaviour, phrased in business terms, that everyone reads the same way.
+
+The core ritual is the **three amigos**: before building a feature, three perspectives meet —
+
+- **Business / Product** — what problem are we solving and what's the desired behaviour?
+- **Development** — what's technically feasible and what are the edge cases?
+- **QA / Testing** — how will we know it works, and what could break?
+
+They turn the conversation into concrete examples, which become Gherkin scenarios. Those scenarios serve triple duty: a spec (what to build), a shared definition of done, and — once automated — a regression test. This is why BDD's value is realised *before* automation; if no business person ever reads or contributes to the `.feature` files, you've paid BDD's cost without buying its benefit.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Gherkin's audience is humans who don't read code. Its whole point is a living specification that a product owner can read and confirm. If the only readers are engineers, plain test code is usually better.
+</div>
+
+## Gherkin syntax in full
+
+Gherkin is the structured language for scenarios. A `.feature` file uses a small, fixed set of keywords.
+
+```gherkin
+Feature: Shopping cart checkout
+  As a shopper
+  I want to check out my cart
+  So that I can buy the items I selected
+
+  Background:
+    Given I am logged in as "standard_user"
+    And my cart contains a "Sauce Labs Backpack"
+
+  @smoke @checkout
+  Scenario: Successful checkout with valid details
+    When I proceed to checkout
+    And I enter shipping details "Ada", "Lovelace", "94016"
+    And I confirm the order
+    Then I should see the order confirmation
+    But I should not see any error message
+
+  @regression
+  Scenario Outline: Checkout fails with missing details
+    When I proceed to checkout
+    And I enter shipping details "<first>", "<last>", "<zip>"
+    Then I should see the error "<message>"
+
+    Examples:
+      | first | last     | zip   | message                  |
+      |       | Lovelace | 94016 | First Name is required   |
+      | Ada   |          | 94016 | Last Name is required    |
+      | Ada   | Lovelace |       | Postal Code is required  |
+```
+
+The pieces:
+
+- **`Feature`** — names the capability; the indented free text is documentation, ignored by the runner.
+- **`Scenario`** — one concrete example of behaviour.
+- **`Given`** — context / preconditions ("the world is in this state").
+- **`When`** — the action / event under test.
+- **`Then`** — the expected, observable outcome (this is where assertions conceptually live).
+- **`And` / `But`** — continue the previous keyword's intent; purely for readability (`But` reads as a negative `And`). The runner treats `And`/`But` exactly like the keyword above them.
+- **`Background`** — steps run before *every* scenario in the file; use for shared setup, not for hiding important context.
+- **`Scenario Outline` + `Examples`** — a parameterised scenario. Placeholders in `<angle brackets>` are filled from each row of the `Examples` table — this is Gherkin's data-driven mechanism (one scenario, many cases).
+- **`@tags`** — labels on features/scenarios for filtering runs (`@smoke`, `@regression`) and for hook targeting.
+
+### Data tables and doc strings
+
+For richer step input, Gherkin offers data tables and doc strings.
+
+```gherkin
+  Scenario: Bulk add items to cart
+    When I add the following items:
+      | item                  | quantity |
+      | Sauce Labs Backpack   | 1        |
+      | Sauce Labs Bike Light | 2        |
+    Then my cart total count should be 3
+
+  Scenario: Submit a support request
+    When I submit a message:
+      """
+      Order #1042 never arrived.
+      Please refund or resend.
+      """
+    Then I should see "Ticket created"
+```
+
+A **data table** (pipe-delimited) passes structured tabular data into a single step. A **doc string** (triple-quoted) passes a multi-line block — useful for JSON payloads, long text, or messages.
+
+## Step definitions (Java Cucumber + glue)
+
+Each Gherkin step matches a **step definition** — a method annotated with the step text as a pattern. The mapping from Gherkin to step-def code is called the **glue**.
+
+```java
+package steps; // this package is the "glue"
+
+import io.cucumber.java.en.*;
+import io.cucumber.datatable.DataTable;
+import static org.assertj.core.api.Assertions.assertThat;
+
+public class CheckoutSteps {
+
+    private final TestContext ctx; // shared state, injected (see DI section)
+
+    public CheckoutSteps(TestContext ctx) {  // constructor injection via PicoContainer
+        this.ctx = ctx;
+    }
+
+    @Given("I am logged in as {string}")
+    public void loggedInAs(String user) {
+        ctx.inventory = new LoginPage(ctx.driver).open().loginAs(user, "secret_sauce");
+    }
+
+    @When("I enter shipping details {string}, {string}, {string}")
+    public void enterShipping(String first, String last, String zip) {
+        ctx.checkout = ctx.cart.checkout().enterDetails(first, last, zip);
+    }
+
+    @Then("I should see the error {string}")
+    public void shouldSeeError(String message) {
+        assertThat(ctx.checkout.errorMessage()).isEqualTo(message);
+    }
+
+    @When("I add the following items:")
+    public void addItems(DataTable table) {
+        for (var row : table.asMaps()) {           // each row -> Map<String,String>
+            ctx.inventory.add(row.get("item"), Integer.parseInt(row.get("quantity")));
+        }
+    }
+}
+```
+
+Note the step-def layer is thin — it translates a sentence into Page Object calls. Real interaction logic stays in the POM; assertions live in `Then` steps. The `{string}` and `{int}` tokens are **Cucumber Expressions**, the modern, readable alternative to raw regex.
+
+## Hooks
+
+Hooks run setup/teardown around scenarios without cluttering the Gherkin. They are the BDD equivalent of `@BeforeMethod`/`@AfterMethod`.
+
+```java
+import io.cucumber.java.*;
+
+public class Hooks {
+    private final TestContext ctx;
+    public Hooks(TestContext ctx) { this.ctx = ctx; }
+
+    @Before
+    public void setUp() {
+        ctx.driver = DriverFactory.create("chrome");
+    }
+
+    @Before("@smoke")             // tagged hook: only runs for @smoke scenarios
+    public void markSmoke() { /* ... */ }
+
+    @After
+    public void tearDown(Scenario scenario) {
+        if (scenario.isFailed()) {
+            byte[] png = ((TakesScreenshot) ctx.driver)
+                    .getScreenshotAs(OutputType.BYTES);
+            scenario.attach(png, "image/png", scenario.getName());
+        }
+        ctx.driver.quit();
+    }
+}
+```
+
+`@Before`/`@After` wrap every scenario; tagged hooks (`@Before("@smoke")`) target a subset. There are also `@BeforeStep`/`@AfterStep` and `@BeforeAll`/`@AfterAll` for suite-wide once-only setup.
+
+## The runner
+
+A runner ties feature files to glue and drives execution. The modern Java approach uses JUnit 5 with the Cucumber engine and properties, rather than the older `@RunWith(Cucumber.class)` runner class:
+
+```properties
+# junit-platform.properties
+cucumber.glue=steps
+cucumber.features=src/test/resources/features
+cucumber.filter.tags=@smoke and not @wip
+cucumber.plugin=pretty, html:target/cucumber.html, json:target/cucumber.json
+```
+
+```java
+// RunCucumberTest.java
+import org.junit.platform.suite.api.*;
+import static io.cucumber.junit.platform.engine.Constants.*;
+
+@Suite
+@IncludeEngines("cucumber")
+@SelectClasspathResource("features")
+@ConfigurationParameter(key = GLUE_PROPERTY_NAME, value = "steps")
+public class RunCucumberTest {}
+```
+
+The runner config specifies where features are, where the glue is, which tags to include, and which report plugins to emit. Tag filters (`@smoke and not @wip`) are how you run subsets in CI.
+
+## Parameter types
+
+Cucumber Expressions support built-in parameters (`{string}`, `{int}`, `{float}`, `{word}`) and **custom parameter types** that convert a matched phrase straight into a domain object — removing parsing from your steps.
+
+```java
+@ParameterType("standard_user|locked_out_user|problem_user")
+public User user(String name) {
+    return UserCatalog.lookup(name);   // String -> rich User object
+}
+
+@Given("I am logged in as {user}")
+public void loginAs(User u) {          // step receives a User, not a String
+    ctx.inventory = new LoginPage(ctx.driver).open().loginAs(u.username, u.password);
+}
+```
+
+This keeps steps declarative and pushes type conversion into one reusable place.
+
+## Sharing state between steps (dependency injection)
+
+A scenario's steps live in *different* step-definition classes, yet they must share state — the driver, the current page, data created earlier. The wrong way is `static` fields (breaks parallelism, leaks between scenarios). The right way is **dependency injection**: a fresh shared context object is constructed per scenario and injected into each step class that needs it.
+
+Cucumber's lightweight default is **PicoContainer** (add `cucumber-picocontainer`). You write no wiring — Pico sees the constructor parameter and provides a single shared instance per scenario.
+
+```java
+public class TestContext {        // one instance per scenario, auto-injected
+    public WebDriver driver;
+    public InventoryPage inventory;
+    public CartPage cart;
+    public CheckoutPage checkout;
+}
+```
+
+Because each step class declares `TestContext` in its constructor, Pico injects the *same* instance into all of them for that scenario, then discards it — giving clean state per scenario and parallel-safety. (Larger Java projects sometimes use the Spring or Guice modules instead; the principle is identical.)
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Sharing state via <code>static</code> fields is the classic Cucumber bug: it leaks data between scenarios and breaks under parallel execution. Always share through an injected, per-scenario context object.
+</div>
+
+## Reports
+
+Cucumber emits machine- and human-readable reports via plugins: `pretty` (console), `html` (a standalone HTML report), and `json` (consumed by richer reporters). The JSON output is the integration point for Allure or the Cucumber Reports plugin, which add trends, history, and embedded screenshots/attachments from hooks. Attachments added in an `@After` hook (like the failure screenshot above) show up inline in the report against the failing scenario.
+
+## When BDD helps vs when it's overkill
+
+The most senior thing you can say about BDD is **when not to use it**.
+
+**BDD earns its keep when:**
+
+- Business stakeholders genuinely read and contribute to scenarios — acceptance criteria are co-authored in Gherkin.
+- The domain is rich and behaviour-heavy, where concrete examples clear up ambiguity.
+- Living documentation has real value (regulated domains, complex business rules).
+
+**BDD is overkill / harmful when:**
+
+- Only engineers ever touch the feature files. You then maintain an extra translation layer (Gherkin ↔ glue) with zero collaboration benefit — plain test methods are simpler and faster.
+- It's used purely as a "test framework" because someone heard Cucumber is standard. That's cargo-culting.
+- Steps drift to **imperative** detail, defeating readability (see below).
+
+### Imperative vs declarative steps (anti-pattern)
+
+This distinction is a favourite interview probe.
+
+```gherkin
+# IMPERATIVE — bad: describes UI mechanics, brittle, unreadable to business
+When I type "standard_user" into the field with id "user-name"
+And I type "secret_sauce" into the field with id "password"
+And I click the button with id "login-button"
+
+# DECLARATIVE — good: describes intent, stable, business-readable
+When I log in as a standard user
+```
+
+Imperative steps couple Gherkin to the DOM and recreate the very mess POM exists to remove — and they're meaningless to a product owner. **Keep Gherkin declarative (intent-level); push the mechanics down into step definitions and Page Objects.** A `.feature` file should read like a behaviour spec, not a UI macro.
+
+Other anti-patterns: scenarios that are too long (split them), `Background` overuse hiding important context, conjunction steps (`When I do X and Y` — split into two steps), and a sprawling glue with near-duplicate steps because nobody reused parameter types.
+
+## Interview questions & model answers
+
+**1. What is BDD actually for?**
+Collaboration. It gets business, dev, and QA to agree on behaviour using concrete examples in a shared language before code is written — the three amigos turning conversations into Gherkin scenarios. Those scenarios act as spec, definition of done, and later a regression test. The automation is a by-product; the primary value is shared understanding, which is why BDD without business participation is just expensive test code.
+
+**2. Difference between Background and Scenario Outline?**
+A `Background` is shared setup steps that run before every scenario in a feature — it reduces duplication of context. A `Scenario Outline` is a single parameterised scenario run once per row of its `Examples` table — it's Gherkin's data-driven mechanism for the same behaviour across many inputs. One is about shared preconditions; the other is about repeating a scenario with varying data.
+
+**3. How do steps in different classes share state?**
+Via dependency injection of a per-scenario context object, not static fields. With Cucumber's PicoContainer, each step class declares the shared context in its constructor and Pico injects the same instance into all step classes for that scenario, then discards it. This gives clean state per scenario and is parallel-safe; static sharing leaks between scenarios and breaks under parallelism.
+
+**4. Imperative vs declarative steps — which and why?**
+Declarative. Imperative steps describe UI mechanics ("type into field id user-name, click button id login"), which couples Gherkin to the DOM, makes it brittle, and renders it meaningless to non-technical readers. Declarative steps describe intent ("log in as a standard user") and push mechanics down into step definitions and Page Objects. Since Gherkin's audience is humans who don't read code, intent-level steps are the whole point.
+
+**5. What's the glue?**
+The mapping between Gherkin steps and their step-definition methods. Concretely it's the package(s) containing your step defs and hooks, pointed to by the runner's glue configuration. When Cucumber parses a step, it searches the glue for a method whose Cucumber Expression matches the step text and invokes it.
+
+**6. When would you NOT use Cucumber?**
+When no business stakeholder reads or writes the scenarios — if only engineers touch the feature files, you pay for an extra Gherkin-to-glue translation layer with none of the collaboration benefit, and plain test methods are simpler. BDD is also wrong when adopted just because it's "standard", or when scenarios drift to imperative UI detail. Use it where living, co-authored specification genuinely adds value.
+
+**7. How do you capture a screenshot on a failed scenario in Cucumber?**
+In an `@After` hook that takes a `Scenario` parameter, check `scenario.isFailed()`, grab the screenshot bytes via `TakesScreenshot`, and call `scenario.attach(...)`. The attachment then appears inline in the HTML/Allure report against the failing scenario. Hooks are the BDD equivalent of `@After` teardown and keep this cross-cutting logic out of the Gherkin.
+
+## Common mistakes
+
+- Describing Cucumber as "English tests" and missing the collaboration purpose.
+- Writing imperative, UI-level Gherkin that no business person could read.
+- Sharing state with static fields, breaking isolation and parallelism.
+- Putting interaction logic in step defs instead of delegating to Page Objects.
+- Overusing `Background` to hide context, or writing 20-step mega-scenarios.
+- Adopting BDD when only engineers will ever read the feature files.
+- Duplicating near-identical steps instead of using parameter types / Cucumber Expressions.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  If you can't name a non-engineer who reads your <code>.feature</code> files, you probably don't need Cucumber — and saying so in an interview signals real judgement, not just tool familiarity.
+</div>

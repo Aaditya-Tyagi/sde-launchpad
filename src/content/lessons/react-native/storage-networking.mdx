@@ -1,0 +1,242 @@
+---
+title: "Storage, Networking & Offline Patterns"
+track: react-native
+summary: "AsyncStorage vs MMKV for persistence, React Query for server state, and offline-first patterns with optimistic updates."
+order: 12
+est: 24
+difficulty: medium
+priority: must
+tags: [storage, asyncstorage, mmkv, react-query, tanstack-query, offline, optimistic-updates, networking]
+whyAsked: "Production apps need persistent storage and offline resilience. Interviewers ask about storage performance, server state management, and how you handle unreliable connectivity."
+followUps:
+  - "Why is MMKV faster than AsyncStorage?"
+  - "What is the difference between server state and client state?"
+  - "How does React Query handle caching?"
+  - "What is an optimistic update and how do you roll it back?"
+  - "How do you detect offline state in RN?"
+resources:
+  - { label: "MMKV repo", url: "https://github.com/mrousavy/react-native-mmkv" }
+  - { label: "TanStack Query docs", url: "https://tanstack.com/query/latest" }
+---
+
+## Local storage options
+
+### AsyncStorage — the default, slow choice
+
+AsyncStorage is RN's built-in key-value store. It's simple but has real downsides:
+- **Asynchronous** — every read is async, adding latency to startup
+- **String-only values** — you must `JSON.stringify/parse` everything
+- **Single-threaded JS reads** — not offloaded, competes with your JS thread
+- **No encryption** — not suitable for sensitive data
+
+```ts
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// Write
+await AsyncStorage.setItem('user', JSON.stringify(user));
+
+// Read
+const raw = await AsyncStorage.getItem('user');
+const user = raw ? JSON.parse(raw) : null;
+
+// Multi-get (batched)
+const [[, token], [, user]] = await AsyncStorage.multiGet(['token', 'user']);
+```
+
+### MMKV — the fast alternative
+
+[react-native-mmkv](https://github.com/mrousavy/react-native-mmkv) is a C++ key-value store (WeChat's production storage). Key advantages:
+- **~30x faster** than AsyncStorage — reads are synchronous (native memory-mapped file)
+- **Synchronous reads** — no `await`, no latency at startup
+- **Supports multiple types** — strings, numbers, booleans, bytes natively
+- **Optional AES encryption**
+- **Supports multiple instances** (isolated stores per domain)
+
+```ts
+import { MMKV } from 'react-native-mmkv';
+
+const storage = new MMKV();
+
+// Sync reads — no await
+storage.set('user.token', 'abc123');
+const token = storage.getString('user.token'); // synchronous!
+storage.set('app.darkMode', true);
+const isDark = storage.getBoolean('app.darkMode'); // synchronous
+
+// With encryption
+const secureStorage = new MMKV({ id: 'secure', encryptionKey: 'my-key' });
+```
+
+**Use MMKV** for: auth tokens, user preferences, app settings, anything you read at startup. **Use AsyncStorage** only if you can't add native dependencies (Expo Go, CI constraints).
+
+### SQLite / WatermelonDB — for structured relational data
+
+For complex queries, relationships, or large datasets:
+
+```ts
+// WatermelonDB — observable reactive database
+const postsCollection = database.get('posts');
+const activePosts = await postsCollection.query(
+  Q.where('is_active', true),
+  Q.sortBy('created_at', Q.desc)
+).fetch();
+```
+
+**Rule of thumb**: MMKV for simple key-value, SQLite/WatermelonDB for relational data with queries.
+
+## Server state with TanStack Query (React Query)
+
+"Server state" is data that lives on a server, has a cache TTL, and needs to stay in sync. `useState` is wrong for this — it doesn't handle loading, errors, refetching, or cache invalidation.
+
+```tsx
+import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+
+// Setup
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5 * 60 * 1000,   // data is "fresh" for 5 minutes
+      gcTime: 10 * 60 * 1000,     // keep in cache for 10 minutes after unmount
+      retry: 3,
+      retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 30000), // exponential backoff
+    },
+  },
+});
+
+// Querying
+function PostList({ userId }: { userId: string }) {
+  const { data, isPending, isError, error, refetch } = useQuery({
+    queryKey: ['posts', userId],    // cache key — array uniquely identifies this query
+    queryFn: () => api.getPosts(userId),
+    enabled: !!userId,              // don't run until userId exists
+  });
+
+  if (isPending) return <ActivityIndicator />;
+  if (isError) return <ErrorView message={error.message} onRetry={refetch} />;
+
+  return <FlatList data={data} renderItem={renderItem} />;
+}
+```
+
+### Mutations with optimistic updates
+
+Optimistic updates show the result immediately before the server confirms — makes the UI feel instant:
+
+```tsx
+function useAddPost() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (newPost: NewPost) => api.createPost(newPost),
+
+    onMutate: async (newPost) => {
+      // Cancel any outgoing refetches (to avoid overwriting optimistic update)
+      await queryClient.cancelQueries({ queryKey: ['posts'] });
+
+      // Snapshot the previous value
+      const previousPosts = queryClient.getQueryData(['posts']);
+
+      // Optimistically update the cache
+      queryClient.setQueryData(['posts'], (old: Post[]) => [
+        { ...newPost, id: 'temp-' + Date.now() }, // temporary id
+        ...old,
+      ]);
+
+      return { previousPosts }; // context for rollback
+    },
+
+    onError: (err, newPost, context) => {
+      // Roll back on failure
+      queryClient.setQueryData(['posts'], context?.previousPosts);
+      showToast('Failed to create post');
+    },
+
+    onSettled: () => {
+      // Always refetch to sync with server truth
+      queryClient.invalidateQueries({ queryKey: ['posts'] });
+    },
+  });
+}
+```
+
+### Infinite queries
+
+```tsx
+function useInfinitePosts(userId: string) {
+  return useInfiniteQuery({
+    queryKey: ['posts', userId, 'infinite'],
+    queryFn: ({ pageParam = 1 }) => api.getPosts(userId, { page: pageParam }),
+    getNextPageParam: (lastPage) => lastPage.nextPage ?? undefined,
+    initialPageParam: 1,
+  });
+}
+
+function PostFeed() {
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfinitePosts(userId);
+  const posts = data?.pages.flatMap(page => page.items) ?? [];
+
+  return (
+    <FlatList
+      data={posts}
+      renderItem={renderItem}
+      onEndReached={() => hasNextPage && fetchNextPage()}
+      onEndReachedThreshold={0.3}
+      ListFooterComponent={isFetchingNextPage ? <ActivityIndicator /> : null}
+    />
+  );
+}
+```
+
+## Offline detection
+
+```ts
+import NetInfo from '@react-native-community/netinfo';
+
+// One-time check
+const state = await NetInfo.fetch();
+console.log('Connected:', state.isConnected);
+console.log('Type:', state.type); // 'wifi', 'cellular', 'none'
+
+// Subscribe to changes
+const unsubscribe = NetInfo.addEventListener(state => {
+  if (!state.isConnected) showOfflineBanner();
+  else hideOfflineBanner();
+});
+```
+
+### Offline-first patterns
+
+For apps that must work offline:
+
+1. **Cache-first**: serve from cache immediately, update in background (React Query's `staleTime`)
+2. **Offline queue**: queue mutations when offline, replay when reconnected
+3. **Optimistic UI**: assume success, roll back on confirmed failure
+
+```ts
+// Simple offline queue with MMKV
+const queue = new MMKV({ id: 'offline-queue' });
+
+async function mutateWithQueue(payload: any) {
+  const state = await NetInfo.fetch();
+  if (!state.isConnected) {
+    const existing = JSON.parse(queue.getString('queue') ?? '[]');
+    queue.set('queue', JSON.stringify([...existing, payload]));
+    return; // will be replayed when online
+  }
+  return api.create(payload);
+}
+
+// On reconnect — replay queued mutations
+NetInfo.addEventListener(async (state) => {
+  if (state.isConnected) {
+    const pending = JSON.parse(queue.getString('queue') ?? '[]');
+    for (const item of pending) await api.create(item);
+    queue.set('queue', '[]');
+  }
+});
+```
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "MMKV is ~30x faster than AsyncStorage because reads are synchronous over a memory-mapped file — I use it for tokens, settings, anything read at startup. AsyncStorage is async and JS-thread-bound — fine for infrequent simple writes. For server state I use TanStack Query: it handles loading, errors, caching, and background refetches, and `useMutation` with `onMutate`/`onError` implements optimistic updates with rollback. For offline-first, I combine React Query's `staleTime` for cache-first reads with a MMKV-backed mutation queue that replays on reconnect."
+</div>

@@ -1,0 +1,185 @@
+---
+title: "Trees & BSTs"
+track: dsa
+summary: "DFS (pre/in/post) as recursion, BFS as a queue, and the BST invariant — recursion fluency, tested constantly."
+order: 5
+est: 32
+difficulty: medium
+priority: must
+tags: [trees, dfs, bfs, recursion, bst]
+whyAsked: "Trees test recursion fluency directly. Most candidates can describe a traversal but stumble coding it cleanly under pressure."
+followUps:
+  - "Inorder traversal of a BST produces what?"
+  - "How do you do level-order, and what data structure powers it?"
+  - "How do you validate a BST correctly (the bounds trap)?"
+  - "How do you compute the diameter / find the lowest common ancestor?"
+resources:
+  - { label: "NeetCode: Trees", url: "https://neetcode.io/practice" }
+---
+import TreeTraversal from '../../../components/TreeTraversal.astro';
+
+A binary tree is recursion made visible: almost every tree problem is "do something at this node, then recurse on the children." Four traversal orders cover nearly everything.
+
+## When to reach for each tool — recognition triggers
+
+- "Process **parent before children** / copy / serialize" → **preorder** DFS.
+- "**Sorted order** from a BST" / kth smallest → **inorder** DFS.
+- "Compute **height / size / aggregate from children up**" → **postorder** DFS (return a value from each call).
+- "**Level by level** / shortest depth / right-side view / zigzag" → **BFS** with a queue.
+- "Search / insert / validate ordering" → exploit the **BST invariant**.
+
+<div class="callout key">
+  <div class="ct">Pattern trigger</div>
+  Tree problem → ask "do I need top-down (preorder), bottom-up (postorder), in-order (BST sorted), or level-by-level (BFS)?" That single question picks your traversal.
+</div>
+
+## See the four orders
+
+<TreeTraversal />
+
+- **Preorder** (root → left → right): copy/serialize a tree, process parent before children.
+- **Inorder** (left → root → right): on a **BST this yields sorted order** — a hugely useful fact (kth smallest, validate, in-order successor).
+- **Postorder** (left → right → root): process children before parent — deleting a tree, computing heights/sizes/sums bottom-up.
+- **BFS / level-order**: a **queue**, level by level — shortest depth, level grouping, right-side view.
+
+## DFS is recursion; BFS is a queue (templates)
+
+```js
+// DFS template — the shape is identical for all three orders;
+// only the position of the "visit node" line changes.
+function dfs(node) {
+  if (!node) return;
+  // visit(node);          // <- PREORDER position
+  dfs(node.left);
+  // visit(node);          // <- INORDER position
+  dfs(node.right);
+  // visit(node);          // <- POSTORDER position
+}
+
+// BFS (level order) — snapshot each level's size before draining it
+function bfs(root) {
+  const out = [], q = root ? [root] : [];
+  while (q.length) {
+    const level = [];
+    for (let n = q.length; n > 0; n--) {  // n = nodes in THIS level
+      const node = q.shift();
+      level.push(node.val);
+      if (node.left) q.push(node.left);
+      if (node.right) q.push(node.right);
+    }
+    out.push(level);
+  }
+  return out;
+}
+```
+
+## Worked examples
+
+### Maximum Depth — postorder height
+
+A node's depth is `1 + max(depth(left), depth(right))`. Pure bottom-up.
+
+```js
+// O(n) time, O(h) space (recursion stack, h = tree height)
+function maxDepth(root) {
+  if (!root) return 0;
+  return 1 + Math.max(maxDepth(root.left), maxDepth(root.right));
+}
+```
+
+Idea: each call returns its subtree's height; the parent combines them. **Time** O(n) · **Space** O(h).
+
+### Validate BST — carry down bounds (the trap)
+
+A common bug: checking only `left.val < node.val < right.val` locally. That's wrong — every node in the left **subtree** must be smaller, not just the direct child. Carry down valid `(lo, hi)` bounds.
+
+```js
+// O(n) time, O(h) space
+function isValidBST(node, lo = -Infinity, hi = Infinity) {
+  if (!node) return true;
+  if (node.val <= lo || node.val >= hi) return false;
+  return isValidBST(node.left, lo, node.val) &&    // left subtree capped by node
+         isValidBST(node.right, node.val, hi);      // right subtree floored by node
+}
+```
+
+Idea: the bound tightens as you descend, so a value deep in the left subtree can't sneak above an ancestor.
+**Time** O(n) · **Space** O(h).
+
+### Diameter of a Binary Tree — postorder with a side effect
+
+The diameter is the longest path between any two nodes. At each node, the longest path *through* it is `leftHeight + rightHeight`; we track the global max while returning heights.
+
+```js
+// O(n) time, O(h) space
+function diameterOfBinaryTree(root) {
+  let best = 0;
+  function height(node) {
+    if (!node) return 0;
+    const l = height(node.left), r = height(node.right);
+    best = Math.max(best, l + r);     // path through this node (in edges)
+    return 1 + Math.max(l, r);        // height to return to parent
+  }
+  height(root);
+  return best;
+}
+```
+
+Idea: one postorder pass computes heights *and* updates the answer — no recomputation.
+**Time** O(n) · **Space** O(h).
+
+### Lowest Common Ancestor (BST) — use the ordering
+
+In a BST, if both targets are smaller than the node, go left; if both larger, go right; otherwise the node is the split point = LCA.
+
+```js
+// O(h) time, O(1) space (iterative)
+function lowestCommonAncestor(root, p, q) {
+  let node = root;
+  while (node) {
+    if (p.val < node.val && q.val < node.val) node = node.left;
+    else if (p.val > node.val && q.val > node.val) node = node.right;
+    else return node;   // split point
+  }
+  return null;
+}
+```
+
+Idea: the first node where `p` and `q` diverge is their LCA. The BST ordering makes it O(h), not O(n).
+**Time** O(h) · **Space** O(1).
+
+## Complexity & why it's optimal
+
+Every traversal visits each node once → **O(n) time**. Space is the recursion/queue depth: **O(h)** for DFS (O(log n) balanced, O(n) skewed) and **O(width)** for BFS (up to O(n) at the widest level). BST operations leverage ordering to hit **O(h)** instead of O(n) for search/insert/LCA.
+
+## Edge cases & common bugs
+
+- **Null root** — every function must short-circuit on `!node` first.
+- **BST validation with equal values** — decide whether duplicates are allowed; use strict `<`/`>` accordingly.
+- **Using `Infinity` bounds** — needed so the root has no constraint; integer MIN/MAX in other languages.
+- **BFS level sizing** — snapshot `q.length` *before* the inner loop, or you'll mix levels.
+- **Deep skewed trees** — recursion can stack-overflow; mention an explicit stack for very deep inputs.
+- **Diameter in nodes vs edges** — `l + r` counts edges; add 1 if the problem counts nodes.
+- **`q.shift()` is O(n)** in JS arrays — fine for interviews, but for huge inputs use an index pointer or a deque.
+
+## Interview tips & questions
+
+- Interviewers probe: "Inorder of a BST gives what?" (sorted). "Why does your BST validation pass bounds instead of comparing neighbors?"
+- Narrate which traversal you chose and *why* before coding — it shows intent.
+- Be fluent in both recursive and iterative DFS; some interviewers explicitly ask for iterative.
+
+| Problem | Difficulty | Idea |
+|---|---|---|
+| [Invert Binary Tree](https://leetcode.com/problems/invert-binary-tree/) | Easy | swap children recursively |
+| [Maximum Depth](https://leetcode.com/problems/maximum-depth-of-binary-tree/) | Easy | postorder height |
+| [Diameter of Binary Tree](https://leetcode.com/problems/diameter-of-binary-tree/) | Easy | postorder + global max |
+| [Level Order Traversal](https://leetcode.com/problems/binary-tree-level-order-traversal/) | Medium | BFS |
+| [Validate BST](https://leetcode.com/problems/validate-binary-search-tree/) | Medium | bounds recursion |
+| [Kth Smallest in a BST](https://leetcode.com/problems/kth-smallest-element-in-a-bst/) | Medium | inorder, stop at k |
+| [Lowest Common Ancestor (BST)](https://leetcode.com/problems/lowest-common-ancestor-of-a-binary-search-tree/) | Medium | use BST ordering |
+| [Serialize and Deserialize Binary Tree](https://leetcode.com/problems/serialize-and-deserialize-binary-tree/) | Hard | preorder + null markers |
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "DFS is recursion: do work at the node and recurse on children; preorder/inorder/postorder differ only in when you process the node. Inorder on a BST gives sorted order. BFS uses a queue for level-by-level. For BST validation I pass down (lo, hi) bounds rather than comparing only adjacent nodes."
+</div>

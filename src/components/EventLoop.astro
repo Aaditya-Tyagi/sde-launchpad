@@ -1,0 +1,103 @@
+---
+// Animated event-loop model: call stack + microtask queue + macrotask queue + console output.
+// Steps through a canonical ordering example.
+const id = 'el_' + Math.random().toString(36).slice(2, 8);
+---
+<div class="viz" data-el={id}>
+  <div class="viz-title">Event loop visualizer</div>
+  <div class="viz-desc">
+    Watch the call stack drain, then the <b style="color:var(--accent-2)">microtask queue</b> (Promises) empty
+    <i>completely</i> before a single <b style="color:var(--warn)">macrotask</b> (setTimeout) runs. That ordering is the whole interview answer.
+  </div>
+
+  <div class="el-code">
+<pre><code>console.log('A');
+setTimeout(() =&gt; console.log('B'), 0);   <span class="el-hl" data-line="2"></span>
+Promise.resolve().then(() =&gt; console.log('C'));
+console.log('D');</code></pre>
+  </div>
+
+  <div class="el-grid">
+    <div class="el-col"><div class="el-h">Call stack</div><div class="el-zone" id={`${id}-stack`}></div></div>
+    <div class="el-col"><div class="el-h" style="color:var(--accent-2)">Microtask queue</div><div class="el-zone" id={`${id}-micro`}></div></div>
+    <div class="el-col"><div class="el-h" style="color:var(--warn)">Macrotask queue</div><div class="el-zone" id={`${id}-macro`}></div></div>
+    <div class="el-col"><div class="el-h" style="color:var(--accent)">Console output</div><div class="el-zone el-out" id={`${id}-out`}></div></div>
+  </div>
+
+  <div class="viz-controls">
+    <button class="btn" data-act="prev">◀ Back</button>
+    <button class="btn btn-primary" data-act="next">Step ▶</button>
+    <button class="btn" data-act="auto">▶ Auto-play</button>
+    <button class="btn" data-act="reset">Reset</button>
+  </div>
+  <div class="viz-status" id={`${id}-status`}></div>
+</div>
+
+<style is:global>
+  .el-code pre { background: #0b0e16; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: 12.5px; overflow-x: auto; }
+  .el-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 12px; }
+  @media (max-width: 720px) { .el-grid { grid-template-columns: repeat(2, 1fr); } }
+  .el-h { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin-bottom: 6px; font-weight: 700; }
+  .el-zone { min-height: 110px; background: #0b0e16; border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .el-zone.el-out { justify-content: flex-start; }
+  .el-frame { font-family: var(--mono); font-size: 12px; padding: 6px 8px; border-radius: 7px; background: var(--panel-3); border: 1px solid var(--line); animation: pop 0.25s ease; }
+  .el-frame.micro { background: rgba(126, 231, 135, 0.13); border-color: rgba(126, 231, 135, 0.3); color: var(--accent-2); }
+  .el-frame.macro { background: rgba(242, 204, 96, 0.13); border-color: rgba(242, 204, 96, 0.3); color: var(--warn); }
+  .el-frame.out { background: rgba(110, 168, 254, 0.13); border-color: rgba(110, 168, 254, 0.3); color: var(--accent); font-weight: 700; }
+  @keyframes pop { from { transform: scale(0.85); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+</style>
+
+<script define:vars={{ id }}>
+  (function () {
+    const root = document.querySelector(`[data-el="${id}"]`);
+    if (!root) return;
+    const zones = {
+      stack: document.getElementById(`${id}-stack`),
+      micro: document.getElementById(`${id}-micro`),
+      macro: document.getElementById(`${id}-macro`),
+      out: document.getElementById(`${id}-out`),
+    };
+    const statusEl = document.getElementById(`${id}-status`);
+
+    // Each step is a full snapshot of the four zones + a message.
+    const S = [];
+    const push = (stack, micro, macro, out, msg) => S.push({ stack, micro, macro, out, msg });
+    push([], [], [], [], 'Script starts. The whole script is itself the first task on the stack.');
+    push(["console.log('A')"], [], [], [], "Run line 1: console.log('A') pushed.");
+    push([], [], [], ['A'], "'A' printed; frame pops.");
+    push(['setTimeout(cb, 0)'], [], [], ['A'], 'Run line 2: setTimeout registers cb with the timer — it does NOT run now.');
+    push([], [], ['cb → log(B)'], ['A'], 'Timer expires immediately; cb is queued as a MACROtask.');
+    push(['Promise.then(cb)'], [], ['cb → log(B)'], ['A'], 'Run line 3: .then registers its callback…');
+    push([], ['cb → log(C)'], ['cb → log(B)'], ['A'], '…which is queued as a MICROtask.');
+    push(["console.log('D')"], ['cb → log(C)'], ['cb → log(B)'], ['A'], "Run line 4: console.log('D') pushed.");
+    push([], ['cb → log(C)'], ['cb → log(B)'], ['A', 'D'], "'D' printed. Script frame finishes — stack is now empty.");
+    push(['cb → log(C)'], [], ['cb → log(B)'], ['A', 'D'], 'Stack empty → drain ALL microtasks first. Run the Promise callback.');
+    push([], [], ['cb → log(B)'], ['A', 'D', 'C'], "'C' printed. Microtask queue empty.");
+    push(['cb → log(B)'], [], [], ['A', 'D', 'C'], 'Only now does the event loop take ONE macrotask: the setTimeout callback.');
+    push([], [], [], ['A', 'D', 'C', 'B'], "'B' printed. Final order: A, D, C, B.");
+
+    let cur = 0, timer = null;
+    const frame = (txt, cls) => `<div class="el-frame ${cls || ''}">${txt}</div>`;
+    function render() {
+      const s = S[cur];
+      zones.stack.innerHTML = s.stack.map((f) => frame(f)).join('');
+      zones.micro.innerHTML = s.micro.map((f) => frame(f, 'micro')).join('');
+      zones.macro.innerHTML = s.macro.map((f) => frame(f, 'macro')).join('');
+      zones.out.innerHTML = s.out.map((f) => frame(f, 'out')).join('');
+      statusEl.innerHTML = `<b>Step ${cur}/${S.length - 1}:</b> ${s.msg}`;
+    }
+    function stop() { if (timer) { clearInterval(timer); timer = null; } }
+    root.addEventListener('click', (e) => {
+      const act = e.target.getAttribute('data-act');
+      if (!act) return;
+      if (act === 'next') { stop(); cur = Math.min(cur + 1, S.length - 1); render(); }
+      if (act === 'prev') { stop(); cur = Math.max(cur - 1, 0); render(); }
+      if (act === 'reset') { stop(); cur = 0; render(); }
+      if (act === 'auto') {
+        if (timer) { stop(); return; }
+        timer = setInterval(() => { if (cur >= S.length - 1) { stop(); return; } cur++; render(); }, 1100);
+      }
+    });
+    render();
+  })();
+</script>

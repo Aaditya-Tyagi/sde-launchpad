@@ -1,0 +1,183 @@
+---
+title: "Security testing basics for QA/SDET"
+track: qa-performance
+summary: "Security testing every tester should do: the OWASP Top 10 (2021) each with a concrete test angle, authentication vs authorization testing, the common vulns to probe (XSS stored/reflected/DOM, SQLi, CSRF, IDOR, sensitive-data exposure, misconfig), tooling (OWASP ZAP, Burp, dependency scanning, SAST/DAST/IAST), wiring security checks into CI, and threat-model thinking. Educational and defensive only."
+order: 3
+est: 26
+difficulty: medium
+priority: know
+tags: [security, owasp, xss, sqli, idor, zap, dast, sast]
+whyAsked: "Security awareness separates senior testers. Interviewers expect you to name OWASP Top 10 risks, explain authn-vs-authz, describe how you'd test for IDOR or XSS, and know where ZAP/SAST/DAST fit in a pipeline."
+followUps:
+  - "Name a few OWASP Top 10 risks and how you'd test each."
+  - "Difference between authentication and authorization testing?"
+  - "How would you test for IDOR / broken access control?"
+  - "Stored vs reflected vs DOM-based XSS?"
+  - "Where do SAST, DAST and dependency scanning fit in CI?"
+resources:
+  - { label: "OWASP Top 10 (2021)", url: "https://owasp.org/Top10/" }
+  - { label: "OWASP ZAP", url: "https://www.zaproxy.org/getting-started/" }
+  - { label: "OWASP Cheat Sheet Series", url: "https://cheatsheetseries.owasp.org/" }
+  - { label: "OWASP WSTG (Testing Guide)", url: "https://owasp.org/www-project-web-security-testing-guide/" }
+  - { label: "PortSwigger Web Security Academy", url: "https://portswigger.net/web-security" }
+---
+
+Security testing asks "can this system be made to do something it shouldn't — leak data, let the wrong user in, run attacker input?" As an SDET you won't replace a penetration tester, but you *are* the first and most continuous line of defence: you can bake security checks into automation and catch whole classes of bugs before they ship.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Most security bugs are <strong>missing or wrong checks on untrusted input and untrusted users</strong>. Two questions catch the bulk of them: "what if this input is malicious?" (injection/XSS) and "what if this user isn't allowed to do this?" (access control). Build negative tests around both.
+</div>
+
+<div class="callout warn">
+  <div class="ct">Watch out — ethics & scope</div>
+  Only test systems you are authorized to test, in a non-production/sanctioned environment. This is defensive testing of your own application. Never probe third-party systems without written permission — that's illegal.
+</div>
+
+## OWASP Top 10 (2021) — with a test angle
+
+The OWASP Top 10 is the industry's canonical list of web app risks. Know the 2021 set and, for each, *how a tester probes it*:
+
+1. **A01 Broken Access Control** — the #1 risk. Users acting outside their permissions (viewing others' records, accessing admin URLs, escalating role). *Test:* log in as a low-privilege user and try high-privilege actions/URLs; change an id in a request to another user's resource (IDOR); call APIs directly bypassing the UI.
+2. **A02 Cryptographic Failures** — sensitive data exposed via weak/absent crypto (plaintext passwords, no TLS, weak hashing). *Test:* check TLS is enforced (no HTTP), passwords are hashed not stored plain, secrets aren't in responses/logs/URLs.
+3. **A03 Injection** — untrusted input interpreted as code/commands: **SQL injection**, OS command injection, LDAP, and **XSS** lives here too. *Test:* submit `' OR '1'='1`, SQL meta-chars, and script payloads into every input and observe behavior/errors.
+4. **A04 Insecure Design** — flaws in the design itself, not the code (e.g. no rate limit on password reset, business-logic bypass). *Test:* threat-model the feature; try to abuse the *workflow* (skip a step, replay, negative quantity).
+5. **A05 Security Misconfiguration** — default creds, verbose error messages/stack traces, open cloud buckets, unnecessary features enabled, missing security headers. *Test:* check for default accounts, look for stack traces leaking internals, verify headers (CSP, HSTS, X-Content-Type-Options).
+6. **A06 Vulnerable & Outdated Components** — using libraries with known CVEs. *Test:* run dependency scanning (next section) and fail the build on known-vulnerable versions.
+7. **A07 Identification & Authentication Failures** — weak passwords allowed, no lockout/MFA, predictable or non-invalidated session tokens. *Test:* brute-force tolerance, session fixation, "does logout actually invalidate the token?", weak-password acceptance.
+8. **A08 Software & Data Integrity Failures** — trusting unsigned updates/plugins, insecure deserialization, compromised CI/CD pipelines. *Test:* verify update/artifact integrity; probe deserialization endpoints with crafted objects.
+9. **A09 Security Logging & Monitoring Failures** — attacks go undetected because nothing is logged/alerted. *Test:* confirm auth failures, access-control denials, and high-value actions are logged (without leaking secrets).
+10. **A10 Server-Side Request Forgery (SSRF)** — the server is tricked into making requests to internal resources via an attacker-supplied URL. *Test:* submit internal/metadata URLs (`http://169.254.169.254/...`, `http://localhost`) where the app fetches a URL and see if it follows them.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  If you remember nothing else, remember that <strong>A01 Broken Access Control</strong> and <strong>A03 Injection</strong> are the two highest-leverage areas for a tester: access-control checks are pure negative testing you can fully automate, and injection has well-known payloads you can fuzz inputs with.
+</div>
+
+## Authentication vs authorization
+
+These are constantly confused — keep them sharp:
+
+- **Authentication (authn)** — *who are you?* Verifying identity (login, MFA, tokens). *Test:* invalid credentials rejected; lockout after N failures; logout invalidates the session; tokens expire; no weak passwords accepted; session id rotates on login (anti-fixation).
+- **Authorization (authz)** — *what are you allowed to do?* Permission checks after identity is known. *Test:* a logged-in user can't reach another user's data or an admin function. This is where **IDOR** and **privilege escalation** live.
+
+A system can authenticate correctly (you really are Alice) yet fail authorization (Alice can read Bob's invoices). Authz bugs are the most common and most damaging — always test them per-role.
+
+## Common vulnerabilities to test
+
+### Cross-Site Scripting (XSS)
+Attacker-supplied script runs in another user's browser. Three flavors:
+- **Stored (persistent)** — payload saved server-side (a comment, profile name) and served to every viewer. Most dangerous.
+- **Reflected** — payload bounced back in the immediate response (a search term echoed unescaped, often via a crafted link).
+- **DOM-based** — client-side JS writes untrusted data into the DOM (`innerHTML`, `location.hash`) without sanitizing; the payload never touches the server.
+
+*Test:* inject `<script>alert(1)</script>` and HTML/attribute-context payloads into every field that's later rendered; verify output is **escaped/encoded**. Defense is contextual output encoding + a Content-Security-Policy.
+
+### SQL Injection (SQLi)
+Untrusted input alters a SQL query (`' OR '1'='1' --`). Can dump or destroy data. *Test:* submit SQL meta-characters into inputs and parameters; a database error or changed result set is a red flag. Defense is **parameterized queries / prepared statements** — verify the app uses them.
+
+### Cross-Site Request Forgery (CSRF)
+A logged-in victim's browser is tricked into making an unwanted state-changing request (e.g. a hidden form transferring money) because the browser auto-sends their cookie. *Test:* try a state-changing request without the anti-CSRF token / from another origin and confirm it's rejected. Defense: CSRF tokens, SameSite cookies.
+
+### IDOR / Insecure Direct Object Reference
+A specific, very common access-control bug: the app exposes a direct reference (`/api/orders/1043`) and doesn't verify the requester *owns* that object. Change `1043` to `1044` and you see someone else's order. *Test:* as user A, request user B's object ids directly via the API. This is your single highest-value manual security test.
+
+### Sensitive data exposure & security misconfig
+Secrets in URLs/logs, PII in responses, stack traces leaking internals, missing security headers, directory listing enabled, default credentials. *Test:* inspect responses/headers/error pages for leaked internals.
+
+## Tooling
+
+- **OWASP ZAP** — free, open-source web app scanner. **Passive scan** (observes traffic for issues, safe) and **active scan** (actively attacks with payloads — only on authorized targets). Runs as a proxy to capture/replay traffic, and has a CLI/Docker mode for CI.
+- **Burp Suite** — the professional pen-tester's toolkit. Proxy + Repeater (replay/modify single requests) + Intruder (fuzz/brute-force). The Community edition is free; Pro adds the active scanner.
+- **Dependency scanning (SCA — Software Composition Analysis)** — flags libraries with known CVEs: OWASP Dependency-Check, `npm audit`, Snyk, GitHub Dependabot. Directly addresses A06.
+- **Testing methodology types:**
+  - **SAST (Static)** — analyzes *source code* without running it (Semgrep, SonarQube, CodeQL). Finds injection/insecure patterns early; can be noisy (false positives). "White box."
+  - **DAST (Dynamic)** — attacks the *running app* from outside (ZAP, Burp). Finds real runtime issues; can't see source, so misses logic flaws it can't reach. "Black box."
+  - **IAST (Interactive)** — an agent *inside* the running app correlates requests with code paths during functional/DAST tests; fewer false positives, needs instrumentation.
+
+<div class="callout tip">
+  <div class="ct">SAST vs DAST in one line</div>
+  SAST reads the code (early, broad, noisier); DAST attacks the running app (later, fewer false positives, only what's reachable). They're complementary — mature pipelines run both, plus SCA for dependencies.
+</div>
+
+## Wiring security into CI
+
+Shift security *left* — automate the cheap checks on every build:
+
+```yaml
+# illustrative CI steps
+security:
+  steps:
+    - run: npm audit --audit-level=high        # SCA: fail on known CVEs
+    - run: semgrep --config=auto --error       # SAST: insecure code patterns
+    - run: |                                    # DAST: ZAP baseline (passive) scan
+        docker run -t owasp/zap2docker-stable \
+          zap-baseline.py -t https://staging.example.com -I
+```
+
+Plus security *test cases* in your normal automation: negative authz tests (user A can't read user B's resource), logout-invalidates-token, no weak password accepted, XSS payload is escaped in the rendered output. These run alongside functional tests and gate the merge.
+
+## Threat-model thinking
+
+Before testing a feature, think like an attacker for five minutes. A lightweight model (STRIDE) prompts the categories: **S**poofing (identity), **T**ampering (data), **R**epudiation (deniability/logging), **I**nformation disclosure (leaks), **D**enial of service, **E**levation of privilege. For each: what's the asset, who'd attack it, what's the entry point, what's the worst case? This turns "test the login page" into specific, high-value test cases.
+
+## Worked example: an IDOR test in automation
+
+The single highest-value security test an SDET can automate is a broken-access-control check. The pattern: authenticate as two different users, then have user A try to read user B's resource. Sketch with a REST-style API:
+
+```js
+// Pseudocode — authn as two users, A tries to read B's order
+const tokenA = login('alice', 'Passw0rd!');
+const tokenB = login('bob',   'Hunter2xx');
+
+// Bob creates an order; capture its id
+const orderB = post('/api/orders', { item: 'sku-9' }, tokenB).id;
+
+// Alice tries to read Bob's order directly via the API
+const res = get(`/api/orders/${orderB}`, tokenA);
+
+// The server MUST refuse — 403 (or 404 to avoid leaking existence)
+assert(res.status === 403 || res.status === 404,
+  `IDOR: Alice read Bob's order ${orderB} (status ${res.status})`);
+```
+
+Run the same shape for *write* operations (can A modify/delete B's resource?) and for *admin* endpoints (can a normal user hit `/admin/*`?). A passing functional test that ignores this is exactly how IDOR ships to production.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  For every endpoint that takes an object id, write one negative test where a different, authenticated user requests it. These tests are cheap, deterministic, and catch the #1 OWASP risk — make them a standard part of API test suites.
+</div>
+
+## Interview questions & model answers
+
+**Q1. Name a few OWASP Top 10 risks and how you'd test each.**
+Broken Access Control (A01) — log in as a low-priv user and try admin actions/other users' object ids (IDOR). Injection (A03) — fuzz inputs with SQL meta-chars and `<script>` payloads, verify they're parameterized/escaped. Security Misconfiguration (A05) — check for default creds, stack traces, missing security headers. Vulnerable Components (A06) — run dependency scanning in CI.
+
+**Q2. Difference between authentication and authorization testing?**
+Authn is "who are you" — I test invalid-credential rejection, lockout, MFA, session expiry, logout actually invalidating the token, and session rotation on login. Authz is "what may you do" — I test per-role that a user can't reach another user's data or privileged functions. Authz bugs (IDOR, privilege escalation) are the most common and most damaging.
+
+**Q3. How would you test for IDOR / broken access control?**
+As user A, capture a request for one of A's objects (e.g. `/api/orders/1043`), then change the id to an object owned by user B and replay it directly via the API, bypassing the UI. If A gets B's data, the server isn't checking ownership. I automate this as a negative test across endpoints with object references.
+
+**Q4. Stored vs reflected vs DOM-based XSS?**
+Stored — the payload is saved server-side and served to every viewer (most dangerous). Reflected — the payload is echoed back in the immediate response, usually via a crafted link. DOM-based — client-side JS writes untrusted data into the DOM without sanitizing, so the payload never hits the server. All are tested by injecting script/HTML payloads and checking the output is contextually encoded.
+
+**Q5. How do you prevent and test for SQL injection?**
+Prevention is parameterized queries / prepared statements so input is never concatenated into SQL. To test, I submit SQL meta-characters (`' OR '1'='1' --`) into inputs and parameters; a DB error or an altered result set indicates concatenation. I'd also confirm the code uses parameterized queries in review.
+
+**Q6. Where do SAST, DAST and dependency scanning fit in CI?**
+SAST runs early on the source for insecure patterns (broad, noisier). DAST runs against a deployed staging build, attacking it from outside (fewer false positives, only what's reachable). SCA/dependency scanning flags libraries with known CVEs. Mature pipelines run all three as gates; I'd start with a ZAP baseline scan and `npm audit`/Snyk as the quickest wins.
+
+**Q7. What's the difference between a passive and an active ZAP scan?**
+Passive scanning only *observes* traffic that flows through the proxy and reports issues — it's safe to run anywhere, including against systems you don't own to read. Active scanning *sends attack payloads* to probe for vulnerabilities and can modify data or cause load, so it must only run against authorized, non-production targets.
+
+## Common mistakes
+
+- **Only testing the happy path** — security lives in negative and abuse cases.
+- **Testing authz only through the UI** — the UI hides the admin button, but the API still answers; test the API directly.
+- **Assuming authn implies authz** — verifying identity isn't verifying permission; test per-role access.
+- **Running active scans on prod or third-party systems** — can cause damage/data loss and may be illegal; use sanctioned environments and passive scans where appropriate.
+- **Ignoring dependencies** — most apps are mostly third-party code; a single vulnerable library (A06) is a common breach vector.
+- **Trusting client-side validation** — it's a UX nicety, not a control; always test that the server re-validates.
+- **Treating SAST/DAST output as gospel** — triage false positives instead of either ignoring all findings or filing every one.
+- **Leaking secrets in tests/logs** — security tests themselves can expose tokens; keep them out of logs and reports.

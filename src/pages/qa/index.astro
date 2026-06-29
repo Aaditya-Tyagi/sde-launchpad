@@ -1,0 +1,185 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { getCollection } from 'astro:content';
+import { TRACKS, QA_PLAN } from '../../data/curriculum';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const qaTracks = TRACKS.filter((t) => t.program === 'qa');
+const qaTrackIds = new Set(qaTracks.map((t) => t.id));
+const lessons = (await getCollection('lessons')).filter((l) => !l.data.draft && qaTrackIds.has(l.data.track));
+
+const lessonMeta = lessons.map((l) => ({ id: l.id, title: l.data.title, track: l.data.track }));
+const trackNames = Object.fromEntries(qaTracks.map((t) => [t.id, t.name]));
+
+// recommended lesson order from the 12-week plan
+const planLessonOrder: string[] = [];
+QA_PLAN.forEach((w) => w.items.forEach((it) => { if (it.lesson) planLessonOrder.push(it.lesson); }));
+
+// all trackable ids = lessons + non-lesson plan tasks
+const planTaskIds: string[] = [];
+QA_PLAN.forEach((w) => w.items.forEach((it, i) => { if (!it.lesson) planTaskIds.push(`qatask:${w.id}:${i}`); }));
+const lessonIds = lessons.map((l) => l.id);
+
+const countFor = (tid: string) => lessons.filter((l) => l.data.track === tid).length;
+---
+<BaseLayout title="Today · QA · Automation Launchpad" active="home" program="qa">
+  <div class="wrap" style="padding-top:28px;max-width:1080px">
+    <div class="today-head">
+      <div>
+        <h1 id="greeting" style="margin-bottom:4px">QA · Automation Launchpad</h1>
+        <p class="sub" id="subline" style="margin:0">Manual → automation → SDET. Your 12-week path, tuned for the 2026 market.</p>
+      </div>
+      <a class="btn" href={`${base}/`} style="font-size:13px">⇄ Switch path</a>
+    </div>
+
+    <!-- progress hero -->
+    <div class="panel" style="margin-top:18px;display:flex;gap:24px;flex-wrap:wrap;align-items:center">
+      <div class="ring">
+        <svg width="104" height="104">
+          <circle cx="52" cy="52" r="44" stroke="var(--panel-4)" stroke-width="9" fill="none"></circle>
+          <circle id="ringFill" cx="52" cy="52" r="44" stroke="var(--accent-2)" stroke-width="9" fill="none" stroke-linecap="round" stroke-dasharray="276.5" stroke-dashoffset="276.5"></circle>
+        </svg>
+        <div class="pct" id="pctText" style="font-size:22px">0%</div>
+      </div>
+      <div style="flex:1;min-width:220px">
+        <b id="doneCount" style="font-size:18px">0 / 0 done</b><br />
+        <span class="muted" id="encourage">Start with Week 1 — get your tools installed and your first test running in days.</span>
+        <div class="bar" style="margin-top:10px;max-width:340px"><i id="lvlBar"></i></div>
+        <span class="muted" style="font-size:12px" id="lvlText">Level 1</span>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <a class="btn btn-primary" id="continueBtn" href={`${base}/qa/tracks`}>Continue learning →</a>
+        <a class="btn" href={`${base}/qa/plan`}>🗺️ 12-week plan</a>
+      </div>
+    </div>
+
+    <!-- first moves -->
+    <div class="callout tip" style="margin-top:16px">
+      <div class="ct">First moves (week 1)</div>
+      Pick <b>one</b> language (Java, Python, or JS/TS) · install your IDE + Git · write one passing Playwright test on <a href="https://www.saucedemo.com/" target="_blank" rel="noopener">SauceDemo</a> · start a mistakes log. Don't learn three languages — go deep on one.
+    </div>
+
+    <!-- continue learning -->
+    <div class="panel" style="margin-top:16px">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <h2 style="font-size:20px">Continue where you left off</h2>
+        <span class="muted" style="font-size:13px;font-family:var(--mono)" id="lessonProg">0 / 0 lessons</span>
+      </div>
+      <a class="q-item" id="nextLesson" href={`${base}/qa/tracks`} style="margin-top:12px">
+        <span class="q-ico">📘</span>
+        <span class="q-body"><b id="nextLessonTitle">Start the first lesson</b><span class="q-sub" id="nextLessonSub">—</span></span>
+        <span class="q-cta">Open →</span>
+      </a>
+    </div>
+
+    <!-- jump in -->
+    <h2 style="margin-top:26px;font-size:18px">Jump in</h2>
+    <div class="sc-grid" style="margin-top:12px">
+      <a class="sc-card" href={`${base}/qa/plan`}><span>🗺️</span><b>12-Week Plan</b><small>Manual → SDET, week by week</small></a>
+      <a class="sc-card" href={`${base}/qa/tracks`}><span>📚</span><b>Learning Tracks</b><small>All QA topics & lessons</small></a>
+      <a class="sc-card" href={`${base}/lessons/qa-web/playwright-core`}><span>🌐</span><b>Playwright</b><small>The 2026 frontrunner</small></a>
+      <a class="sc-card" href={`${base}/lessons/qa-web/selenium-core`}><span>🧭</span><b>Selenium</b><small>WebDriver core</small></a>
+      <a class="sc-card" href={`${base}/lessons/qa-api/http-foundations`}><span>🔌</span><b>API Testing</b><small>The highest-ROI layer</small></a>
+      <a class="sc-card" href={`${base}/lessons/qa-ai/ai-in-testing-2026`}><span>🤖</span><b>AI Testing</b><small>The fastest-rising skill</small></a>
+      <a class="sc-card" href={`${base}/lessons/qa-cheatsheets/cheatsheets`}><span>📑</span><b>Cheat Sheets</b><small>Locators, Git, HTTP, APIs</small></a>
+      <a class="sc-card" href={`${base}/lessons/qa-career/certifications-and-roadmap`}><span>🎓</span><b>Certifications</b><small>ISTQB → CTAL-TAE</small></a>
+      <a class="sc-card" href={`${base}/mistakes`}><span>📝</span><b>Mistakes Log</b><small>Every flaky test & fix</small></a>
+    </div>
+
+    <!-- tracks -->
+    <h2 style="margin-top:30px;font-size:18px">Learning tracks</h2>
+    <div class="grid cols-3" style="margin-top:14px">
+      {qaTracks.map((t) => (
+        <a class="tcard" href={`${base}/tracks/${t.id}`}>
+          <div class="ticon">{t.icon}</div>
+          <h3>{t.name}</h3>
+          <p>{t.blurb}</p>
+          <div class="row" style="margin-top:12px;justify-content:space-between">
+            <span class="muted" style="font-size:12px">{countFor(t.id)} lessons</span>
+            <span class="muted" style="font-size:12px" data-track-prog={t.id}>0%</span>
+          </div>
+          <div class="bar" style="margin-top:6px"><i data-track-bar={t.id}></i></div>
+        </a>
+      ))}
+    </div>
+  </div>
+
+  <style is:global>
+    .today-head { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; }
+    .sc-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:12px; }
+    .sc-card { display:flex; flex-direction:column; gap:3px; padding:16px; border:1px solid var(--line); border-radius:13px; background:var(--panel); text-decoration:none; color:var(--text); transition:.16s; }
+    .sc-card:hover { border-color:var(--accent-2); transform:translateY(-2px); background:var(--panel-2); }
+    .sc-card span { font-size:24px; }
+    .sc-card b { font-size:15px; margin-top:4px; }
+    .sc-card small { font-size:12px; color:var(--muted); }
+    .q-item { display:flex; align-items:center; gap:14px; padding:13px 15px; border:1px solid var(--line); border-radius:12px; background:rgba(255,255,255,.02); text-decoration:none; color:var(--text); transition:.16s; }
+    .q-item:hover { background:rgba(78,222,163,.07); border-color:var(--accent-2); }
+    .q-ico { flex:0 0 auto; font-size:22px; }
+    .q-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+    .q-body b { font-size:15px; font-weight:600; }
+    .q-sub { font-size:12.5px; color:var(--muted); font-family:var(--mono); }
+    .q-cta { flex:0 0 auto; font-size:13px; font-family:var(--mono); color:var(--accent-2); font-weight:600; }
+  </style>
+
+  <script define:vars={{ base, lessonMeta, lessonIds, planTaskIds, planLessonOrder, trackNames, trackIds: qaTracks.map((t) => t.id), lessonsByTrack: Object.fromEntries(qaTracks.map((t) => [t.id, lessons.filter((l) => l.data.track === t.id).map((l) => l.id)])) }}>
+    const store = window.SDE2;
+    const el = (id) => document.getElementById(id);
+    try { localStorage.setItem('launchpad:lastPath', 'qa'); } catch (e) {}
+
+    const allIds = lessonIds.concat(planTaskIds);
+
+    function nextLesson(done) {
+      const byId = Object.fromEntries(lessonMeta.map((l) => [l.id, l]));
+      for (const slug of planLessonOrder) { if (byId[slug] && !done[slug]) return byId[slug]; }
+      return lessonMeta.find((l) => !done[l.id]) || null;
+    }
+
+    function paint() {
+      const done = store.allDone();
+      const total = allIds.length;
+      const d = allIds.filter((id) => done[id]).length;
+      const pct = total ? Math.round((d / total) * 100) : 0;
+      const circ = 276.5;
+      el('ringFill').style.strokeDashoffset = String(circ - (circ * pct) / 100);
+      el('pctText').textContent = pct + '%';
+      el('doneCount').textContent = `${d} / ${total} done`;
+      el('encourage').textContent = pct === 0 ? 'Start with Week 1 — get your tools installed and your first test running in days.'
+        : pct < 25 ? 'Tools are set up. Now code a little every single day — that is the whole game.'
+        : pct < 55 ? 'Real frameworks now. Add API tests next — they are in higher demand than UI.'
+        : pct < 85 ? 'Strong. Get it running in CI and learn an AI testing tool — that is the 2026 edge.'
+        : pct < 100 ? 'Almost SDET-shaped. Polish the portfolio and quantify your impact.'
+        : 'Curriculum complete. Apply weekly, mock out loud, and go get the role. 🚀';
+
+      const lp = store.levelProgress();
+      el('lvlBar').style.width = lp.pct + '%';
+      el('lvlText').textContent = `Level ${lp.lvl} · ${lp.xp} XP`;
+
+      // next lesson
+      const lessonsDone = lessonIds.filter((id) => done[id]).length;
+      el('lessonProg').textContent = `${lessonsDone} / ${lessonIds.length} lessons`;
+      const nl = nextLesson(done);
+      if (nl) {
+        el('nextLessonTitle').textContent = nl.title;
+        el('nextLessonSub').textContent = trackNames[nl.track] || nl.track;
+        el('nextLesson').href = `${base}/lessons/${nl.id}`;
+        el('continueBtn').href = `${base}/lessons/${nl.id}`;
+      } else {
+        el('nextLessonTitle').textContent = 'All lessons complete 🎉';
+        el('nextLessonSub').textContent = 'Revisit weak spots or polish your portfolio';
+      }
+
+      // track bars
+      trackIds.forEach((tid) => {
+        const ids = lessonsByTrack[tid] || [];
+        const dd = ids.filter((id) => done[id]).length;
+        const p = ids.length ? Math.round((dd / ids.length) * 100) : 0;
+        const lbl = document.querySelector(`[data-track-prog="${tid}"]`);
+        const bar = document.querySelector(`[data-track-bar="${tid}"]`);
+        if (lbl) lbl.textContent = p + '%';
+        if (bar) bar.style.width = p + '%';
+      });
+    }
+    store.onChange(paint);
+    paint();
+  </script>
+</BaseLayout>

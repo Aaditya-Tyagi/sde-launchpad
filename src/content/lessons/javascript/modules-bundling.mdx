@@ -1,0 +1,155 @@
+---
+title: "ES Modules vs CommonJS"
+track: javascript
+summary: "Static vs dynamic, live bindings vs copies, tree shaking, circular dependencies — what every senior JS dev must know about the module system."
+order: 10
+est: 18
+difficulty: medium
+priority: deep
+tags: [esm, commonjs, modules, bundling, tree-shaking, dynamic-import]
+whyAsked: "Module systems come up in bundler config questions, performance discussions (tree shaking), and 'why does my import behave weirdly' debugging scenarios."
+followUps:
+  - "What is tree shaking, and why does it only work with ESM?"
+  - "How does circular dependency behave differently in CJS vs ESM?"
+  - "When would you use dynamic import()?"
+  - "What is a live binding in ESM?"
+  - "Explain the difference between default and named exports."
+resources:
+  - { label: "javascript.info: Modules", url: "https://javascript.info/modules-intro" }
+  - { label: "Node.js: ESM vs CJS", url: "https://nodejs.org/api/esm.html" }
+---
+
+JavaScript had no built-in module system until ES2015. Node.js filled the gap with CommonJS. Understanding both — and their differences — is essential for any JS/TS role.
+
+## CommonJS (CJS)
+
+Used in Node.js by default (`.js` files without `"type": "module"` in `package.json`).
+
+```js
+// math.js — exporting
+const PI = 3.14159;
+function add(a, b) { return a + b; }
+module.exports = { PI, add };        // or: exports.add = add;
+
+// app.js — importing
+const { PI, add } = require('./math');
+const math = require('./math');      // whole object
+```
+
+Key CJS behaviors:
+- **Synchronous** — `require()` blocks until the file is loaded. Fine for Node startup, fatal in browsers.
+- **Dynamic** — `require()` can be called anywhere, conditionally, with a variable path.
+- **Copies** — you import a snapshot of the exported value at require time, not a live reference.
+- **Cached** — modules are cached after first load; subsequent `require()` calls return the same object.
+
+## ES Modules (ESM)
+
+The standard for browsers and modern Node.js (`.mjs` or `"type": "module"` in `package.json`).
+
+```js
+// math.js — exporting
+export const PI = 3.14159;
+export function add(a, b) { return a + b; }
+export default class Calculator { /* ... */ }
+
+// app.js — importing
+import { PI, add } from './math.js';    // named imports
+import Calculator from './math.js';      // default import
+import * as math from './math.js';       // namespace import
+```
+
+Key ESM behaviors:
+- **Static** — `import` declarations are hoisted and resolved before code runs. The module graph is built at parse time, not at runtime.
+- **Asynchronous** — modules are fetched/parsed asynchronously (critical for browser performance).
+- **Live bindings** — exported names are live references. If the exporter changes the value, the importer sees the update.
+- **Strict mode** — ESM is always in strict mode.
+
+## Live bindings vs copies
+
+This is the subtlest difference:
+
+```js
+// counter.mjs (ESM)
+export let count = 0;
+export function increment() { count++; }
+
+// app.mjs
+import { count, increment } from './counter.mjs';
+console.log(count); // 0
+increment();
+console.log(count); // 1 — live binding: sees the updated value!
+
+// --- CJS version ---
+// counter.js
+let count = 0;
+module.exports = { count, increment: () => count++ };
+
+// app.js
+const { count, increment } = require('./counter');
+console.log(count); // 0
+increment();
+console.log(count); // 0 — still 0: you copied the value at require time
+```
+
+## Tree shaking
+
+**Tree shaking** is the bundler's ability to eliminate dead code — exports that are imported nowhere. It **only works reliably with ESM** because:
+
+- ESM imports are **static** — the bundler knows the full import graph at build time.
+- CJS `require()` is dynamic — the bundler can't safely know what's used without running the code.
+
+```js
+// utils.js
+export function used() { return 'I am used'; }
+export function unused() { return 'I will be removed'; }
+
+// main.js
+import { used } from './utils.js';
+used();
+// Bundler (Rollup, Webpack, Vite) will NOT include unused() in the output
+```
+
+In your `package.json`, set `"sideEffects": false` to tell bundlers the package has no side effects, enabling aggressive tree shaking.
+
+## Dynamic import()
+
+Even in ESM, you can import lazily at runtime with `import()` (which returns a Promise):
+
+```js
+// Load a heavy module only when needed
+async function onButtonClick() {
+  const { heavyFn } = await import('./heavy-module.js');
+  heavyFn();
+}
+
+// Conditional import
+const mod = await import(isDark ? './dark-theme.js' : './light-theme.js');
+```
+
+This is the foundation of **code splitting** in React (`React.lazy`) and bundlers.
+
+## Circular dependencies
+
+Both systems handle circular deps differently:
+
+- **CJS**: when module A requires B which requires A, B gets a **partially evaluated** export object from A (whatever was exported before the circular require). This is a common source of `undefined` bugs.
+- **ESM**: live bindings mean the circular reference works as long as the binding is resolved before it's *used* (at call time, not import time). Functions declared before the cycle point work; immediate usage of a not-yet-initialized value fails.
+
+The safest approach: **avoid** circular dependencies. They signal a design issue (extract shared code to a third module).
+
+## Quick reference
+
+| Feature | CommonJS | ESM |
+|---|---|---|
+| Syntax | `require` / `module.exports` | `import` / `export` |
+| Loading | Synchronous | Asynchronous |
+| Evaluation | Dynamic, at call time | Static, at parse time |
+| Exports | Value copies | Live bindings |
+| Tree shaking | Not reliable | Yes |
+| Top-level await | No | Yes |
+| Default in Node | Yes (`.js`) | With `"type":"module"` |
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "CommonJS uses `require/module.exports`, is synchronous and dynamic, and exports value copies. ESM uses `import/export`, is static and async, and exports live bindings — if the exporting module changes a variable, importers see the change. Tree shaking works only with ESM because bundlers can statically analyze the import graph. Dynamic `import()` gives you lazy loading even in ESM — that's how React.lazy and code splitting work."
+</div>

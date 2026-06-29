@@ -1,0 +1,51 @@
+---
+const id = 'rn_' + Math.random().toString(36).slice(2, 8);
+---
+<div class="viz" data-rn={id}>
+  <div class="viz-title">React Native — threading model</div>
+  <div class="viz-desc">A tap travels JS → Shadow (Yoga layout) → UI (native views). Click a stage to see its job. The old <b>bridge</b> serialized JSON between them; the new architecture (<b>JSI</b>) lets JS call C++/native directly.</div>
+  <div class="viz-stage">
+    <div class="rn-threads" id={`${id}-threads`}>
+      <div class="rn-th" data-th="js"><div class="rn-h">JS thread</div><div class="rn-b">Your React code, business logic, state, diffing</div></div>
+      <div class="rn-conn" id={`${id}-c1`}>⇄</div>
+      <div class="rn-th" data-th="shadow"><div class="rn-h">Shadow thread</div><div class="rn-b">Yoga computes flexbox layout (x, y, w, h)</div></div>
+      <div class="rn-conn">⇄</div>
+      <div class="rn-th" data-th="ui"><div class="rn-h">UI / main thread</div><div class="rn-b">Renders native views, handles gestures & animations</div></div>
+    </div>
+  </div>
+  <div class="viz-controls">
+    <button class="btn btn-primary" data-arch="bridge">Old: Bridge</button>
+    <button class="btn" data-arch="jsi">New: JSI / Fabric</button>
+  </div>
+  <div class="viz-status" id={`${id}-status`}></div>
+</div>
+<style>
+  .rn-threads { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; }
+  .rn-th { flex: 1; min-width: 150px; border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--panel); cursor: pointer; transition: 0.2s; }
+  .rn-th:hover, .rn-th.lit { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(110, 168, 254, 0.2); }
+  .rn-h { font-weight: 700; color: var(--accent); font-size: 14px; }
+  .rn-b { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+  .rn-conn { display: grid; place-items: center; color: var(--warn); font-size: 20px; font-weight: 700; }
+</style>
+<script define:vars={{ id }}>
+  (function () {
+    const root = document.querySelector(`[data-rn="${id}"]`); if (!root) return;
+    const statusEl = document.getElementById(`${id}-status`);
+    const detail = {
+      js: 'JS thread: runs your components and the reconciler. It must never block — long JS work here drops frames.',
+      shadow: 'Shadow thread: holds the shadow tree and runs Yoga to compute layout off the main thread, so layout math does not jank the UI.',
+      ui: 'UI thread: the only thread that can touch native views. Gestures and native-driver animations run here so they stay at 60fps even if JS is busy.',
+    };
+    root.querySelectorAll('.rn-th').forEach((el) => el.addEventListener('click', () => {
+      root.querySelectorAll('.rn-th').forEach((x) => x.classList.remove('lit')); el.classList.add('lit');
+      statusEl.textContent = detail[el.dataset.th];
+    }));
+    root.querySelectorAll('[data-arch]').forEach((b) => b.addEventListener('click', () => {
+      root.querySelectorAll('[data-arch]').forEach((x) => x.classList.remove('btn-primary')); b.classList.add('btn-primary');
+      const c1 = document.getElementById(`${id}-c1`);
+      if (b.dataset.arch === 'bridge') { c1.textContent = '⇄ JSON ⇄'; statusEl.innerHTML = '<b>Bridge:</b> JS and native communicate by serializing JSON over an async, batched bridge. The serialize/deserialize + async hop is the bottleneck — no synchronous calls, so you cannot read a native value mid-render.'; }
+      else { c1.textContent = '⇄ JSI ⇄'; statusEl.innerHTML = '<b>JSI + Fabric + TurboModules:</b> JSI exposes native methods as C++ functions the JS engine can call <b>synchronously</b> — no JSON. Fabric renders concurrently and TurboModules lazy-load native modules. Result: faster startup and interop.'; }
+    }));
+    statusEl.textContent = 'Click a thread or an architecture above.';
+  })();
+</script>

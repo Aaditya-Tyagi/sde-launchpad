@@ -1,0 +1,30 @@
+---
+title: "Stack cheat-sheet (2026)"
+track: ai-engineering
+summary: "Your default pick per layer — and the alternatives worth knowing — for the current AI-engineering stack."
+order: 7
+est: 8
+priority: know
+tags: [stack, tools, reference]
+---
+
+Your defaults are chosen to **reuse your existing stack** (Node/TS + Postgres + Docker/AWS). Know the alternatives so you can justify a choice in an interview.
+
+| Layer | Default for you | Also know |
+|---|---|---|
+| **Models / APIs** | Claude, OpenAI, Gemini | Open: Llama, Qwen, DeepSeek (run locally via Ollama) |
+| **App framework** | Vercel AI SDK (JS-native) | Python SDKs, LlamaIndex |
+| **Vector store** | pgvector (you run Postgres) | Chroma (local), Qdrant / Pinecone |
+| **Agents** | LangGraph, OpenAI Agents SDK, MCP | hand-rolled tool loops |
+| **Evals / observability** | Langfuse (self-host) | LangSmith, Braintrust |
+| **Embeddings** | OpenAI `text-embedding-3-large` | Qwen3-Embedding (open, strong) |
+
+<div class="callout key">
+  <div class="ct">The selection principle</div>
+  Default to what reuses infra you already operate (Postgres → pgvector, Docker → self-host Langfuse) and what's JS-native (Vercel AI SDK). Reach for a specialized tool only when a requirement forces it — and be ready to say which requirement.
+</div>
+
+<div class="callout tip">
+  <div class="ct">Don't chase tool fashion</div>
+  The stack churns every few months. The stable bets: a frontier API + your own DB for vectors + a hand-rollable tool loop + real evals + self-hosted tracing. Learn those deeply; swap tools as needed.
+</div>

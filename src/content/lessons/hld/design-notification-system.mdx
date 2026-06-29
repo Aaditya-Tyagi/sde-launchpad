@@ -1,0 +1,286 @@
+---
+title: "HLD: Design a Notification System"
+track: hld
+summary: "Design a multi-channel notification system — push, email, SMS — with priority queues, fan-out, delivery guarantees, and user preferences."
+order: 6
+est: 28
+difficulty: hard
+priority: must
+tags: [hld, notifications, push, email, sms, fan-out, queues, idempotency]
+whyAsked: "Notifications test multi-channel architecture, delivery guarantees, idempotency, rate limiting, and handling unreliable third-party services."
+followUps:
+  - "How do you ensure a notification is delivered exactly once?"
+  - "How do you handle APNs/FCM failures?"
+  - "How would you implement a user preference center?"
+  - "How do you rate-limit notifications per user?"
+  - "How do you handle millions of users for a broadcast notification?"
+resources:
+  - { label: "Firebase Cloud Messaging docs", url: "https://firebase.google.com/docs/cloud-messaging" }
+  - { label: "Amazon SES", url: "https://aws.amazon.com/ses" }
+---
+
+## Step 1: Requirements
+
+**Functional:**
+- Channels: push notification (iOS + Android), email, SMS
+- Triggered by events: order shipped, friend request, sale, security alert
+- User preferences: opt-out per channel, per notification type
+- Priority: critical (security alerts → always send), high, low (marketing → can delay)
+- Scheduled notifications (send at 9am in user's timezone)
+- Delivery tracking: sent, delivered, opened
+
+**Non-functional:**
+- 10M notifications/day → ~120/sec average, 1000/sec peak
+- Critical notifications within 5 seconds
+- At-least-once delivery (with deduplication)
+- Third-party providers may fail → retry with backoff
+
+---
+
+## Step 2: High-level architecture
+
+```
+Event Sources (Order Service, Auth Service, Marketing Service)
+  │
+  ▼
+[ Notification Service (API) ]
+  ├─ Validate request
+  ├─ Check user preferences (opt-out, do-not-disturb hours)
+  ├─ Enqueue to priority queue
+  └─ Return accepted (202)
+
+[ Priority Queues (Kafka) ]
+  ├─ "notifications.critical"  ← security, auth
+  ├─ "notifications.transactional"  ← order updates, delivery
+  └─ "notifications.marketing"  ← promotions, newsletters
+
+[ Channel Workers ]
+  ├─ Push Worker → APNs / FCM
+  ├─ Email Worker → SES / SendGrid
+  └─ SMS Worker → Twilio / SNS
+
+[ Delivery Log DB ]
+  └─ Records every send attempt + status
+```
+
+---
+
+## Step 3: Data model
+
+```sql
+-- Notification templates
+CREATE TABLE notification_templates (
+  id            UUID PRIMARY KEY,
+  type          VARCHAR(50),    -- 'order_shipped', 'friend_request', etc.
+  channel       VARCHAR(10),    -- 'push', 'email', 'sms'
+  subject       TEXT,           -- email subject / push title
+  body_template TEXT,           -- Handlebars template: "Hi {{name}}, your order..."
+  priority      VARCHAR(10)     -- 'critical', 'high', 'low'
+);
+
+-- User notification preferences
+CREATE TABLE notification_preferences (
+  user_id           UUID,
+  notification_type VARCHAR(50),
+  channel           VARCHAR(10),
+  enabled           BOOLEAN DEFAULT TRUE,
+  PRIMARY KEY (user_id, notification_type, channel)
+);
+
+-- User device tokens (for push)
+CREATE TABLE device_tokens (
+  user_id       UUID,
+  token         TEXT,
+  platform      VARCHAR(10),  -- 'ios', 'android'
+  app_version   TEXT,
+  last_active   TIMESTAMPTZ,
+  PRIMARY KEY (user_id, token)
+);
+
+-- Delivery log (append-only, partitioned by date)
+CREATE TABLE notification_log (
+  id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  idempotency_key VARCHAR(128) UNIQUE,  -- prevents duplicate sends
+  user_id         UUID,
+  channel         VARCHAR(10),
+  template_id     UUID,
+  payload         JSONB,
+  status          VARCHAR(20),  -- 'queued', 'sent', 'failed', 'delivered', 'opened'
+  provider_ref    TEXT,         -- APNs message ID, SES message ID
+  sent_at         TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ DEFAULT NOW()
+) PARTITION BY RANGE (created_at);
+```
+
+---
+
+## Step 4: Notification service (API layer)
+
+```python
+class NotificationService:
+    def send(self, request: NotificationRequest) -> str:
+        # 1. Idempotency check
+        if self.log.exists(request.idempotency_key):
+            return "already_queued"
+        
+        # 2. Load user preferences
+        prefs = self.prefs.get(request.user_id, request.type)
+        if not prefs.is_channel_enabled(request.channel):
+            return "user_opted_out"
+        
+        # 3. Do-not-disturb check (for non-critical)
+        if request.priority != 'critical':
+            user_tz = self.users.get_timezone(request.user_id)
+            if is_do_not_disturb(user_tz):
+                return self._schedule_for_morning(request)
+        
+        # 4. Render template
+        template = self.templates.get(request.type, request.channel)
+        rendered = template.render(request.data)
+        
+        # 5. Enqueue
+        topic = f"notifications.{request.priority}"
+        self.kafka.produce(topic, {
+            "idempotency_key": request.idempotency_key,
+            "user_id": request.user_id,
+            "channel": request.channel,
+            "rendered": rendered,
+        })
+        
+        # 6. Log as queued
+        self.log.insert(request.idempotency_key, status='queued')
+        return "queued"
+```
+
+---
+
+## Step 5: Channel workers
+
+### Push notification worker (APNs / FCM)
+
+```python
+class PushWorker:
+    def process(self, message: dict):
+        user_id = message["user_id"]
+        
+        # Get all active device tokens for user
+        tokens = self.db.get_device_tokens(user_id)
+        
+        for token in tokens:
+            try:
+                if token.platform == 'ios':
+                    response = self.apns.send(
+                        device_token=token.token,
+                        title=message["rendered"]["title"],
+                        body=message["rendered"]["body"],
+                        badge=1,
+                        priority=10 if message["priority"] == 'critical' else 5,
+                    )
+                else:
+                    response = self.fcm.send(
+                        token=token.token,
+                        notification={
+                            "title": message["rendered"]["title"],
+                            "body": message["rendered"]["body"],
+                        },
+                        android={"priority": "high"},
+                    )
+                
+                self.log.update(message["idempotency_key"], status='sent', provider_ref=response.id)
+                
+            except TokenExpiredError:
+                # Token is invalid — remove it
+                self.db.delete_device_token(user_id, token.token)
+                
+            except ProviderRateLimitError as e:
+                # Re-queue with exponential backoff
+                self.kafka.produce_delayed(message, delay_seconds=e.retry_after)
+                
+            except Exception:
+                self.log.update(message["idempotency_key"], status='failed')
+                raise  # Let Kafka consumer retry
+```
+
+### Email worker (SES / SendGrid)
+
+```python
+class EmailWorker:
+    def process(self, message: dict):
+        user = self.db.get_user(message["user_id"])
+        
+        # SES with unsubscribe header (required by CAN-SPAM / GDPR)
+        self.ses.send_email(
+            to=user.email,
+            subject=message["rendered"]["subject"],
+            html_body=message["rendered"]["html"],
+            text_body=message["rendered"]["text"],  # plain text fallback
+            headers={
+                "List-Unsubscribe": f"<https://app.example.com/unsubscribe/{user.id}>",
+                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+            }
+        )
+```
+
+---
+
+## Step 6: At-least-once delivery + idempotency
+
+**Problem:** the worker may crash after sending the notification but before acking the Kafka message. On restart, it will re-process and send the notification again (duplicate).
+
+**Solution: idempotency key + deduplication table:**
+
+```sql
+-- Before sending, check if already sent
+SELECT 1 FROM notification_log 
+WHERE idempotency_key = $1 AND status = 'sent';
+
+-- If not, send and update status atomically
+-- The UNIQUE constraint on idempotency_key prevents double-inserts
+```
+
+Idempotency key format: `{event_type}:{user_id}:{event_id}` — same event always produces the same key.
+
+**On third-party provider duplicate:** APNs and FCM both support idempotency keys (APNs: `apns-collapse-id`, FCM: `collapseKey`) — duplicate messages to the same device are collapsed.
+
+---
+
+## Step 7: Fan-out for broadcast notifications
+
+Marketing campaign: send to 10M users simultaneously.
+
+**Naïve approach:** loop over all user IDs and call `/send` for each → slow.
+
+**Scalable approach:**
+
+```
+Marketing API
+  └─ Creates one "broadcast" job: { segment: 'all_us_users', template: '...', send_at: '...' }
+
+Broadcast Scheduler (cron job at send_at)
+  └─ Queries user segments in batches of 10K
+  └─ Produces 10K user IDs to Kafka per batch
+  └─ Workers consume and enqueue per-user notifications
+
+Rate limiting: max 1 email/user/day per campaign type
+              respect Do-Not-Disturb windows
+              skip users who unsubscribed in the last 24h
+```
+
+Batch size of 10K = 1,000 batches for 10M users. With 50 workers each consuming 1 batch/second, full fan-out in ~20 seconds.
+
+---
+
+## Step 8: Failure scenarios
+
+| Failure | Handling |
+|---|---|
+| APNs / FCM is down | Retry with exponential backoff (1s, 2s, 4s... max 5 min); dead-letter queue after N retries |
+| Invalid token | Delete token from DB; don't retry |
+| User unsubscribed | Check at dequeue time, not just at enqueue |
+| DB unavailable | Queue stays intact; workers pause; no data loss |
+| Notification sent but status not updated | Idempotency key ensures re-attempt is a no-op |
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Three priority queues in Kafka — critical, transactional, marketing. Channel workers (push, email, SMS) consume independently so a slow email provider doesn't block push. Each notification has an idempotency key — the worker checks before sending and updates status after. If the worker crashes between send and ack, it re-reads the message, checks idempotency key, sees it was already sent, and skips. For broadcast campaigns, a scheduler pages through user segments in batches and produces to Kafka — actual sending is fully async and rate-limited."
+</div>

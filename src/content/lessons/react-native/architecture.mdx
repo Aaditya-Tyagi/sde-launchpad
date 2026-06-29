@@ -1,0 +1,61 @@
+---
+title: "RN Architecture: Bridge vs JSI / Fabric"
+track: react-native
+summary: "The three threads, why the old bridge was slow, and what JSI, Fabric, and TurboModules changed."
+order: 2
+est: 24
+difficulty: hard
+priority: must
+tags: [architecture, jsi, fabric, bridge, threading, hermes]
+whyAsked: "This is exactly where your last RN interview went deep. Senior RN roles expect you to explain the runtime, not just the API."
+followUps:
+  - "What was serialized over the old bridge, and why was that the bottleneck?"
+  - "What does JSI actually let you do that the bridge couldn't?"
+  - "What are Fabric and TurboModules?"
+  - "How does Hermes improve startup time?"
+resources:
+  - { label: "RN: Architecture overview", url: "https://reactnative.dev/architecture/landing-page" }
+  - { label: "RN: Hermes", url: "https://reactnative.dev/docs/hermes" }
+---
+import RNThreads from '../../../components/RNThreads.astro';
+
+React Native runs your JavaScript in a JS engine and renders **real native views** (not a WebView). The interesting part is how those two worlds talk to each other — and that's the whole architecture story.
+
+## The three threads
+
+<RNThreads />
+
+- **JS thread** runs your React components, state, and the reconciler. If you block it (heavy loops, big JSON parsing), you drop frames.
+- **Shadow thread** holds the shadow tree and runs **Yoga** (a C++ flexbox engine) to compute layout off the main thread.
+- **UI / main thread** is the only one allowed to touch native views; it handles rendering, gestures, and native-driver animations.
+
+## The old architecture: the Bridge
+
+Originally, JS and native communicated over an asynchronous **bridge**. Every call — "create this view", "the user tapped" — was **serialized to JSON**, sent across, and deserialized on the other side, in **batches**.
+
+Three consequences that interviewers love:
+
+1. **Serialization cost** — turning everything into JSON strings and back is expensive at scale (think a long list scrolling fast).
+2. **Asynchronous only** — JS could never synchronously read a native value mid-render; it had to fire a message and wait for a reply.
+3. **Single bottleneck** — all traffic funneled through one bridge, which could congest.
+
+## The new architecture: JSI, Fabric, TurboModules
+
+The new architecture removes the JSON bridge:
+
+- **JSI (JavaScript Interface)** — a lightweight **C++ layer** that lets the JS engine hold references to native (C++/host) objects and call their methods **synchronously**, with no serialization. This is the foundation everything else builds on.
+- **Fabric** — the new rendering system built on JSI. It creates the shadow tree in C++, supports concurrent rendering, and makes JS↔UI interactions faster and more consistent.
+- **TurboModules** — native modules are now **lazily loaded** on first use (instead of all at startup) and callable synchronously via JSI. Faster startup, less memory.
+
+<div class="callout key">
+  <div class="ct">The crisp contrast</div>
+  Bridge = async, batched, JSON-serialized message passing (the bottleneck). JSI = a C++ interface enabling <b>synchronous, serialization-free</b> calls between JS and native. Fabric (rendering) and TurboModules (native modules) are the systems rebuilt on top of JSI.
+</div>
+
+## Hermes
+
+**Hermes** is an open-source JS engine optimized for React Native. Instead of parsing JS source at startup, Hermes **precompiles to bytecode at build time**, so the app skips parse/compile on launch — meaningfully improving **time-to-interactive**, memory use, and app size on lower-end Android devices. It pairs naturally with the new architecture.
+
+## Say it out loud (30s)
+
+> "RN runs JS on a JS thread, computes layout with Yoga on the shadow thread, and renders native views on the UI thread. The old bridge serialized everything to JSON and passed it asynchronously in batches — that serialization and the async-only nature were the bottleneck. The new architecture replaces it with JSI, a C++ interface allowing synchronous, serialization-free calls; Fabric is the renderer and TurboModules are lazily-loaded native modules built on it. Hermes precompiles JS to bytecode for faster startup."

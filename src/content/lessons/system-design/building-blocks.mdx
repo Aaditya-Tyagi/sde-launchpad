@@ -1,0 +1,174 @@
+---
+title: "The building blocks of a scalable service"
+track: system-design
+summary: "Load balancers, gateways, caching, CDN, queues vs pub/sub vs streams, databases, object storage, search, rate limiters, service discovery — each with when to reach for it and the tradeoff."
+order: 2
+est: 34
+difficulty: hard
+priority: must
+tags: [scaling, cache, queue, kafka, sharding, load-balancing, cdn, gateway]
+whyAsked: "Most backend design answers are an assembly of the same dozen components. Knowing each one's job, the alternatives, and the tradeoff lets you design almost anything."
+followUps:
+  - "Why must app servers be stateless to scale horizontally?"
+  - "L4 vs L7 load balancing — when does it matter?"
+  - "Queue vs pub/sub vs a log like Kafka — when each?"
+  - "When do you reach for object storage vs the database?"
+  - "How does a CDN decide what to cache and for how long?"
+resources:
+  - { label: "System Design Primer", url: "https://github.com/donnemartin/system-design-primer" }
+  - { label: "Kafka design docs", url: "https://kafka.apache.org/documentation/#design" }
+---
+import ArchDiagram from '../../../components/ArchDiagram.astro';
+
+Learn these components once and you can assemble most systems. Click through the blueprint, then read the "when to reach for it" notes — each block lists its job, the main alternative, and the cost.
+
+<ArchDiagram />
+
+## Load balancer (L4 vs L7)
+
+The moment you have more than one app server, you need a load balancer to spread traffic, health-check dead nodes, and enable zero-downtime deploys.
+
+- **L4 (transport layer)** — routes by IP/port, forwards TCP/UDP packets without inspecting the payload. Very fast, protocol-agnostic, can't make content-aware decisions. Good for raw throughput.
+- **L7 (application layer)** — understands HTTP: can route by path/host/header (`/api/*` → service A, `/img/*` → service B), terminate TLS, do sticky sessions, retries, and compression. More CPU per request but far more capable. Most modern setups use L7 (NGINX, Envoy, ALB).
+
+**Balancing algorithms:** *round-robin* (simple, assumes uniform requests), *least-connections* (better when request durations vary), *weighted* (heterogeneous machines), *consistent hashing* / IP-hash (keeps a client mapped to the same backend — useful for cache locality, but couples you to instances). 
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Prefer <b>least-connections</b> over round-robin when request latencies are uneven (some endpoints are slow), and prefer <b>stateless services</b> over sticky sessions so the LB is free to send any request anywhere.
+</div>
+
+## Reverse proxy & API gateway
+
+A **reverse proxy** sits in front of your servers and handles cross-cutting concerns: TLS termination, compression, static caching, request buffering. An **API gateway** is a specialized reverse proxy for an API/microservices fleet that centralizes:
+
+- AuthN/AuthZ (validate tokens once at the edge)
+- Rate limiting & quotas
+- Request routing / aggregation (fan one client call out to several services)
+- Protocol translation (REST ↔ gRPC), logging, metrics
+
+The tradeoff: it's a single choke point and a potential SPOF, so it must be replicated and kept thin. Don't put business logic in the gateway — that recreates a monolith at the edge.
+
+## Stateless app tier
+
+Keep **no per-user state in a server's memory**. Put sessions/state in a shared store (Redis) so any node can serve any request, letting you add/remove nodes freely. This is the *precondition* for horizontal scaling — a stateful server can't be load-balanced or autoscaled cleanly. If you ever say "scale horizontally," the implicit prerequisite is "the tier is stateless."
+
+## Caching
+
+When reads dominate and the same data is read repeatedly, a cache cuts latency and offloads the DB. (Full depth — strategies, eviction, the three big failure modes, CDN internals, Redis structures — is in the [caching & CDN](/lessons/system-design/caching-and-cdn) lesson.) The essentials:
+
+- **Where:** browser → CDN → app-level (Redis/Memcached) → DB buffer pool. Cache as close to the user as the data's freshness allows.
+- **Default strategy: cache-aside** — on read, check cache; on miss, read DB and populate with a TTL. The hard part is **invalidation** on writes.
+- **Eviction:** LRU (default), LFU, TTL.
+
+Don't cache write-heavy or rarely-reread data — low hit rate makes the cache pure overhead.
+
+## CDN
+
+The moment you serve static assets (JS, images, video) to users across regions. A CDN caches at **edge** PoPs near users, cutting round-trip latency from ~100ms to ~10ms and offloading your origin. Version asset URLs (`app.a1b2.js`) so a deploy doesn't serve stale files, and set long `Cache-Control` on immutable assets. (Push vs pull, cache keys, and dynamic-content edge caching are covered in the caching lesson.)
+
+## Message queues vs pub/sub vs streams
+
+These get conflated constantly; knowing the distinction is a senior signal.
+
+| | **Work queue** (SQS, RabbitMQ) | **Pub/Sub** (SNS, Google Pub/Sub) | **Log / stream** (Kafka, Kinesis) |
+|---|---|---|---|
+| Delivery model | One consumer per message (competing consumers) | Fan-out: every subscriber gets a copy | Append-only log; consumers track their own offset |
+| Message after read | Deleted/acked | Delivered to all subscribers | **Retained** (by time/size); replayable |
+| Ordering | Usually best-effort | Best-effort | Strict per-partition order |
+| Use it for | Offload slow/spiky jobs (email, image resize) | Notify many independent services of an event | Event sourcing, analytics pipelines, replay, multiple readers of the same firehose |
+
+**Kafka deep-ish:** a topic is split into **partitions**; each partition is an ordered, immutable log. Producers pick a partition (often by key, so all events for a user land in order). Consumers in a **consumer group** each own some partitions — parallelism is bounded by partition count. Consumers commit an **offset**, so they can replay from any point, and slow/new consumers don't lose data. That retention + replay is why Kafka is the backbone of streaming and event-driven systems, where a transient SQS queue can't help you.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Need to <i>distribute work</i> to one of N workers? → queue. Need to <i>notify many</i> services of an event? → pub/sub. Need <i>replay, ordering, and multiple independent consumers</i> of the same stream? → Kafka.
+</div>
+
+All three give **at-least-once** delivery in practice, so design consumers to be **idempotent** (processing the same message twice is safe). Exactly-once is expensive and usually faked via idempotency keys.
+
+## Databases (overview)
+
+Replicas first, shards later — both are levers, not defaults. (Full depth — SQL vs NoSQL families, indexing, isolation, replication topologies — is in the [databases](/lessons/system-design/databases) lesson.)
+
+- **Read replicas** scale reads: writes → primary, reads → replicas. Cost: replication lag (a read right after a write may be stale).
+- **Sharding/partitioning** scales writes and storage when one machine can't hold the load. Split by a **shard key** chosen from your access patterns. Cost: cross-shard queries/transactions get hard; a bad key creates hot shards. **Shard late** — it's a big jump in complexity.
+
+## Object storage (S3)
+
+For large blobs — uploads, images, video, backups, logs. Store the object in S3 and only the **key/URL** in the DB. It's cheap, durable (eleven nines of durability), and effectively infinite, but it's not a database: no queries, higher latency than a local disk, eventual-ish listing. Pair it with a CDN for delivery and use **pre-signed URLs** so clients upload/download directly without proxying bytes through your app tier.
+
+## Search index
+
+A relational `LIKE '%term%'` can't do full-text search at scale (no ranking, no fuzzy matching, full scans). Reach for a **search index** (Elasticsearch / OpenSearch) when you need full-text search, relevance ranking, faceting, or autocomplete. It's a **secondary store**: you keep the source of truth in your primary DB and **stream changes** into the index (via CDC or an outbox/queue). The tradeoff is a second system to operate and eventual consistency between DB and index — never make Elasticsearch your system of record.
+
+## Rate limiter
+
+Protects services from abuse and overload by capping requests per client per window (return `429` when exceeded). The standard algorithm is **token bucket** (allows bursts, bounds the average). In a fleet, the counter must be **shared state in Redis** so the limit holds across all nodes. (Full treatment — algorithms and distributed concerns — is in [classics](/lessons/system-design/classics).) Usually lives at the API gateway.
+
+## Service discovery
+
+In a dynamic fleet (containers, autoscaling), instances come and go with changing IPs. **Service discovery** lets a service find healthy instances of another without hardcoded addresses:
+
+- **Client-side** (e.g. Consul/Eureka): the client queries a registry and picks an instance.
+- **Server-side** (e.g. Kubernetes Services, a load balancer with a registry): clients hit a stable virtual address; the platform routes to a healthy pod.
+
+A registry plus health checks keeps traffic off dead nodes. In a Kubernetes world this is largely built in (Services + DNS), which is why you often don't draw it explicitly — but mentioning it shows you know how the boxes actually find each other.
+
+## Putting it together
+
+```
+            ┌──────── CDN (static, edge) ────────┐
+  Client ───┤                                     │
+            └─► Load Balancer / API Gateway       │
+                  (TLS, auth, rate limit, route)  │
+                        │                          
+                        ▼                          
+                Stateless App Tier  ──► Cache (Redis)
+                        │                  │ miss
+                        ├──────────────────┘
+                        ▼
+              Primary DB ──► Read Replicas / Shards
+                        │
+                        ├─► Queue/Kafka ─► Workers ─► (email, index, analytics)
+                        └─► Object Storage (S3) ◄── CDN delivers blobs
+```
+
+## Interview questions & model answers
+
+**Q: Why must the app tier be stateless to scale horizontally?**
+"If a server holds session state in memory, requests must be pinned to that server (sticky sessions), so the load balancer can't freely distribute load, autoscaling loses state when a node dies, and rolling deploys drop sessions. Moving state to a shared store (Redis) lets any node serve any request — that's what makes adding nodes a pure capacity gain."
+
+**Q: L4 vs L7 load balancing — when does the difference matter?**
+"L4 routes by IP/port without reading the payload — fastest, protocol-agnostic. L7 understands HTTP, so it can route by path/host/header, terminate TLS, retry, and do content-aware balancing. I use L7 whenever I need path-based routing, TLS termination at the edge, or smarter health/retry logic — which is almost always for HTTP services. L4 when I need raw throughput or non-HTTP protocols."
+
+**Q: Queue vs pub/sub vs Kafka?**
+"Work queue for distributing jobs to one of N workers — message is consumed once. Pub/sub for fanning an event out to many independent subscribers. Kafka when I need an ordered, retained, replayable log that multiple consumer groups can read independently — event sourcing, analytics, or replay after a bug. The deciding questions are: one consumer or many? and do I need replay and ordering?"
+
+**Q: Why idempotent consumers?**
+"Queues deliver at-least-once — a consumer can crash after processing but before acking, so the message is redelivered. If processing isn't idempotent, that double-charges a card or sends two emails. I make handlers idempotent with a dedup key or upsert, so reprocessing is a no-op."
+
+**Q: When does object storage beat the database?**
+"For large binary blobs — images, video, backups. The DB stays small and fast holding only the key/metadata, while S3 handles cheap, durable, infinite blob storage. I serve via CDN and let clients upload directly with pre-signed URLs so bytes never flow through my app tier. The DB is for queryable structured data; S3 is for bytes you fetch by key."
+
+**Q: Where do you put a rate limiter and why there?**
+"At the API gateway / edge, so abusive traffic is rejected before it consumes app or DB resources. The counter lives in Redis as shared state so the limit is enforced fleet-wide, not per instance. Token bucket so legitimate bursts are allowed while the average stays bounded."
+
+**Q: You said 'add Elasticsearch.' Is it your database?**
+"No — it's a secondary index for full-text search and ranking. The source of truth stays in my primary DB; I stream changes into Elasticsearch via CDC or an outbox so they stay in sync, accepting eventual consistency between them. Making it the system of record would risk data loss and reindex pain."
+
+## Common mistakes / what weak candidates do
+
+- **Adding every component reflexively** ("LB, Redis, Kafka, Elasticsearch") without a requirement justifying each.
+- **Confusing pub/sub with a work queue**, or calling Kafka "a queue" without mentioning retention/replay/partitions.
+- **Putting business logic in the API gateway**, recreating a distributed monolith.
+- **Forgetting consumers must be idempotent** under at-least-once delivery.
+- **Sharding too early** (or sharding before maxing out replicas + caching).
+- **Treating Elasticsearch/Redis as the source of truth** instead of derived stores.
+- **Ignoring statefulness** — proposing horizontal scaling while leaving sessions in app memory.
+- **Storing blobs in the database** (BLOB columns) instead of object storage + a key.
+
+<div class="callout key">
+  <div class="ct">How to use this in a round</div>
+  Start with client → LB → stateless app → DB. Then, driven by the non-functional requirements, add: a cache (read-heavy), replicas/shards (scale), a queue or Kafka (async/spiky/event-driven work), a CDN (global static), object storage (blobs), a search index (full-text), a rate limiter (abuse). <b>Justify each addition by the requirement that forced it, and name the cost</b> — that's the difference between assembling a system and listing buzzwords.
+</div>

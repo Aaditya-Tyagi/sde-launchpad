@@ -1,0 +1,218 @@
+---
+title: "Linked Lists"
+track: dsa
+summary: "The dummy-head technique, fast/slow pointers for cycles and middles, and clean in-place reversal — pointer fluency under pressure."
+order: 9
+est: 30
+difficulty: medium
+priority: must
+tags: [linked-list, two-pointers, fast-slow]
+whyAsked: "Linked-list problems test careful pointer manipulation. They're easy to describe and easy to botch — one lost reference and the list is gone."
+followUps:
+  - "How does Floyd's cycle detection work, and why is it O(1) space?"
+  - "How do you find the middle of a list in one pass?"
+  - "Reverse a list iteratively vs recursively — tradeoffs?"
+  - "Why use a dummy head node?"
+resources:
+  - { label: "NeetCode: Linked List", url: "https://neetcode.io/practice" }
+---
+
+A singly linked list is a chain of `{ val, next }` nodes. The whole category is about **moving pointers without losing references** — almost every solution is one careful traversal. Two techniques unlock most problems: the **dummy head** and **fast/slow pointers**.
+
+## When to reach for each tool — recognition triggers
+
+- "**Reverse / reorder / swap** nodes" → in-place pointer rewiring (often with a dummy head).
+- "**Detect a cycle / find where it starts**" → Floyd's fast/slow pointers.
+- "**Find the middle / nth from the end**" → two pointers with a gap or 2x speed.
+- "**Merge / partition / remove** nodes, especially at the head" → dummy head to avoid head-edge special cases.
+- O(1) space is required (can't copy to an array).
+
+<div class="callout key">
+  <div class="ct">Pattern trigger</div>
+  Cycle / middle / nth-from-end → fast &amp; slow pointers. Insert/remove/merge that might touch the head → dummy head node. Reverse/reorder → careful three-pointer rewiring. Nearly all are O(n) time, O(1) space.
+</div>
+
+## The node and the dummy-head technique
+
+```js
+// class ListNode { constructor(val, next = null) { this.val = val; this.next = next; } }
+
+// A dummy head removes the "what if we modify the first node?" special case.
+function template(head) {
+  const dummy = { val: 0, next: head };
+  let prev = dummy;
+  while (prev.next) {
+    // decide whether to remove/keep/relink prev.next, advancing prev
+    prev = prev.next;
+  }
+  return dummy.next;   // the (possibly new) real head
+}
+```
+
+The dummy node means the head is treated like any other node — no branching for "is this the first element?".
+
+## Fast/slow pointers (Floyd's)
+
+The slow pointer advances one step, the fast pointer two. They power three classics: find middle, detect cycle, and find nth-from-end (variant with a fixed gap).
+
+```js
+// Middle of the list (second middle for even length).  O(n) time, O(1) space
+function middleNode(head) {
+  let slow = head, fast = head;
+  while (fast && fast.next) { slow = slow.next; fast = fast.next.next; }
+  return slow;
+}
+```
+
+## Worked examples
+
+### Reverse a Linked List — iterative and recursive
+
+```js
+// Iterative: walk forward, flipping each next pointer.  O(n) time, O(1) space
+function reverseList(head) {
+  let prev = null, cur = head;
+  while (cur) {
+    const next = cur.next;   // save the rest before we overwrite
+    cur.next = prev;         // reverse this link
+    prev = cur;              // advance
+    cur = next;
+  }
+  return prev;               // new head
+}
+
+// Recursive: reverse the tail, then point the next node back at me.  O(n) time, O(n) stack
+function reverseRecursive(head) {
+  if (!head || !head.next) return head;
+  const newHead = reverseRecursive(head.next);
+  head.next.next = head;     // the node after me now points back to me
+  head.next = null;          // I become the tail
+  return newHead;
+}
+```
+
+Idea: the iterative version keeps three pointers (prev/cur/next); the recursive version unwinds from the tail. Iterative is O(1) space and preferred for long lists.
+**Time** O(n) · **Space** O(1) iterative / O(n) recursive.
+
+### Linked List Cycle II — detect and find the cycle start
+
+Floyd's: if fast and slow meet, there's a cycle. To find its start, reset one pointer to the head and advance both one step at a time; they meet at the entry.
+
+```js
+// O(n) time, O(1) space
+function detectCycle(head) {
+  let slow = head, fast = head;
+  while (fast && fast.next) {
+    slow = slow.next; fast = fast.next.next;
+    if (slow === fast) {                 // cycle confirmed
+      let p = head;
+      while (p !== slow) { p = p.next; slow = slow.next; }
+      return p;                           // entry node
+    }
+  }
+  return null;                            // no cycle
+}
+```
+
+Idea: the math — the distance from head to the cycle entry equals the distance from the meeting point to the entry (mod cycle length), so two unit-speed pointers converge there.
+**Time** O(n) · **Space** O(1).
+
+### Remove Nth Node From End — gap of n + dummy head
+
+Advance a `fast` pointer `n` steps ahead, then move both until `fast` hits the end; `slow` lands just before the target.
+
+```js
+// One pass.  O(n) time, O(1) space
+function removeNthFromEnd(head, n) {
+  const dummy = { val: 0, next: head };
+  let fast = dummy, slow = dummy;
+  for (let i = 0; i < n; i++) fast = fast.next;   // open a gap of n
+  while (fast.next) { fast = fast.next; slow = slow.next; }
+  slow.next = slow.next.next;                      // unlink the nth-from-end
+  return dummy.next;
+}
+```
+
+Idea: the dummy head makes removing the *first* node a non-special case. **Time** O(n) · **Space** O(1).
+
+### Merge Two Sorted Lists — dummy head + splice
+
+```js
+// O(m + n) time, O(1) space
+function mergeTwoLists(a, b) {
+  const dummy = { val: 0, next: null }; let tail = dummy;
+  while (a && b) {
+    if (a.val <= b.val) { tail.next = a; a = a.next; }
+    else { tail.next = b; b = b.next; }
+    tail = tail.next;
+  }
+  tail.next = a || b;     // attach whatever remains
+  return dummy.next;
+}
+```
+
+Idea: splice nodes onto a growing tail; the leftover non-empty list is already sorted, so just attach it.
+**Time** O(m + n) · **Space** O(1).
+
+### Reorder List — middle + reverse + merge
+
+`L0→L1→…→Ln` becomes `L0→Ln→L1→Ln-1→…`. Compose three primitives: find middle, reverse the second half, interleave.
+
+```js
+// O(n) time, O(1) space
+function reorderList(head) {
+  if (!head || !head.next) return;
+  // 1. find middle
+  let slow = head, fast = head;
+  while (fast.next && fast.next.next) { slow = slow.next; fast = fast.next.next; }
+  // 2. reverse second half
+  let prev = null, cur = slow.next; slow.next = null;
+  while (cur) { const nxt = cur.next; cur.next = prev; prev = cur; cur = nxt; }
+  // 3. interleave the two halves
+  let first = head, second = prev;
+  while (second) {
+    const t1 = first.next, t2 = second.next;
+    first.next = second; second.next = t1;
+    first = t1; second = t2;
+  }
+}
+```
+
+Idea: this is the canonical "compose three list primitives" problem — knowing reverse + middle gives it to you for free.
+**Time** O(n) · **Space** O(1).
+
+## Complexity & why it beats brute force
+
+Most operations are a single O(n) pass with O(1) extra space — you rewire existing nodes instead of allocating. The fast/slow trick replaces the naive "store all nodes in an array/set to find the middle or detect a cycle" (O(n) space) with O(1) space. Reversal and merge avoid building new lists.
+
+## Edge cases & common bugs (the pointer gotchas)
+
+- **Losing the rest of the list** — always save `cur.next` *before* overwriting it during reversal.
+- **Null dereference** — guard `fast && fast.next` before `fast.next.next`; the order of the conditions matters (short-circuit).
+- **Forgetting the dummy head** — removing/inserting at the head without one needs a special branch and is bug-prone.
+- **Cycle in cleanup** — after splitting a list (reorder), set the first half's tail `.next = null`, or you create a loop.
+- **Even vs odd length** for "middle" — `fast && fast.next` gives the second middle; `fast.next && fast.next.next` gives the first.
+- **Off-by-one in nth-from-end** — the dummy head and a gap of exactly `n` land `slow` on the predecessor.
+- **Returning the wrong head** — after reversal/merge, return the new head (`prev` or `dummy.next`), not the old one.
+
+## Interview tips & questions
+
+- Interviewers probe: "Why does Floyd's find the cycle start?" Be ready with the distance argument.
+- "Iterative or recursive reverse?" — offer both, note the recursion stack cost.
+- Draw the pointers on the whiteboard before coding; tracking 2-3 references in your head is where bugs come from.
+
+| Problem | Difficulty | Idea |
+|---|---|---|
+| [Reverse Linked List](https://leetcode.com/problems/reverse-linked-list/) | Easy | three-pointer flip |
+| [Merge Two Sorted Lists](https://leetcode.com/problems/merge-two-sorted-lists/) | Easy | dummy head splice |
+| [Linked List Cycle](https://leetcode.com/problems/linked-list-cycle/) | Easy | fast/slow |
+| [Middle of the Linked List](https://leetcode.com/problems/middle-of-the-linked-list/) | Easy | fast/slow |
+| [Remove Nth Node From End](https://leetcode.com/problems/remove-nth-node-from-end-of-list/) | Medium | gap + dummy head |
+| [Reorder List](https://leetcode.com/problems/reorder-list/) | Medium | middle + reverse + merge |
+| [Linked List Cycle II](https://leetcode.com/problems/linked-list-cycle-ii/) | Medium | Floyd's + entry math |
+| [Copy List with Random Pointer](https://leetcode.com/problems/copy-list-with-random-pointer/) | Medium | interleave or hash map |
+
+<div class="callout tip">
+  <div class="ct">Template</div>
+  Reverse — keep three pointers and flip each link: <code>next=cur.next; cur.next=prev; prev=cur; cur=next</code>. Fast/slow — loop while <code>fast &amp;&amp; fast.next</code>, advancing <code>slow=slow.next</code> and <code>fast=fast.next.next</code>. Always wrap head-modifying ops in a dummy node.
+</div>

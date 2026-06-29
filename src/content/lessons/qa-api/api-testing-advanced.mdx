@@ -1,0 +1,228 @@
+---
+title: "Advanced API testing: contracts, GraphQL, mocking & security"
+track: qa-api
+summary: "The senior topics: consumer-driven contract testing with Pact, JSON Schema in depth, GraphQL and gRPC testing, service virtualization with WireMock, test data management, pagination/rate-limit/retry/idempotency testing, OWASP API security (BOLA/IDOR, injection, authz), and a microservices test-pyramid strategy."
+order: 4
+est: 30
+difficulty: hard
+priority: deep
+tags: [contract-testing, pact, graphql, grpc, wiremock, security, owasp, microservices]
+whyAsked: "Senior SDET interviews go past 'write a REST Assured test' into how you test a microservices estate: contracts between services, GraphQL's different model, service virtualization, and API security. These separate mid from senior."
+followUps:
+  - "What is consumer-driven contract testing and why use it over end-to-end?"
+  - "How does testing GraphQL differ from REST?"
+  - "How would you test for BOLA/IDOR?"
+  - "How do you keep dependency services out of your API tests?"
+  - "What does the test pyramid look like for microservices?"
+resources:
+  - { label: "Pact (contract testing)", url: "https://docs.pact.io/" }
+  - { label: "WireMock", url: "https://wiremock.org/docs/" }
+  - { label: "OWASP API Security Top 10 (2023)", url: "https://owasp.org/API-Security/editions/2023/en/0x11-t10/" }
+  - { label: "JSON Schema spec", url: "https://json-schema.org/" }
+  - { label: "GraphQL", url: "https://graphql.org/learn/" }
+  - { label: "Martin Fowler: ContractTest", url: "https://martinfowler.com/bliki/ContractTest.html" }
+---
+
+Once you can write a CRUD test, the senior questions are about testing a *system of services*: how do two services agree on a contract without slow end-to-end tests, how do you test GraphQL and gRPC, how do you isolate dependencies, and how do you find authorization holes. This lesson covers the topics that separate a mid-level from a senior SDET.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  In a microservices world, end-to-end tests are slow, flaky and few. The leverage is in <strong>contract tests</strong> (cheap, fast checks that two services still agree) and <strong>service virtualization</strong> (test one service in isolation against fake dependencies). Reserve real end-to-end for a thin smoke layer.
+</div>
+
+## Contract testing (consumer-driven, with Pact)
+
+**The problem:** Service A (consumer) calls Service B (provider). If B changes its response shape, A breaks — but A's unit tests pass (they mock B) and B's tests pass (it doesn't know about A). You only find the break in expensive end-to-end runs or production.
+
+**Consumer-driven contract testing** fixes this. The *consumer* declares exactly what it needs from the provider — "when I GET `/users/2`, I expect a JSON object with an integer `id` and a string `email`." That expectation becomes a machine-readable **contract** (a "pact"). The provider then runs the contract against its real implementation to prove it still satisfies every consumer.
+
+How Pact works:
+
+1. **Consumer side** — in the consumer's test suite you define interactions against a Pact mock server. Running the test produces a **pact file** (JSON) describing each request/response expectation.
+
+```java
+// Consumer test (Pact JUnit5, illustrative)
+@Pact(consumer = "OrderService", provider = "UserService")
+public RequestResponsePact userExists(PactDslWithProvider builder) {
+    return builder
+        .given("user 2 exists")
+        .uponReceiving("a request for user 2")
+            .path("/users/2").method("GET")
+        .willRespondWith()
+            .status(200)
+            .body(new PactDslJsonBody()
+                .integerType("id", 2)
+                .stringType("email", "eve@reqres.in"))
+        .toPact();
+}
+```
+
+2. **Broker** — the pact file is published to a **Pact Broker**, a shared registry of contracts and verification results.
+
+3. **Provider side** — the provider pulls the pacts and replays each request against its real service, verifying every response matches. **`provider states`** (the `given("user 2 exists")`) let the provider set up the right data before replaying.
+
+Contract testing vs end-to-end: contracts are fast, run in each service's own pipeline, pinpoint *which* consumer/provider broke, and need no shared environment. They verify the *interface agreement*, not full business behavior — so you still keep a thin end-to-end smoke layer for true integration. **Pact = consumer-driven; Spring Cloud Contract** is a provider-driven alternative.
+
+## JSON Schema validation in depth
+
+A JSON Schema is itself JSON that describes the shape of valid data. Beyond `type`, the keywords that make schemas strict:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["id", "email", "age", "tags"],
+  "additionalProperties": false,
+  "properties": {
+    "id":    { "type": "integer", "minimum": 1 },
+    "email": { "type": "string", "format": "email" },
+    "age":   { "type": "integer", "minimum": 0, "maximum": 150 },
+    "status":{ "type": "string", "enum": ["active", "suspended"] },
+    "tags":  { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "address": { "type": "object", "required": ["zip"],
+                 "properties": { "zip": { "type": "string", "pattern": "^[0-9]{5}$" } } }
+  }
+}
+```
+
+- **`required`** — these keys must be present. **`additionalProperties: false`** — no unexpected keys allowed (catches accidental new fields and typos). Together they make a schema *closed*.
+- **`enum`** — value must be one of a fixed set. **`pattern`** — regex constraint. **`format`** — semantic hints (`email`, `date-time`, `uuid`).
+- **Numeric** (`minimum`/`maximum`), **string** (`minLength`/`maxLength`), **array** (`minItems`/`uniqueItems`) bounds turn schema validation into real boundary testing.
+- **`$ref`** — reuse sub-schemas; **`oneOf`/`anyOf`/`allOf`** — compose/branch (e.g. a payment that is *one of* card or bank).
+
+Schema validation is your cheapest defense against breaking changes: one assertion catches a renamed field, a type change, or a dropped required property across every test that hits that endpoint.
+
+## GraphQL testing — what differs
+
+GraphQL exposes **one endpoint** (usually `POST /graphql`); the client sends a **query** (read), **mutation** (write), or **subscription** (stream), choosing exactly the fields it wants. Variables are passed separately.
+
+```json
+{
+  "query": "query GetUser($id: ID!) { user(id: $id) { id email orders { id total } } }",
+  "variables": { "id": "2" }
+}
+```
+
+What changes for the tester:
+
+- **Status code is usually 200 even on errors.** A bad query or a resolver failure returns HTTP 200 with an `errors` array in the body. So you assert on `data` *and* `errors`, not just the status line.
+
+```json
+{ "data": null, "errors": [ { "message": "User not found", "path": ["user"] } ] }
+```
+
+- **Test field selection** — request a subset and a superset of fields; verify you get exactly what you asked for (over-/under-fetching is the whole point of GraphQL).
+- **Mutations** — like POST/PUT/DELETE but as GraphQL operations; assert the returned object and the side effect.
+- **Variables & input validation** — wrong types (`$id` must be `ID!`), missing required variables, and null handling.
+- **Schema introspection** — GraphQL has a typed schema you can query (`__schema`); use it for contract-style checks and to detect breaking schema changes.
+- **Authorization per field** — a field can be allowed for one role and forbidden for another within the same query; test field-level authz.
+- **Depth/complexity limits** — deeply nested or expensive queries can DoS the server; verify the server enforces depth/complexity caps.
+
+## gRPC testing (note)
+
+gRPC uses HTTP/2 + Protocol Buffers (binary) with a `.proto` contract and typed stubs; it supports unary and streaming calls. You can't just curl it — test with generated client stubs, or tools like **grpcurl**, **Postman** (gRPC support), or **ghz** for load. The `.proto` *is* the contract, so schema/contract drift is detected at compile time; your tests focus on behavior, status codes (gRPC has its own codes like `NOT_FOUND`, `PERMISSION_DENIED`), deadlines, and streaming semantics.
+
+## Mocking / stubbing dependencies with WireMock
+
+To test one service in isolation you replace its dependencies with **stubs** (service virtualization). **WireMock** is the standard JVM tool — it runs an HTTP server that returns canned responses you define.
+
+```java
+// stub: GET /users/2 -> 200 with a fixed body
+stubFor(get(urlEqualTo("/users/2"))
+    .willReturn(aResponse()
+        .withStatus(200)
+        .withHeader("Content-Type", "application/json")
+        .withBody("{ \"id\": 2, \"email\": \"eve@reqres.in\" }")));
+
+// simulate failure & latency to test resilience
+stubFor(get(urlEqualTo("/users/99"))
+    .willReturn(aResponse().withStatus(503).withFixedDelay(3000)));
+```
+
+Why mock: **determinism** (no flaky third party), **speed**, **edge cases** you can't trigger on the real service (500s, timeouts, malformed bodies), and **no cost/side effects** (payment sandboxes, email). The trade-off: a stub can drift from reality — which is exactly why you pair mocking with *contract tests* against the real provider. WireMock also supports request matching, stateful scenarios, fault injection, and proxy/record-and-playback. (Mountebank and Postman mocks fill the same role.)
+
+## API test data management
+
+Flaky tests usually trace back to data, not code. Strategies:
+
+- **Set up your own data** in test setup (via API or DB seed) rather than depending on pre-existing records that others can change.
+- **Make data unique** — suffix emails/usernames with a timestamp/UUID so parallel runs don't collide on unique constraints (the duplicate-409 trap).
+- **Clean up in teardown** — delete what you created so runs are repeatable and order-independent.
+- **Isolate environments** — a dedicated test DB/tenant; never mutate shared/prod data.
+- **Factories/builders** for request payloads so each test states only what differs from a sensible default.
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  The biggest source of intermittent API-test failures is shared, mutable test data and missing cleanup. Unique data + create-in-setup + delete-in-teardown removes most flakiness and makes parallel runs safe.
+</div>
+
+## Testing pagination, rate limits, retries, idempotency
+
+- **Pagination** — verify `page`/`per_page` (or cursor) params, `total`/`total_pages`, that the last page returns the remainder, an out-of-range page returns empty (not an error), and that no item is duplicated or skipped across pages. Watch for off-by-one and unstable ordering.
+- **Rate limits** — fire past the limit and assert **429** plus `Retry-After` and `X-RateLimit-*` headers; confirm requests succeed again after the window resets.
+- **Retries** — for transient 5xx/timeouts, verify the client retries with backoff and a cap, and that it does *not* retry non-idempotent writes blindly.
+- **Idempotency** — for write endpoints that accept an **idempotency key**, send the same key twice and assert only one resource is created and both calls return the same result. This is critical for payments and order creation.
+
+## API security basics (OWASP API Security Top 10)
+
+The single most important class to test is **broken authorization**.
+
+- **BOLA / IDOR (API1: Broken Object Level Authorization)** — the top API risk. As user A, request user B's object by guessing/altering an id: `GET /accounts/123` where 123 belongs to someone else. A secure API returns 403/404; a vulnerable one leaks the data. Test every object-by-id endpoint with a *different* user's token.
+- **Broken authentication (API2)** — weak/no token validation, accepting expired or tampered JWTs, no rate limit on login (credential stuffing). Test: expired token → 401, tampered signature → 401, missing token → 401.
+- **Broken function-level authorization (API5)** — a regular user calling admin-only endpoints/verbs (`DELETE /users/1`, `POST /admin/...`). Test each role against each privileged operation.
+- **Injection** — SQL/NoSQL/command injection via params or body (`' OR '1'='1`); assert the input is rejected/escaped and never returns a 500 stack trace.
+- **Excessive data exposure / mass assignment** — responses leaking fields (password hash, internal flags), or accepting fields the client shouldn't set (`{"role":"admin"}` on signup). Test that protected fields are ignored on input and absent from output.
+- **Security misconfiguration & unrestricted resource consumption** — verbose errors/stack traces, missing rate limits, missing security headers, no payload-size limit.
+
+The tester's authz pattern: hold one request fixed and vary *who* sends it (no token / low-priv token / other-user token / admin token) and confirm each gets the correct 200/401/403/404. Most real API breaches are authorization failures, not exotic exploits.
+
+## Microservices testing strategy & the API test pyramid
+
+For an API/microservices estate the pyramid is:
+
+- **Unit tests (base, most)** — pure logic, no network; milliseconds.
+- **Component / integration tests** — one service in isolation, its dependencies stubbed (WireMock); verify the service's own API behavior end-to-end within its boundary.
+- **Contract tests** — consumer-driven pacts verify each consumer/provider pair still agree, without a shared environment.
+- **End-to-end tests (tip, fewest)** — a thin layer of real cross-service smoke flows. Slow and the flakiest, so keep them few and high-value.
+
+The shift versus a monolith: push verification *down* into fast component + contract tests, and treat end-to-end as a small confidence check, not the main safety net. Performance/load testing is a separate axis layered on top (covered in the performance track) — measure latency percentiles, throughput and behavior under rate limits once functional correctness is established.
+
+## Interview questions & model answers
+
+**Q1. What is consumer-driven contract testing and why use it over end-to-end?**
+The consumer declares exactly what it needs from a provider as a machine-readable contract (a pact); the provider verifies it still satisfies every consumer's contract against its real implementation. It's fast, runs in each service's own pipeline with no shared environment, and pinpoints which consumer/provider broke — unlike slow, flaky end-to-end tests. It verifies the interface agreement, so you keep a thin end-to-end smoke layer for true behavior.
+
+**Q2. How does testing GraphQL differ from REST?**
+One endpoint instead of many; the client picks the fields. Crucially, GraphQL usually returns HTTP 200 even on errors, with an `errors` array in the body — so I assert on `data` and `errors`, not the status code. I also test field selection (over/under-fetch), variable type validation, field-level authorization, and query depth/complexity limits, and I can use introspection for schema-drift checks.
+
+**Q3. How would you test for BOLA / IDOR?**
+Authenticate as user A, then request user B's object by id (`GET /accounts/{B}`). A secure API returns 403 or 404; a vulnerable one leaks the data. I run this across every object-by-id endpoint and every verb, varying the token (none / low-priv / other-user / admin) while keeping the request fixed. It's OWASP API #1 and the most common real breach.
+
+**Q4. How do you keep dependency services out of your API tests?**
+Service virtualization — stub the dependencies with WireMock (or Mountebank/Postman mocks) so my service is tested in isolation against deterministic responses, including failures, latency and malformed bodies I can't trigger on the real service. To guard against stub drift I pair it with contract tests against the real provider.
+
+**Q5. What does the test pyramid look like for microservices?**
+Mostly fast unit tests; a layer of component/integration tests for each service with stubbed dependencies; contract tests verifying consumer/provider agreements; and a thin tip of real end-to-end smoke flows. The emphasis moves down from end-to-end toward component and contract tests because cross-service E2E is slow and flaky.
+
+**Q6. How do you make JSON Schema validation strict?**
+`required` for mandatory keys plus `additionalProperties: false` to reject unexpected keys, then constraints — `enum`, `pattern`, `format`, numeric/length/array bounds — so the schema also enforces values, not just types. A closed, constrained schema catches renamed fields, type changes and dropped fields in a single assertion.
+
+**Q7. How do you test idempotency and retries on write endpoints?**
+For idempotency I send the same request twice with the same idempotency key and assert only one resource is created and both responses match. For retries I simulate transient 5xx/timeouts (e.g. via WireMock) and verify the client retries with capped backoff, and that it does not blindly retry non-idempotent writes.
+
+**Q8. How do you prevent flaky data-driven API tests?**
+Create my own data in setup with unique values (timestamp/UUID suffixes) to avoid unique-constraint collisions in parallel runs, clean up in teardown so runs are repeatable, and isolate to a dedicated test environment so no one else mutates my data. Shared mutable data plus missing cleanup is the top cause of flakiness.
+
+**Q9. How would you test rate limiting?**
+Send requests past the configured limit and assert a 429 with `Retry-After` / `X-RateLimit-*` headers, then confirm requests succeed again after the window resets. I also check that legitimate traffic just under the limit is never throttled.
+
+## Common mistakes
+
+- Relying on end-to-end tests for everything instead of pushing coverage into fast component and contract tests.
+- Asserting only the HTTP status for GraphQL — missing errors that come back as 200 with an `errors` array.
+- Mocking dependencies but never running contract tests, so stubs silently drift from the real provider.
+- Skipping authorization testing (BOLA/IDOR/function-level) — the most common real API vulnerability.
+- Putting `additionalProperties: false` off and `required` empty, so the schema passes almost anything.
+- Sharing mutable test data without unique values or teardown, causing duplicate-409 flakiness and order-dependent runs.
+- Treating idempotency keys as untested plumbing, so retried payments double-charge.
+- Trying to curl gRPC — it's binary HTTP/2; use stubs, grpcurl, or a gRPC-aware client.

@@ -1,0 +1,305 @@
+---
+title: "QA/SDET interview question bank with model answers"
+track: qa-career
+summary: "The comprehensive QA/SDET interview question bank — manual foundations, test design, automation, Selenium, Playwright, API, framework design, CI/CD & Git, SQL, coding, scenario, and gotcha questions — each with a concise, strong model answer."
+order: 3
+est: 35
+difficulty: medium
+priority: must
+tags: [interview, questions, sdet, selenium, playwright, api, sql, framework]
+whyAsked: "This is the most-requested QA prep asset. Interviewers reuse a known pool of questions; rehearsing crisp model answers is the single biggest lever on pass rate."
+followUps:
+  - "How would you test a login page?"
+  - "Design a test automation framework."
+  - "Explain the test pyramid."
+resources:
+  - { label: "Test Automation University (free)", url: "https://testautomationu.applitools.com/" }
+  - { label: "Playwright docs", url: "https://playwright.dev/" }
+  - { label: "Selenium docs", url: "https://www.selenium.dev/documentation/" }
+  - { label: "NeetCode (coding prep)", url: "https://neetcode.io/practice" }
+---
+
+The fastest way to pass a QA/SDET loop is to rehearse crisp answers to the questions interviewers actually reuse. Below is a categorised bank with **concise model answers** — read them, then say them out loud in your own words until they're natural. Scenario and "design a framework" questions get their own dedicated lessons; here we cover the breadth.
+
+## Manual testing & foundations
+
+**1. What's the difference between verification and validation?**
+Verification asks "are we building the product right?" — static checks against spec (reviews, inspections). Validation asks "are we building the right product?" — dynamic checks that it meets user needs (actual testing). Verification is process-oriented; validation is product-oriented.
+
+**2. Severity vs priority?**
+Severity is the technical impact of a defect (how badly it breaks the system); priority is how soon it must be fixed (business urgency). They're independent: a typo in the company logo is low severity but high priority; a crash in a rarely-used admin screen is high severity but low priority.
+
+**3. Smoke vs sanity testing?**
+Smoke testing is a broad, shallow check that the critical paths of a new build work at all ("is the build stable enough to test?") — usually scripted, run on every build. Sanity testing is a narrow, deep check on specific functionality after a small change or bug fix, often unscripted.
+
+**4. Regression vs retesting?**
+Retesting verifies that a specific fixed defect is actually fixed (run the failed case again). Regression verifies that the fix (or any change) didn't break previously working functionality (run related/surrounding cases). Retesting is planned around known defects; regression is broader.
+
+**5. What is the defect life cycle?**
+New → Assigned → Open → Fixed → Retest → Closed, with branches for Rejected, Deferred, Duplicate, and Reopened (if the fix fails retest). The tester files (New), the lead assigns, the dev fixes, the tester verifies and closes — or reopens.
+
+**6. What goes into a good bug report?**
+A clear title, steps to reproduce, expected vs actual result, environment (build, OS, browser), severity/priority, and evidence (screenshot, logs, video). The goal: a developer can reproduce and understand it without asking you anything.
+
+**7. What is a test plan vs a test case vs a test scenario?**
+A test plan is the strategy document (scope, approach, resources, schedule, risks). A test scenario is a high-level "what to test" (e.g. "verify login"). A test case is the detailed "how to test" with steps, data, and expected results.
+
+**8. STLC — the software testing life cycle?**
+Requirement analysis → test planning → test case design → environment setup → test execution → defect reporting → test closure. It runs in parallel with the SDLC.
+
+**9. What is the difference between functional and non-functional testing?**
+Functional testing checks *what* the system does against requirements (login works, payment processes). Non-functional checks *how well* it does it — performance, load, security, usability, compatibility, reliability.
+
+**10. Black-box vs white-box vs grey-box testing?**
+Black-box: test against requirements with no knowledge of internals (most QA testing). White-box: test with knowledge of the code (unit tests, branch coverage). Grey-box: partial knowledge — e.g. knowing the DB schema or API contract while testing the UI.
+
+**11. What is exploratory testing and when do you use it?**
+Simultaneous learning, test design, and execution — the tester explores the app without pre-scripted cases, guided by charters. Best for new/changing features, finding the bugs scripts miss, and when documentation is thin. It complements, not replaces, scripted testing.
+
+**12. What does "test coverage" mean and is 100% the goal?**
+Coverage measures how much of something (requirements, code, branches) your tests exercise. 100% is rarely the goal — exhaustive testing is impossible and there are diminishing returns. Aim for risk-based coverage: cover the critical and high-risk paths thoroughly.
+
+## Test design techniques
+
+**13. Equivalence partitioning?**
+Divide inputs into groups (partitions) that should be treated the same, then test one representative per partition instead of every value. E.g. for an age field accepting 18–60: partitions are `<18` (invalid), 18–60 (valid), `>60` (invalid). Cuts test count without losing coverage.
+
+**14. Boundary value analysis?**
+Bugs cluster at boundaries, so test the edges of each partition. For 18–60: test 17, 18, 19 and 59, 60, 61. Combine with equivalence partitioning for efficient, high-yield coverage.
+
+**15. Decision table testing?**
+For logic with multiple conditions, build a table of condition combinations and their expected outcomes, then test each rule. Ensures you don't miss combinations — great for business rules (e.g. discount = f(customer type, order value, coupon)).
+
+**16. State transition testing?**
+Model the system as states and transitions, then test valid and invalid transitions. Ideal for workflows (order: created → paid → shipped → delivered) — verify you can't, say, ship an unpaid order.
+
+**17. What is pairwise / all-pairs testing?**
+When many parameters each have several values, testing all combinations explodes. Pairwise testing covers every *pair* of parameter values (most defects come from single or two-factor interactions), drastically reducing test count while catching the majority of interaction bugs.
+
+## Automation concepts
+
+**18. What is the test automation pyramid?**
+A model for test distribution: many fast, cheap **unit** tests at the base; fewer **integration/API** tests in the middle; few slow, brittle **UI/E2E** tests at the top. Push checks as low as possible. The anti-pattern is the "ice-cream cone" — mostly UI tests — which is slow and flaky.
+
+**19. What should you automate and what shouldn't you?**
+Automate: stable, repetitive, high-value paths — regression, smoke, critical journeys, API/integration. Don't automate: exploratory, one-off, rapidly-changing UI, or tests where maintenance cost exceeds value. Decide with ROI and the pyramid.
+
+**20. What makes a good automated test?**
+Independent (no reliance on other tests' state), deterministic (same result every run), fast, readable, with a single clear purpose and meaningful assertions, and self-cleaning (sets up and tears down its own data).
+
+**21. Implicit vs explicit waits?**
+Implicit wait sets a global polling timeout for element lookups — convenient but blunt and can hide problems. Explicit wait waits for a specific condition (element clickable, visible) on a specific element — precise and the recommended approach. Never mix them; never use hard-coded sleeps.
+
+**22. What causes flaky tests and how do you fix them?**
+Causes: fixed sleeps/timing races, test interdependence and shared state, unstable test data, environment instability, and non-deterministic externals. Fixes: explicit/auto waits, fully independent tests with their own data, stable setup/teardown, retrying only genuine non-determinism, and quarantining chronic offenders while you fix the root cause.
+
+**23. What is the Page Object Model and why use it?**
+A design pattern where each page/component is a class exposing locators and actions; tests call those methods instead of touching the DOM directly. Benefits: reuse, readability, and maintainability — when the UI changes you update one page object, not dozens of tests.
+
+**24. Data-driven vs keyword-driven testing?**
+Data-driven separates test logic from test data (run the same test with many data sets from a file/DB). Keyword-driven separates test logic from keywords/actions defined in tables, so non-coders can compose tests. Data-driven is far more common in modern frameworks.
+
+**25. How do you handle test data?**
+Externalise it (JSON/CSV/DB, not hard-coded), create it fresh per test where possible (via API setup for speed), use factories/builders for variation, and clean up after. Avoid sharing mutable state between tests, which causes order-dependence and flakiness.
+
+**26. How do you test across multiple browsers/devices?**
+Cross-browser via a grid (Selenium Grid, Playwright projects, or a cloud lab like BrowserStack/Sauce Labs) parameterising the browser/version. For devices, use responsive emulation plus real-device cloud for critical flows. Run the matrix in CI; don't try to cover every combination — prioritise by usage analytics.
+
+**27. What is BDD and when is it useful?**
+Behaviour-Driven Development describes behaviour in Given/When/Then (Gherkin), bridging business and tech. Useful when non-technical stakeholders need to read/contribute to scenarios. Cost: the extra glue/step-definition layer — only adopt it if the collaboration benefit is real, not for its own sake.
+
+**28. How do you measure the success of automation?**
+Not by test count. By outcomes: regression time saved, defects caught before production, flakiness rate (low and stable), pipeline pass rate, and how often automation unblocks releases. Coverage of critical paths matters more than raw numbers.
+
+## Selenium
+
+**29. What are the different Selenium locators and which are best?**
+id, name, className, tagName, linkText, partialLinkText, cssSelector, and xpath. Prefer id (fastest, most stable) when available, then cssSelector. Use xpath when you need to traverse relationships or match text, but it's slower and more brittle. Avoid locators tied to volatile attributes.
+
+**30. CSS selector vs XPath — trade-offs?**
+CSS is faster, more readable, and well-supported across browsers but can't traverse upward (to parents) or match by visible text. XPath is more powerful (axes, text matching, parent traversal) but slower and more fragile. Default to CSS; reach for XPath only when CSS can't express the locator.
+
+**31. How do you handle dynamic elements / dynamic IDs?**
+Use stable attributes or relative locators: `contains()`, `starts-with()` in XPath, attribute-substring CSS selectors, or anchor off a nearby stable element. Best long-term fix: ask devs to add stable `data-testid` hooks.
+
+**32. How do you handle waits in Selenium?**
+Use WebDriverWait with ExpectedConditions (explicit waits) for specific conditions; optionally a single implicit wait as a baseline (never mixed with explicit). Avoid `Thread.sleep` except in rare debugging. FluentWait lets you tune polling interval and ignore specific exceptions.
+
+**33. How do you handle alerts, frames, and multiple windows?**
+Alerts: `driver.switchTo().alert()` then accept/dismiss/getText. Frames: `switchTo().frame()` by index/name/element, and `defaultContent()` to exit. Windows/tabs: capture `getWindowHandles()`, iterate, and `switchTo().window(handle)`.
+
+**34. How do you handle dropdowns?**
+For native `<select>`, use the `Select` class (selectByVisibleText/Value/Index). For custom (div-based) dropdowns, click to open and select the option like any other element, with an explicit wait for the option list.
+
+**35. How do you perform mouse hover / drag-and-drop / keyboard actions?**
+Use the Actions class: `moveToElement` for hover, `dragAndDrop`/click-and-hold-then-move for drag, `sendKeys` with Keys for keyboard. Chain and `.perform()`. For tricky HTML5 drag-drop, sometimes a JS-executor fallback is needed.
+
+**36. What is the Selenium WebDriver architecture?**
+Your test code uses the language binding, which sends commands over the W3C WebDriver protocol (HTTP/JSON) to the browser driver (chromedriver/geckodriver), which controls the actual browser and returns responses. Selenium 4 standardised on the W3C protocol.
+
+## Playwright
+
+**37. Why might you choose Playwright over Selenium?**
+Auto-waiting and web-first assertions (much less flakiness), faster execution, built-in parallelism, network interception/mocking, auto-wait for elements, tracing/video/screenshots out of the box, multi-browser via one API, and a great test runner. Selenium's edge: broader language/grid ecosystem and longer-standing enterprise adoption.
+
+**38. What is auto-waiting in Playwright?**
+Before acting on an element, Playwright automatically waits for it to be attached, visible, stable, enabled, and able to receive events — so you rarely write explicit waits. Web-first assertions (`expect(locator).toBeVisible()`) also retry until they pass or time out, which kills most flakiness.
+
+**39. What are Playwright locators and why are they preferred over selectors?**
+Locators are lazy, auto-retrying handles to elements (`page.getByRole`, `getByText`, `getByTestId`). They re-resolve on each action, so they're resilient to DOM changes, and the role/label-based ones double as accessibility checks. Prefer them over raw CSS/XPath.
+
+**40. How does Playwright handle network mocking?**
+`page.route()` intercepts requests so you can stub responses, simulate errors/latency, or block resources — enabling fast, deterministic tests independent of backend state. You can also assert on requests/responses.
+
+**41. What are fixtures in Playwright?**
+Fixtures provide reusable, isolated setup/teardown (e.g. an authenticated `page`, test data) injected into tests. They run per-test by default, ensuring isolation, and avoid repetitive boilerplate. You can compose custom fixtures for things like logged-in sessions.
+
+## API testing
+
+**42. What are the common HTTP methods and status codes?**
+Methods: GET (read), POST (create), PUT (full update/replace), PATCH (partial update), DELETE (remove). Status codes: 2xx success (200 OK, 201 Created, 204 No Content), 3xx redirect, 4xx client error (400 bad request, 401 unauthorised, 403 forbidden, 404 not found, 429 too many requests), 5xx server error (500, 503).
+
+**43. What do you validate in an API response?**
+Status code, response body (schema and values), headers, response time, and error handling for bad input/auth. Schema validation catches contract-breaking changes; data validation checks correctness; negative tests confirm proper error codes and messages.
+
+**44. PUT vs PATCH vs POST?**
+POST creates a new resource (not idempotent — calling twice creates two). PUT replaces a resource entirely and is idempotent. PATCH applies a partial update. Idempotency matters for retries and reliability testing.
+
+**45. What is idempotency and why does it matter in testing?**
+An idempotent operation produces the same result no matter how many times it's called (GET, PUT, DELETE should be). It matters because clients retry on network failure; non-idempotent endpoints (like a naive POST payment) can double-process. Test that retries don't cause duplicates.
+
+**46. How do you test authentication/authorization in APIs?**
+Auth: valid/invalid/expired tokens, missing credentials, wrong scheme → expect 401. Authz: a valid user accessing another user's or a higher-privilege resource → expect 403. Test token expiry, refresh flows, and that protected endpoints reject anonymous calls.
+
+**47. What is API contract testing?**
+Verifying that the API conforms to an agreed contract (e.g. OpenAPI schema) so producer and consumer don't break each other. Schema/contract tests catch breaking changes (renamed field, changed type) early — often run in CI on every change.
+
+**48. How do you test rate limiting?**
+Send requests beyond the limit and assert you get 429 with appropriate headers (e.g. Retry-After), that the limit resets correctly after the window, and that legitimate traffic under the limit is unaffected.
+
+**49. How would you test a REST API end-to-end?**
+Cover the CRUD lifecycle: create a resource (POST → 201, capture id), read it (GET → 200, validate schema/values), update it (PUT/PATCH → 200, verify change), delete it (DELETE → 204), then GET the deleted id (→ 404). Add negative cases (bad payload → 400, no auth → 401) and validate headers and response time throughout.
+
+## Framework design
+
+**50. Walk me through the architecture of a test automation framework.**
+Layers: (1) test layer (the test cases/assertions), (2) page/business layer (POM page objects, reusable actions), (3) core/utilities (driver/browser management, waits, config reader, logging, reporting hooks), (4) test data (externalised JSON/CSV/DB), (5) config (environments, timeouts, browser), and (6) CI integration. Separation of concerns means UI changes touch only page objects, env changes touch only config.
+
+**51. What design patterns are used in test frameworks?**
+Page Object Model (encapsulate pages), Singleton (driver/config instance), Factory (create driver/browser instances), Builder (test data construction), Strategy (swap behaviours like browser type), and Fluent interfaces (chainable page methods for readability).
+
+**52. How do you manage configuration across environments?**
+Externalise into per-environment config files (or env vars), select via a parameter/profile at runtime (e.g. `-Denv=staging`), and never hard-code URLs/credentials. Secrets come from a vault or CI secrets, not the repo.
+
+**53. How do you structure reporting and logging?**
+Integrate a reporter (Allure, ExtentReports, or the framework's built-in) capturing pass/fail, steps, screenshots on failure, and trends. Add structured logging at key actions for debuggability. Surface the report as a CI artifact and publish trends.
+
+**54. How do you implement parallel execution?**
+At the runner level: TestNG `parallel` + thread-count, pytest-xdist, or Playwright projects/workers. Critical prerequisite: thread-safe driver management (ThreadLocal WebDriver) and fully independent tests with isolated data, or parallelism causes flakiness.
+
+**55. How do you handle screenshots and artifacts on failure?**
+Hook into the test lifecycle (TestNG listener, pytest fixture, Playwright trace) to capture a screenshot/video/trace on failure, attach it to the report, and upload as a CI artifact. Playwright's trace viewer is especially powerful for post-mortem debugging.
+
+**56. How do you keep a framework maintainable as it grows?**
+Strict separation of concerns (no locators in tests), the POM, reusable utilities, externalised data/config, consistent naming, code review for test code, linting, and pruning dead/duplicate tests. Treat test code as production code.
+
+**57. How would you design a framework to be reusable across UI and API?**
+Share the core layer (config, reporting, logging, data, CI) and provide separate UI (POM + driver) and API (client/request builders + schema validation) modules on top. Tests can mix layers — e.g. set up state via API (fast) and assert via UI — for speed and reliability.
+
+## CI/CD & Git
+
+**58. How do you integrate automated tests into CI/CD?**
+Trigger tests on push/PR via a pipeline (GitHub Actions/Jenkins/GitLab CI): install deps, run unit/API tests on every commit, run UI/E2E on PR/merge (often parallel/sharded), publish reports as artifacts, and fail the build on test failure to gate merges/deploys.
+
+**59. What is the difference between continuous integration, delivery, and deployment?**
+CI: merge and automatically build+test frequently. Continuous Delivery: every passing build is *deployable* to production (release is a manual button). Continuous Deployment: every passing build is *automatically* released to production. Tests are the safety net enabling all three.
+
+**60. How do you keep a CI test suite fast?**
+Parallelise/shard, push checks down the pyramid (more API/unit, fewer UI), run only affected tests where possible, cache dependencies, run the full suite nightly while keeping PR runs lean (smoke/critical), and quarantine flaky tests so they don't waste reruns.
+
+**61. Explain the basic Git workflow you use.**
+Branch per feature/fix off main, commit small and often with clear messages, push and open a PR, get review + green CI, then merge (squash or merge commit). Keep main always releasable. Pull/rebase to stay current and resolve conflicts locally.
+
+**62. git merge vs git rebase?**
+Merge preserves history and creates a merge commit (non-destructive, shows the true branch topology). Rebase replays your commits onto the target tip for a linear history (cleaner, but rewrites commit hashes — never rebase shared/pushed branches). Use merge for shared branches, rebase to tidy local work before pushing.
+
+**63. How do you resolve a merge conflict?**
+Git marks the conflicting regions; you open the files, choose/combine the correct content, remove the conflict markers, `git add` the resolved files, and complete the merge/rebase. Then re-run tests to confirm nothing broke.
+
+## SQL
+
+**64. What's the difference between INNER, LEFT, RIGHT, and FULL JOIN?**
+INNER returns only matching rows in both tables. LEFT returns all left-table rows plus matches (NULLs where none). RIGHT is the mirror. FULL returns all rows from both, matched where possible. Most QA validation uses INNER and LEFT.
+
+**65. WHERE vs HAVING?**
+WHERE filters rows before grouping; HAVING filters groups after aggregation (GROUP BY). You can't use aggregate functions in WHERE — use HAVING for "groups with `COUNT > 1`," for example.
+
+**66. How do you find duplicate records in a table?**
+`SELECT col, COUNT(*) FROM t GROUP BY col HAVING COUNT(*) > 1;` — group by the candidate-duplicate columns and keep groups appearing more than once.
+
+**67. How would you find the second-highest salary?**
+A common approach: `SELECT MAX(salary) FROM emp WHERE salary < (SELECT MAX(salary) FROM emp);` or use `DENSE_RANK() OVER (ORDER BY salary DESC)` and filter rank = 2 (handles ties cleanly).
+
+**68. What is database/back-end testing and why does it matter?**
+Validating data integrity, correctness, and constraints at the DB layer — that the UI/API actually persisted the right data, constraints/triggers fire, and there's no orphaned or duplicated data. It catches bugs the UI hides (e.g. a successful-looking save that wrote bad data).
+
+## Programming / coding (commonly asked)
+
+SDET loops usually include a coding round — light-to-medium DSA or practical scripting. Practice these patterns; full solutions belong in a dedicated DSA resource (e.g. NeetCode), but be ready for:
+
+1. **Reverse a string / check palindrome.**
+2. **Count character/word frequency** (hashmap) — e.g. most frequent character.
+3. **Find duplicates / first non-repeating character** in an array/string.
+4. **Two-sum / pair with a given sum** (hashmap).
+5. **FizzBuzz** and simple number logic (prime, factorial, Fibonacci).
+6. **Find the second-largest / max/min** in an array without sorting.
+7. **Anagram check** between two strings.
+8. **Parse a log/CSV file** and aggregate (very common, practical SDET task).
+9. **Remove duplicates from a list**, preserving order.
+10. **Sort a collection of objects** by a field (e.g. employees by salary).
+
+For each: state your approach and complexity before coding, write clean working code, then mention edge cases (empty input, nulls, case sensitivity).
+
+## Scenario / situational — "how would you test X?"
+
+These test structured thinking. The dedicated how-would-you-test lesson goes deep with a reusable framework; here are five quick structured answers.
+
+**69. How would you test a pen?**
+Clarify (what kind — ballpoint? for whom?). Functional: writes on paper, in expected colour, smoothly; cap fits; clicks if retractable. Non-functional: ink lasts as claimed, writes after sitting unused, comfortable grip, durable on drop. Negative/edge: writing on glass/cloth/wet paper, at angles, in cold/heat, upside down. Usability & packaging. The structure (functional → non-functional → edge → negative) is the point.
+
+**70. How would you test an elevator/lift?**
+Clarify (floors, capacity, building type). Functional: call from each floor, correct floor stops, doors open/close, button lights, weight limit alarm, emergency stop/alarm/phone. Non-functional: load (max weight), performance (speed, response time), reliability (continuous use), safety (overload, free-fall brakes, power failure → safe stop). Negative/edge: press all buttons, hold doors, overload, simultaneous calls, power cut, button mashing. Integration: fire-alarm mode, accessibility.
+
+**71. How would you test a login page?**
+Functional: valid login, invalid password, invalid username, empty fields, remember-me, logout, redirect after login, forgot-password flow. Security: SQL injection, XSS, brute-force lockout, password masking, no credentials in URL, HTTPS, session timeout, secure cookie flags. UI/UX: tab order, error messages, responsive layout, accessibility. Edge/negative: case sensitivity, leading/trailing spaces, very long inputs, special characters, concurrent sessions, back-button after logout. Performance: response time, many concurrent logins.
+
+**72. How would you test WhatsApp (a messaging app)?**
+Clarify scope (1:1, groups, media, calls?). Functional: send/receive text, media, voice notes; delivery/read receipts (single/double/blue ticks); group create/add/remove/admin; status; notifications. Non-functional: performance with large groups/media, low-bandwidth behaviour, battery/data usage, security (end-to-end encryption), reliability (offline → queue → send on reconnect). Edge/negative: send to blocked contact, no network, app killed mid-send, huge media, special characters/emoji, time-zone/timestamp correctness. Compatibility: OS versions, devices. Integration: contacts, camera, notifications, calls.
+
+**73. How would you test an ATM?**
+Functional: card insert/read, PIN (correct/incorrect/lockout), withdraw (valid amount, insufficient funds, exceeds daily limit, no cash in machine), balance enquiry, deposit, mini-statement, card eject, receipt. Non-functional: performance/response time, security (PIN encryption, card skimming protections, timeout), reliability (power/network failure mid-transaction → no money debited without dispense). Edge/negative: power cut during dispense, network drop, wrong PIN three times, request more than available, withdraw non-multiple of note denomination, leave card behind (timeout retraction). Integration: bank backend, account debit consistency, transaction logging.
+
+## Tricky / gotcha questions
+
+**74. Can you guarantee a bug-free product?**
+No — exhaustive testing is impossible, and "absence of errors" is a fallacy: software can be bug-free against the spec yet still fail to meet user needs. My job is to reduce risk to an acceptable level, focusing testing where impact and likelihood are highest, and to communicate residual risk clearly.
+
+**75. If you have very little time to test, what do you do?**
+Risk-based prioritisation: test the critical, high-traffic, high-impact paths first (smoke + core journeys), use exploratory testing for breadth, lean on existing automation for regression, and explicitly communicate what was and wasn't covered so stakeholders make an informed release decision.
+
+**76. A developer says "it works on my machine." How do you respond?**
+Reproduce on a clean, agreed environment and capture exact steps, build, config, and data. The difference is usually environment, data, or version. I provide a reproducible report (logs/screenshots/video) so it's about the evidence, not opinions — collaborative, not adversarial.
+
+**77. You found a critical bug an hour before release. What now?**
+Assess severity/impact and reproducibility, communicate immediately to the dev lead/PM/release manager with clear evidence, and lay out options (fix-and-delay, hotfix, feature-flag off, ship with known issue + mitigation). The decision is the business's; my job is to surface the risk clearly and fast — never to silently let it ship.
+
+**78. How do you decide when testing is "done"?**
+Against exit criteria agreed up front: planned tests executed, critical/high defects resolved (or accepted), coverage of high-risk areas met, and acceptable defect trends. "Done" is a risk decision, not "all bugs found" — that's never provable.
+
+**79. What would you do if requirements are missing or unclear?**
+Don't guess — ask the PM/BA/dev to clarify, derive expected behaviour from related features, existing behaviour, and standards, and document my assumptions explicitly so they can be confirmed. Unclear requirements are themselves a defect to raise early. Exploratory testing helps surface the ambiguities.
+
+<div class="callout tip">
+  <div class="ct">How to use this bank</div>
+  Don't memorise verbatim — internalise the structure of each answer and say it in your own words. After each real interview, add any new question you got (and a better answer) to your own copy. Pair this with the how-would-you-test and behavioral lessons for full loop coverage.
+</div>

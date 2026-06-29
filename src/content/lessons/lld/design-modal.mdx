@@ -1,0 +1,227 @@
+---
+title: "LLD: Design a Modal / Dialog Component"
+track: lld
+summary: "Design a production-quality Modal — focus trap, scroll lock, portal rendering, accessibility, animation, and composable API."
+order: 4
+est: 25
+difficulty: medium
+priority: must
+tags: [lld, modal, dialog, accessibility, focus-trap, portal, react]
+whyAsked: "Modal is one of the top 3 component design questions. It tests accessibility knowledge, portal usage, keyboard interaction, and composable API design."
+followUps:
+  - "How do you trap focus inside the modal?"
+  - "Why use a portal for the modal?"
+  - "How do you handle stacked modals?"
+  - "What ARIA attributes does an accessible dialog need?"
+  - "How do you prevent body scroll when a modal is open?"
+resources:
+  - { label: "WAI-ARIA: Dialog pattern", url: "https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/" }
+  - { label: "react.dev: createPortal", url: "https://react.dev/reference/react-dom/createPortal" }
+---
+
+## Step 1: Requirements
+
+**Must-have:**
+- Open/close via `isOpen` prop + `onClose` callback (controlled)
+- Renders in a Portal (outside the component tree DOM)
+- Closes on Escape key and backdrop click
+- Traps focus inside when open
+- Body scroll lock when open
+- `role="dialog"`, `aria-modal="true"`, `aria-labelledby`
+
+**Nice-to-have:**
+- Enter animation + exit animation
+- Nested modals (stack)
+- Size variants (sm, md, lg, full)
+
+---
+
+## Step 2: API design
+
+```tsx
+interface ModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  title: string;
+  children: React.ReactNode;
+  size?: 'sm' | 'md' | 'lg' | 'full';
+  closeOnBackdropClick?: boolean;  // default true
+  closeOnEscape?: boolean;          // default true
+  initialFocusRef?: React.RefObject<HTMLElement>; // what to focus on open
+}
+
+// Composable sub-components (compound pattern)
+Modal.Header
+Modal.Body
+Modal.Footer
+```
+
+---
+
+## Step 3: Implementation
+
+```tsx
+import { useEffect, useRef, useCallback, useId } from 'react';
+import { createPortal } from 'react-dom';
+
+function Modal({
+  isOpen,
+  onClose,
+  title,
+  children,
+  size = 'md',
+  closeOnBackdropClick = true,
+  closeOnEscape = true,
+  initialFocusRef,
+}: ModalProps) {
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId(); // stable id for aria-labelledby
+
+  // 1. Escape key handler
+  useEffect(() => {
+    if (!isOpen || !closeOnEscape) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [isOpen, onClose, closeOnEscape]);
+
+  // 2. Body scroll lock
+  useEffect(() => {
+    if (!isOpen) return;
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = originalOverflow; };
+  }, [isOpen]);
+
+  // 3. Focus management
+  useEffect(() => {
+    if (!isOpen) return;
+    const previouslyFocused = document.activeElement as HTMLElement;
+    // Focus the initial element or the dialog itself
+    setTimeout(() => {
+      (initialFocusRef?.current ?? dialogRef.current)?.focus();
+    }, 0);
+    // Restore focus on close
+    return () => { previouslyFocused?.focus(); };
+  }, [isOpen, initialFocusRef]);
+
+  // 4. Focus trap
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key !== 'Tab') return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const focusable = dialog.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last?.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first?.focus();
+    }
+  }, []);
+
+  // 5. Backdrop click
+  const handleBackdropClick = useCallback((e: React.MouseEvent) => {
+    if (closeOnBackdropClick && e.target === overlayRef.current) onClose();
+  }, [closeOnBackdropClick, onClose]);
+
+  if (!isOpen) return null;
+
+  const sizeClasses = {
+    sm: 'max-w-sm',
+    md: 'max-w-md',
+    lg: 'max-w-2xl',
+    full: 'max-w-full m-4',
+  };
+
+  return createPortal(
+    // Overlay / backdrop
+    <div
+      ref={overlayRef}
+      onClick={handleBackdropClick}
+      style={{
+        position: 'fixed', inset: 0,
+        background: 'rgba(0,0,0,0.5)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 1000,
+      }}
+    >
+      {/* Dialog */}
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}         // makes div focusable for initial focus
+        onKeyDown={handleKeyDown}
+        style={{
+          background: '#fff',
+          borderRadius: 12,
+          padding: 24,
+          width: '100%',
+          maxWidth: sizeClasses[size],
+          outline: 'none',
+          maxHeight: '90vh',
+          overflowY: 'auto',
+        }}
+      >
+        {/* Header */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2 id={titleId} style={{ margin: 0 }}>{title}</h2>
+          <button
+            onClick={onClose}
+            aria-label="Close dialog"
+            style={{ border: 'none', background: 'none', fontSize: 24, cursor: 'pointer' }}
+          >
+            ×
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>,
+    document.body
+  );
+}
+```
+
+---
+
+## Step 4: Edge cases to discuss
+
+**Stacked modals:** Each modal pushes an entry onto a global stack. The `zIndex` increments per level (1000, 1010, 1020…). Only the top-most modal gets the Escape handler and focus trap. A `ModalProvider` context manages the stack.
+
+**Animation:** Conditionally render the portal at all times (to allow exit animation) by tracking an `isVisible` state that trails `isOpen` slightly:
+
+```tsx
+const [isVisible, setIsVisible] = useState(false);
+useEffect(() => {
+  if (isOpen) setIsVisible(true);
+  // If using CSS transitions, delay unmount until animation finishes
+}, [isOpen]);
+```
+
+Or use Framer Motion / Reanimated's `AnimatePresence`.
+
+**Scroll inside modal:** The `overflowY: 'auto'` on the dialog and `overflow: 'hidden'` on body together prevent body scroll while allowing modal content to scroll.
+
+**iOS Safari body scroll bug:** On iOS, `overflow: hidden` on body doesn't fully prevent scroll. Fix:
+```ts
+document.body.style.position = 'fixed';
+document.body.style.top = `-${window.scrollY}px`;
+// On close, restore:
+document.body.style.position = '';
+const scrollY = document.body.style.top;
+window.scrollTo(0, -parseInt(scrollY || '0'));
+```
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "The modal renders in a portal on `document.body` so it isn't clipped by overflow or z-index on ancestors. Three effects: Escape key listener, body scroll lock (restored on unmount), and focus management (move focus in on open, restore on close). Tab trap iterates focusable elements and cycles at the boundary. ARIA: `role='dialog'`, `aria-modal='true'`, `aria-labelledby` pointing to the title's ID."
+</div>

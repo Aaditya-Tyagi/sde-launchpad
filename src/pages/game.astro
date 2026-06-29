@@ -1,0 +1,731 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { PATTERNS, QUOTES } from '../data/dsaPatterns';
+import { CODE_PROBLEMS } from '../data/codeProblems';
+const totalProblems = PATTERNS.reduce((s, p) => s + p.problems.length, 0);
+const codeLabIds = CODE_PROBLEMS.map((p) => p.id);
+---
+<BaseLayout title="DSA Quest · SDE-2 Launchpad" active="game">
+  <div class="wrap" style="padding-top:28px;max-width:1100px">
+
+    <!-- ═══════════════ HERO ═══════════════ -->
+    <section class="ghero glass">
+      <div class="ghero-glow"></div>
+
+      <!-- Mascot -->
+      <div class="gmascot">
+        <div class="gmascot-halo"></div>
+        <div id="mascot"></div>
+        <div class="gm-quote-bubble" id="speech">Let's solve one today.</div>
+      </div>
+
+      <!-- Stats column -->
+      <div class="ghero-body">
+        <!-- Top stat row -->
+        <div class="gstats">
+          <div class="gstat">
+            <span class="gs-ico fire" id="ic-fire"></span>
+            <div>
+              <b id="streakN">0</b>
+              <span>streak</span>
+              <div class="gs-best" id="bestStreak"></div>
+            </div>
+          </div>
+          <div class="gstat-div"></div>
+          <div class="gstat">
+            <span class="gs-ico mint" id="ic-check"></span>
+            <div>
+              <b id="solvedN">0</b>
+              <span>of {totalProblems} solved</span>
+              <div class="gs-diff" id="diffBreak"></div>
+            </div>
+          </div>
+          <div class="gstat-div"></div>
+          <div class="gstat">
+            <span class="gs-ico lav" id="ic-star"></span>
+            <div>
+              <b id="lvlN">1</b>
+              <span>level</span>
+              <div class="gs-xpbar-wrap">
+                <div class="gs-xpbar" id="xpBar"></div>
+              </div>
+              <div class="gs-xplabel" id="xpLabel"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 7-day activity -->
+        <div class="g7day" id="activity7"></div>
+
+        <!-- Daily goal -->
+        <div class="ggoal">
+          <div class="ggoal-ring">
+            <svg width="60" height="60"><circle cx="30" cy="30" r="26" stroke="var(--panel-4)" stroke-width="4" fill="none"/><circle id="goalArc" cx="30" cy="30" r="26" stroke="var(--accent-2)" stroke-width="4" fill="none" stroke-linecap="round" stroke-dasharray="163.4" stroke-dashoffset="163.4" transform="rotate(-90 30 30)"/></svg>
+            <span id="goalPct">0%</span>
+          </div>
+          <div style="flex:1;min-width:0">
+            <h4 id="goalText">Daily goal: 0 / 2</h4>
+            <p class="muted" style="font-size:13px;margin-top:2px">Solve <span id="goalNum">2</span> problems today.</p>
+          </div>
+          <div class="ggoal-btns">
+            <button class="sqbtn" id="goalDown" aria-label="Lower goal">−</button>
+            <button class="sqbtn" id="goalUp" aria-label="Raise goal">+</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ BADGE SHELF ═══════════════ -->
+    <div class="gbadge-shelf" id="badgeShelf"></div>
+
+    <!-- ═══════════════ PATH HEADER ═══════════════ -->
+    <div class="row" style="justify-content:space-between;align-items:center;margin:36px 0 6px">
+      <h2 style="font-size:28px;font-weight:700;letter-spacing:-.5px">The 30-Pattern Path</h2>
+      <label class="switch-wrap">
+        <span class="muted" style="font-size:13px">Free roam</span>
+        <span class="switch"><input type="checkbox" id="freeRoam" /><span class="switch-track"><span class="switch-thumb"></span></span></span>
+      </label>
+    </div>
+    <p class="muted" style="font-size:15px;max-width:600px;margin-bottom:28px">Each pattern unlocks when you've solved 3 in the one before. Tap a node to see problems.</p>
+
+    <!-- ═══════════════ THE PATH ═══════════════ -->
+    <div class="gpath-outer">
+      <div class="gpath" id="path">
+        <div class="gline"></div>
+      </div>
+    </div>
+
+    <div class="center muted" style="margin:34px 0;font-size:13px">
+      Solve all {totalProblems} problems and you've covered every interview pattern. Bitsy believes in you.
+    </div>
+  </div>
+
+  <!-- Pattern modal -->
+  <div class="gmodal-overlay" id="modalOverlay"><div class="gmodal glass" id="modal"></div></div>
+  <!-- Confetti -->
+  <canvas id="confetti" style="position:fixed;inset:0;pointer-events:none;z-index:200;display:none"></canvas>
+
+  <!-- ═══════════════ STYLES ═══════════════ -->
+  <style is:global>
+    /* ── mascot + quote bubble ── */
+    .ghero { border-radius:18px; padding:26px 28px; display:flex; gap:28px; align-items:flex-start; flex-wrap:wrap; position:relative; overflow:hidden; }
+    .ghero-glow { position:absolute; top:-80px; right:-80px; width:300px; height:300px; background:rgba(192,193,255,.1); border-radius:50%; filter:blur(70px); pointer-events:none; }
+    .gmascot { position:relative; flex:0 0 auto; width:148px; display:flex; flex-direction:column; align-items:center; gap:10px; }
+    .gmascot-halo { position:absolute; top:14px; left:14px; right:14px; bottom:auto; height:120px; background:radial-gradient(circle, rgba(192,193,255,.25), transparent 70%); border-radius:50%; filter:blur(16px); }
+    #mascot { position:relative; z-index:1; }
+    .gm-quote-bubble { font-size:13px; font-style:italic; color:var(--muted); text-align:center; line-height:1.45; max-width:148px; }
+
+    /* ── stats ── */
+    .ghero-body { flex:1; min-width:280px; }
+    .gstats { display:flex; gap:6px; align-items:stretch; flex-wrap:wrap; }
+    .gstat { display:flex; gap:10px; align-items:flex-start; padding:10px 14px; background:rgba(255,255,255,.03); border:1px solid var(--line); border-radius:12px; flex:1; min-width:100px; }
+    .gstat-div { width:1px; background:var(--line); margin:4px 0; }
+    .gs-ico { width:24px; height:24px; flex:0 0 auto; display:grid; place-items:center; margin-top:2px; }
+    .gs-ico.fire { color:var(--warn); } .gs-ico.mint { color:var(--accent-2); } .gs-ico.lav { color:var(--accent); }
+    .gstat b { font-size:22px; font-weight:700; display:block; line-height:1.1; }
+    .gstat span { font-size:11px; color:var(--muted); font-family:var(--mono); }
+    .gs-best { font-size:10px; color:var(--muted); font-family:var(--mono); margin-top:2px; }
+    .gs-diff { font-size:10px; color:var(--muted); font-family:var(--mono); margin-top:2px; display:flex; gap:5px; flex-wrap:wrap; }
+    .gs-diff .de { color:var(--accent-2); } .gs-diff .dm { color:var(--warn); } .gs-diff .dh { color:var(--hot); }
+    /* XP bar */
+    .gs-xpbar-wrap { width:100%; height:4px; background:rgba(255,255,255,.1); border-radius:3px; margin-top:5px; overflow:hidden; }
+    .gs-xpbar { height:100%; background:linear-gradient(90deg,var(--accent),var(--accent-2)); border-radius:3px; transition:width .4s ease; width:0%; }
+    .gs-xplabel { font-size:10px; color:var(--muted); font-family:var(--mono); margin-top:2px; }
+
+    /* ── 7-day activity dots ── */
+    .g7day { display:flex; align-items:center; gap:6px; margin-top:14px; }
+    .g7day-label { font-size:11px; color:var(--muted); font-family:var(--mono); margin-right:4px; }
+    .g7dot { width:26px; height:26px; border-radius:7px; display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:9px; font-family:var(--mono); gap:1px; }
+    .g7dot.active { background:rgba(78,222,163,.22); border:1px solid rgba(78,222,163,.35); color:var(--accent-2); }
+    .g7dot.today { box-shadow:0 0 0 2px var(--accent-2); }
+    .g7dot.inactive { background:rgba(255,255,255,.04); border:1px solid var(--line); color:var(--faint); }
+    .g7dot-day { font-weight:700; font-size:8px; }
+    .g7dot-ct { font-size:9px; }
+
+    /* ── daily goal ── */
+    .ggoal { display:flex; gap:14px; align-items:center; margin-top:16px; background:rgba(19,27,46,.7); border:1px solid var(--line); border-radius:14px; padding:12px 16px; }
+    .ggoal-ring { position:relative; flex:0 0 auto; width:60px; height:60px; }
+    .ggoal-ring span { position:absolute; inset:0; display:grid; place-items:center; font-family:var(--mono); font-size:12px; font-weight:700; }
+    .ggoal h4 { font-size:16px; font-weight:600; }
+    .ggoal-btns { display:flex; gap:6px; }
+    .sqbtn { width:32px; height:32px; border-radius:9px; background:var(--panel-4); border:1px solid var(--line); color:var(--text); font-size:16px; font-weight:700; cursor:pointer; display:grid; place-items:center; transition:.15s; }
+    .sqbtn:hover { background:var(--panel-3); border-color:var(--accent); } .sqbtn:active { transform:scale(.9); }
+
+    /* ── switch ── */
+    .switch-wrap { display:flex; gap:10px; align-items:center; cursor:pointer; }
+    .switch { position:relative; display:inline-block; }
+    .switch input { position:absolute; opacity:0; width:0; height:0; }
+    .switch-track { display:block; width:42px; height:22px; border-radius:999px; background:var(--panel-4); border:1px solid var(--line); transition:.2s; position:relative; }
+    .switch-thumb { position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background:var(--muted); transition:.2s; }
+    .switch input:checked + .switch-track { background:var(--accent-2); border-color:var(--accent-2); }
+    .switch input:checked + .switch-track .switch-thumb { transform:translateX(20px); background:#06251a; }
+
+    /* ── badge shelf ── */
+    .gbadge-shelf { display:flex; gap:8px; flex-wrap:wrap; margin:22px 0 0; padding:16px 18px; background:rgba(255,255,255,.02); border:1px solid var(--line); border-radius:14px; }
+    .gbadge-shelf:empty { display:none; }
+    .gbadge { display:flex; align-items:center; gap:7px; padding:6px 12px; border-radius:10px; border:1px solid; font-size:12px; font-weight:600; font-family:var(--mono); cursor:default; position:relative; transition:.15s; }
+    .gbadge.earned { background:rgba(192,193,255,.1); border-color:rgba(192,193,255,.3); color:var(--text); }
+    .gbadge.earned:hover { background:rgba(192,193,255,.18); }
+    .gbadge.locked { background:rgba(255,255,255,.03); border-color:rgba(255,255,255,.08); color:var(--faint); filter:grayscale(.6); }
+    .gbadge-icon { font-size:16px; }
+    .gbadge-tip { position:absolute; bottom:calc(100% + 6px); left:50%; transform:translateX(-50%); background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:5px 10px; font-size:11px; white-space:nowrap; color:var(--muted); pointer-events:none; opacity:0; transition:.15s; z-index:30; }
+    .gbadge:hover .gbadge-tip { opacity:1; }
+
+    /* ── path ── */
+    .gpath-outer { max-width: 640px; margin: 0 auto; }
+    .gpath { position:relative; display:flex; flex-direction:column; align-items:center; gap:0; padding:16px 0; }
+    .gline { position:absolute; top:54px; bottom:54px; width:3px; left:50%; transform:translateX(-50%); background:linear-gradient(to bottom, var(--accent), rgba(192,193,255,.12)); opacity:.4; z-index:0; border-radius:3px; }
+
+    /* zigzag offsets */
+    .gnode-wrap { position:relative; z-index:1; display:flex; flex-direction:column; align-items:center; margin-bottom:52px; width:240px; animation:gnodein .4s ease both; }
+    .gnode-wrap:last-child { margin-bottom:0; }
+    .gnode-wrap.side-l { align-self:flex-start; margin-left:20px; }
+    .gnode-wrap.side-r { align-self:flex-end; margin-right:20px; }
+
+    @keyframes gnodein { from{opacity:0;transform:translateY(18px)} to{opacity:1;transform:translateY(0)} }
+
+    /* node circle */
+    .gnode { position:relative; width:84px; height:84px; border-radius:50%; border:none; background:none; cursor:pointer; padding:0; }
+    .gnode .gn-face { position:absolute; inset:0; border-radius:50%; display:grid; place-items:center; font-size:30px; background:rgba(23,31,51,.8); backdrop-filter:blur(12px); border:2px solid var(--line); transition:transform .2s, box-shadow .2s; }
+    .gnode:hover:not(.locked) .gn-face { transform:scale(1.1); }
+    .gnode.unlocked .gn-face { border-color:rgba(78,222,163,.6); box-shadow:0 0 20px rgba(78,222,163,.2); }
+    .gnode.unlocked.active .gn-face { animation:gpulse 2s infinite; }
+    .gnode.progress .gn-face { border-color:rgba(192,193,255,.6); box-shadow:0 0 20px rgba(192,193,255,.18); }
+    .gnode.mastered .gn-face { border-color:rgba(255,185,95,.7); box-shadow:0 0 24px rgba(255,185,95,.3); }
+    .gnode.locked { cursor:not-allowed; }
+    .gnode.locked .gn-face { opacity:.45; filter:grayscale(.6); }
+
+    /* progress ring SVG overlay */
+    .gn-ring { position:absolute; inset:-3px; pointer-events:none; }
+
+    /* badges */
+    .gn-badge { position:absolute; bottom:-4px; right:-4px; min-width:24px; height:24px; padding:0 5px; border-radius:999px; display:grid; place-items:center; font-family:var(--mono); font-size:10px; font-weight:700; border:2px solid var(--bg); }
+    .gn-badge.b-prog { background:var(--accent-2); color:#06251a; }
+    .gn-badge.b-lock { background:var(--panel-4); color:var(--muted); }
+    .gn-badge.b-master { background:var(--warn); color:#2a1700; }
+    .gn-crown { position:absolute; top:-14px; left:50%; transform:translateX(-50%); font-size:18px; }
+    .gn-next-pip { position:absolute; top:-6px; right:-6px; width:16px; height:16px; border-radius:50%; background:var(--hot); border:2px solid var(--bg); animation:pipblink 1.4s infinite; }
+    @keyframes pipblink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* label */
+    .glabel { text-align:center; margin-top:12px; }
+    .glabel .gl-name { font-size:17px; font-weight:600; line-height:1.2; }
+    .glabel.dim .gl-name { color:var(--muted); }
+    .glabel .gl-sub { font-size:11px; font-family:var(--mono); margin-top:3px; max-width:200px; }
+    .glabel .gl-sub.code { color:var(--accent-2); } .glabel .gl-sub.muted { color:var(--faint); }
+
+    @keyframes gpulse { 0%{box-shadow:0 0 0 0 rgba(78,222,163,.45)} 70%{box-shadow:0 0 0 14px rgba(78,222,163,0)} 100%{box-shadow:0 0 0 0 rgba(78,222,163,0)} }
+
+    /* ── modal ── */
+    .gmodal-overlay { position:fixed; inset:0; background:rgba(6,14,32,.82); backdrop-filter:blur(4px); z-index:120; display:none; align-items:center; justify-content:center; padding:16px; }
+    .gmodal-overlay.open { display:flex; }
+    .gmodal { width:min(640px,96vw); max-height:88vh; display:flex; flex-direction:column; border-radius:18px; overflow:hidden; box-shadow:var(--shadow); animation:gmin .22s ease; }
+    @keyframes gmin { from{opacity:0;transform:scale(.95)} to{opacity:1;transform:scale(1)} }
+
+    .gm-head { padding:18px 22px 14px; border-bottom:1px solid var(--line); background:rgba(19,27,46,.65); display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+    .gm-icon { width:44px; height:44px; border-radius:12px; background:rgba(192,193,255,.1); border:1px solid rgba(192,193,255,.2); display:grid; place-items:center; font-size:24px; flex:0 0 auto; }
+    .gm-eyebrow { display:flex; align-items:center; gap:9px; font-family:var(--mono); font-size:11px; }
+    .gm-eyebrow .e-pat { color:var(--accent); text-transform:uppercase; letter-spacing:.12em; font-weight:700; }
+    .gm-eyebrow .e-dot { width:3px; height:3px; border-radius:50%; background:var(--faint); }
+    .gm-eyebrow .e-solved { color:var(--muted); }
+    .gm-title { font-size:22px; font-weight:700; margin-top:3px; }
+    .gm-x { width:32px; height:32px; border-radius:50%; border:none; background:none; color:var(--muted); cursor:pointer; display:grid; place-items:center; transition:.15s; }
+    .gm-x:hover { background:var(--panel-3); color:var(--text); }
+
+    .gm-sub { padding:10px 22px; background:rgba(34,42,61,.35); font-size:14px; font-style:italic; color:var(--muted); border-bottom:1px solid var(--line); }
+
+    /* modal progress bar */
+    .gm-progbar-wrap { height:3px; background:rgba(255,255,255,.07); }
+    .gm-progbar { height:100%; background:linear-gradient(90deg, var(--accent), var(--accent-2)); transition:width .35s ease; }
+
+    .gm-list { padding:10px 12px; overflow-y:auto; flex:1; }
+    .gm-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border-radius:10px; transition:background .15s; }
+    .gm-row:hover { background:rgba(49,57,77,.4); }
+    .gm-row .r-left { display:flex; align-items:center; gap:12px; min-width:0; flex:1; }
+    .gm-row input[type=checkbox] { width:20px; height:20px; flex:0 0 auto; accent-color:var(--accent-2); cursor:pointer; border-radius:5px; }
+    .gm-row .r-title { font-family:var(--mono); font-size:13px; color:var(--muted); font-weight:500; flex:1; min-width:0; }
+    .gm-row.solved .r-title { color:var(--text); font-weight:600; text-decoration:line-through; text-decoration-color:rgba(78,222,163,.4); }
+    .gm-chip { display:inline-flex; padding:2px 7px; border-radius:5px; font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; font-family:var(--mono); border:1px solid; flex:0 0 auto; }
+    .chip-easy { background:rgba(78,222,163,.15); color:var(--accent-2); border-color:rgba(78,222,163,.25); }
+    .chip-medium { background:rgba(255,185,95,.15); color:var(--warn); border-color:rgba(255,185,95,.25); }
+    .chip-hard { background:rgba(255,180,171,.15); color:var(--hot); border-color:rgba(255,180,171,.25); }
+    .r-xp { font-family:var(--mono); font-size:10px; color:var(--warn); opacity:.6; flex:0 0 auto; }
+    .r-open { display:flex; align-items:center; gap:4px; font-family:var(--mono); font-size:11px; color:var(--accent); text-decoration:none; opacity:.5; transition:.15s; flex:0 0 auto; }
+    .gm-row:hover .r-open { opacity:1; }
+    .r-lab { color:var(--accent-2); opacity:.75; }
+
+    .gm-foot { padding:14px 22px; border-top:1px solid var(--line); background:rgba(19,27,46,.65); display:flex; justify-content:space-between; align-items:center; gap:14px; flex-wrap:wrap; }
+    .gm-foot .f-stats { display:flex; align-items:center; gap:16px; }
+    .gm-foot .f-stat span { font-size:11px; color:var(--muted); font-family:var(--mono); display:block; }
+    .gm-foot .f-stat b { font-size:18px; font-weight:700; }
+    .gm-foot .f-div { width:1px; height:30px; background:var(--line); }
+    .gm-cta { padding:9px 18px; background:linear-gradient(90deg,var(--accent),var(--accent-2)); color:#0d0096; border:none; border-radius:10px; font-size:13px; font-weight:700; cursor:pointer; font-family:var(--mono); transition:.15s; }
+    .gm-cta:hover { filter:brightness(1.1); } .gm-cta:active { transform:scale(.96); }
+
+    /* floating XP popup */
+    .xp-float { position:fixed; pointer-events:none; z-index:400; font-family:var(--mono); font-size:15px; font-weight:800; color:var(--warn); text-shadow:0 0 12px rgba(255,185,95,.5); transition:all .7s cubic-bezier(.22,1,.36,1); }
+
+    /* toast */
+    .gtoa { position:fixed; bottom:28px; left:50%; transform:translateX(-50%); background:var(--panel); border:1px solid var(--accent-2); color:var(--accent-2); padding:11px 22px; border-radius:30px; font-weight:700; z-index:210; box-shadow:var(--shadow); white-space:nowrap; animation:toa-in .3s ease; }
+    @keyframes toa-in { from{opacity:0;transform:translateX(-50%) translateY(10px)} to{opacity:1;transform:translateX(-50%) translateY(0)} }
+
+    @media (max-width:600px) {
+      .gnode-wrap.side-l { margin-left:0; }
+      .gnode-wrap.side-r { margin-right:0; }
+      .gmascot { width:120px; }
+      .gstats { gap:4px; }
+    }
+  </style>
+
+  <!-- ═══════════════ SCRIPT ═══════════════ -->
+  <script define:vars={{ PATTERNS, QUOTES, totalProblems, codeLabIds, base: import.meta.env.BASE_URL.replace(/\/$/, '') }}>
+    const store = window.SDE2;
+    const el = (id) => document.getElementById(id);
+
+    /* ── SVG icon literals ── */
+    const SVG = {
+      fire:  '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2c.6 3.6-1.6 5.2-3 7-1 1.4-.6 3.1 1 3.1 1.5 0 2.2-1.4 1.9-2.8 2.4 1.7 3.4 4.5 2.1 7.2-1 2-2.9 3-5 3-3 0-5.4-2.3-5.4-5.5 0-2.8 1.8-4.8 3.5-6.6C9.6 6.5 11.4 4.9 13 2z"/></svg>',
+      check: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="9" opacity=".4"/><path d="M8 12.5l2.5 2.5L16 9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+      star:  '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.9 6.3 6.9.6-5.2 4.6 1.6 6.8L12 17.3 5.8 20.9l1.6-6.8L2.2 8.9l6.9-.6z"/></svg>',
+      openNew: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 4h6v6M20 4l-9 9" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" stroke-linecap="round"/></svg>',
+      close: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>',
+      lock:  '<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M6 10V8a6 6 0 0 1 12 0v2h1a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h1zm2 0h8V8a4 4 0 0 0-8 0v2z"/></svg>',
+    };
+    el('ic-fire').innerHTML = SVG.fire;
+    el('ic-check').innerHTML = SVG.check;
+    el('ic-star').innerHTML = SVG.star;
+
+    /* ── Badge metadata ── */
+    const BADGE_META = {
+      'first-solve':  { icon:'🌱', name:'First Blood',     desc:'Solve your first DSA problem' },
+      'solver-25':    { icon:'🥉', name:'25 Strong',       desc:'Solve 25 problems' },
+      'solver-90':    { icon:'🥈', name:'Relentless',      desc:'Solve 90 problems' },
+      'solver-180':   { icon:'🥇', name:'Legend',          desc:'Solve all 180 problems' },
+      'streak-3':     { icon:'🔥', name:'On Fire',         desc:'3-day streak' },
+      'streak-7':     { icon:'⚡', name:'Unstoppable',     desc:'7-day streak' },
+      'streak-30':    { icon:'💎', name:'Diamond',         desc:'30-day streak' },
+      'first-step':   { icon:'👣', name:'First Step',      desc:'Complete your first lesson' },
+      'ten-down':     { icon:'🎯', name:'Ten Down',        desc:'Complete 10 lessons' },
+      'grinder':      { icon:'⚙️', name:'Grinder',         desc:'Complete 30 lessons' },
+      'teacher':      { icon:'🧑‍🏫', name:'Teacher',      desc:'Reach "Can Teach" mastery on 5 topics' },
+    };
+    const BADGE_ORDER = [
+      'first-solve','solver-25','solver-90','solver-180',
+      'streak-3','streak-7','streak-30',
+      'first-step','ten-down','grinder','teacher',
+    ];
+
+    /* ── Mascot ── */
+    function mascot(mood) {
+      const body = (mood === 'sad' || mood === 'sleeping') ? '#6a6f99' : '#c0c1ff';
+      const ink = '#0b1326';
+      const eyes = {
+        happy:    `<circle cx="52" cy="60" r="6" fill="${ink}"/><circle cx="88" cy="60" r="6" fill="${ink}"/><circle cx="54" cy="58" r="2" fill="#fff"/><circle cx="90" cy="58" r="2" fill="#fff"/>`,
+        fire:     `<circle cx="52" cy="60" r="5.5" fill="${ink}"/><circle cx="88" cy="60" r="5.5" fill="${ink}"/>`,
+        content:  `<circle cx="52" cy="60" r="5" fill="${ink}"/><circle cx="88" cy="60" r="5" fill="${ink}"/>`,
+        new:      `<circle cx="52" cy="60" r="5" fill="${ink}"/><circle cx="88" cy="60" r="5" fill="${ink}"/>`,
+        sad:      `<path d="M46 62 q6 -6 12 0 M82 62 q6 -6 12 0" stroke="${ink}" stroke-width="3.5" fill="none" stroke-linecap="round"/>`,
+        sleeping: `<path d="M46 60 h12 M82 60 h12" stroke="${ink}" stroke-width="3.5" stroke-linecap="round"/>`,
+      }[mood] || '';
+      const mouth = {
+        happy:    `<path d="M54 76 q16 16 32 0" stroke="${ink}" stroke-width="4" fill="none" stroke-linecap="round"/>`,
+        fire:     `<path d="M54 75 q16 20 32 0 q-16 7 -32 0 z" fill="${ink}"/>`,
+        content:  `<path d="M58 78 q12 8 24 0" stroke="${ink}" stroke-width="3.5" fill="none" stroke-linecap="round"/>`,
+        new:      `<path d="M58 78 q12 8 24 0" stroke="${ink}" stroke-width="3.5" fill="none" stroke-linecap="round"/>`,
+        sad:      `<path d="M56 84 q14 -12 28 0" stroke="${ink}" stroke-width="3.5" fill="none" stroke-linecap="round"/>`,
+        sleeping: `<ellipse cx="70" cy="82" rx="6" ry="8" fill="${ink}" opacity=".7"/>`,
+      }[mood] || '';
+      const extra = {
+        fire:     '<text x="70" y="22" text-anchor="middle" font-size="22">🔥</text>',
+        happy:    `<circle cx="40" cy="74" r="5" fill="#4edea3" opacity=".5"/><circle cx="100" cy="74" r="5" fill="#4edea3" opacity=".5"/><text x="33" y="40" font-size="15">✨</text><text x="97" y="40" font-size="15">✨</text>`,
+        sad:      `<circle cx="53" cy="82" r="3" fill="#4edea3"/>`,
+        sleeping: '<text x="100" y="34" font-size="15" fill="#c7c4d7">z</text><text x="110" y="24" font-size="11" fill="#c7c4d7">z</text>',
+        new: '', content: '',
+      }[mood] || '';
+      return `<svg width="120" height="120" viewBox="0 0 140 140">
+        <ellipse cx="70" cy="124" rx="34" ry="6" fill="#000" opacity=".22"/>
+        <path d="M40 34 l-8 -16 l18 8 z" fill="${body}"/>
+        <path d="M100 34 l8 -16 l-18 8 z" fill="${body}"/>
+        <circle cx="70" cy="70" r="46" fill="${body}"/>
+        <circle cx="70" cy="70" r="46" fill="url(#gl)"/>
+        <defs><radialGradient id="gl" cx="40%" cy="30%" r="70%"><stop offset="0" stop-color="#fff" stop-opacity=".38"/><stop offset="55%" stop-color="#fff" stop-opacity="0"/></radialGradient></defs>
+        ${eyes}${mouth}${extra}
+      </svg>`;
+    }
+    const moodLine = {
+      new:      "Hi! I'm Bitsy. Solve your first problem and let's grow together. 🌱",
+      happy:    "Nice work today! Keep the momentum. One more?",
+      fire:     "You're unstoppable! A whole week — you're building a real habit.",
+      content:  "Good to see you. One problem keeps the streak alive!",
+      sad:      "I missed you yesterday… let's solve one and bounce back. 💪",
+      sleeping: "zzz… wake me up by solving a problem. I believe in you.",
+    };
+
+    /* ── unlock logic ── */
+    const solvedIn = (p) => p.problems.filter((pr) => store.isSolved(pr.id)).length;
+    function needsToUnlock(i) {
+      if (i === 0) return 0;
+      return Math.max(0, 3 - solvedIn(PATTERNS[i - 1]));
+    }
+    function isUnlocked(i) {
+      if (el('freeRoam').checked) return true;
+      return needsToUnlock(i) === 0;
+    }
+    function firstActive() {
+      for (let i = 0; i < PATTERNS.length; i++) {
+        if (isUnlocked(i) && solvedIn(PATTERNS[i]) < PATTERNS[i].problems.length) return i;
+      }
+      return -1;
+    }
+
+    /* ── SVG progress ring for each node ── */
+    function nodeRing(solved, total, state) {
+      if (total === 0 || state === 'locked') return '';
+      const r = 43, circ = 2 * Math.PI * r;
+      const pct = solved / total;
+      const offset = circ - circ * pct;
+      const col = state === 'mastered' ? 'rgba(255,185,95,.8)' : 'rgba(78,222,163,.8)';
+      return `<svg class="gn-ring" viewBox="0 0 90 90" fill="none">
+        <circle cx="45" cy="45" r="${r}" stroke="rgba(255,255,255,.08)" stroke-width="3"/>
+        ${pct > 0 ? `<circle cx="45" cy="45" r="${r}" stroke="${col}" stroke-width="3" stroke-linecap="round"
+          stroke-dasharray="${circ.toFixed(1)}" stroke-dashoffset="${offset.toFixed(1)}"
+          transform="rotate(-90 45 45)"/>` : ''}
+      </svg>`;
+    }
+
+    /* ── render path ── */
+    function renderPath() {
+      const active = firstActive();
+      const html = PATTERNS.map((p, i) => {
+        const solved = solvedIn(p), tot = p.problems.length;
+        const unlocked = isUnlocked(i), mastered = solved === tot;
+        const state = !unlocked ? 'locked' : mastered ? 'mastered' : solved > 0 ? 'progress' : 'unlocked';
+        const isActive = i === active && state === 'unlocked';
+        const isNextUp = i === active; // next up node (has the red pip)
+        const need = needsToUnlock(i);
+
+        const badge = !unlocked
+          ? `<span class="gn-badge b-lock">${SVG.lock}</span>`
+          : mastered
+            ? `<span class="gn-badge b-master">👑</span>`
+            : `<span class="gn-badge b-prog">${solved}/${tot}</span>`;
+
+        const sub = unlocked
+          ? `<div class="gl-sub code">${p.blurb}</div>`
+          : need > 0
+            ? `<div class="gl-sub muted">Need ${need} more in "${PATTERNS[i-1].name}"</div>`
+            : `<div class="gl-sub muted">Locked</div>`;
+
+        // stagger animation delay
+        const delay = (i * 40) + 'ms';
+        const side = i % 2 === 0 ? 'side-l' : 'side-r';
+
+        return `<div class="gnode-wrap ${side}" style="animation-delay:${delay}">
+          <button class="gnode ${state}${isActive ? ' active' : ''}" data-pat="${i}" ${unlocked ? '' : 'disabled'} title="${p.name}">
+            <span class="gn-face">${unlocked ? p.icon : '🔒'}</span>
+            ${nodeRing(solved, tot, state)}
+            ${badge}
+            ${isNextUp && !mastered && unlocked ? '<div class="gn-next-pip"></div>' : ''}
+            ${mastered ? '<span class="gn-crown">👑</span>' : ''}
+          </button>
+          <div class="glabel ${unlocked ? '' : 'dim'}">
+            <div class="gl-name">${p.n}. ${p.name}</div>
+            ${sub}
+          </div>
+        </div>`;
+      }).join('');
+
+      el('path').innerHTML = '<div class="gline"></div>' + html;
+      el('path').querySelectorAll('.gnode:not([disabled])').forEach((b) => {
+        b.addEventListener('click', () => openPattern(+b.dataset.pat));
+      });
+    }
+
+    /* ── modal ── */
+    const chipCls = (d) => 'chip-' + d.toLowerCase();
+    const xpFor = (d) => d === 'Hard' ? 30 : d === 'Easy' ? 10 : 20;
+
+    function openPattern(i) {
+      const p = PATTERNS[i];
+      const tot = p.problems.length;
+
+      const render = () => {
+        const solved = solvedIn(p);
+        const pct = tot > 0 ? Math.round((solved / tot) * 100) : 0;
+        const xp = p.problems.filter((pr) => store.isSolved(pr.id))
+                            .reduce((s, pr) => s + xpFor(pr.d), 0);
+        const allDone = solved === tot;
+
+        el('modal').innerHTML = `
+          <div class="gm-head">
+            <div style="display:flex;gap:14px;align-items:flex-start;min-width:0">
+              <div class="gm-icon">${p.icon}</div>
+              <div style="min-width:0">
+                <div class="gm-eyebrow">
+                  <span class="e-pat">Pattern ${p.n}</span>
+                  <span class="e-dot"></span>
+                  <span class="e-solved">${solved} / ${tot} Solved</span>
+                </div>
+                <div class="gm-title">${p.name}</div>
+              </div>
+            </div>
+            <button class="gm-x" id="gmClose">${SVG.close}</button>
+          </div>
+          <div class="gm-sub">${p.blurb}</div>
+          <div class="gm-progbar-wrap"><div class="gm-progbar" style="width:${pct}%"></div></div>
+          <div class="gm-list">
+            ${p.problems.map((pr) => {
+              const s = store.isSolved(pr.id);
+              return `<div class="gm-row ${s ? 'solved' : ''}" data-row="${pr.id}">
+                <div class="r-left">
+                  <input type="checkbox" data-solve="${pr.id}" data-diff="${pr.d}" ${s ? 'checked' : ''}>
+                  <span class="r-title">#${pr.id} ${pr.t}</span>
+                  <span class="gm-chip ${chipCls(pr.d)}">${pr.d}</span>
+                </div>
+                <span class="r-xp">+${xpFor(pr.d)}</span>
+                ${codeLabIds.includes(pr.id) ? `<a class="r-open r-lab" href="${base}/practice/code?p=${pr.id}">⚡ Code Lab</a>` : ''}
+                <a class="r-open" href="https://leetcode.com/problems/${pr.s}/" target="_blank" rel="noopener">
+                  Open ${SVG.openNew}
+                </a>
+              </div>`;
+            }).join('')}
+          </div>
+          <div class="gm-foot">
+            <div class="f-stats">
+              <div class="f-stat"><span>Completion</span><b style="color:var(--accent-2)">${pct}%</b></div>
+              <div class="f-div"></div>
+              <div class="f-stat"><span>XP earned</span><b style="color:var(--warn)">+${xp}</b></div>
+            </div>
+            <button class="gm-cta" id="gmCta">${allDone ? '✓ Mastered!' : 'Next Problem →'}</button>
+          </div>`;
+
+        el('gmClose').addEventListener('click', closeModal);
+        el('gmCta').addEventListener('click', () => {
+          const next = p.problems.find((pr) => !store.isSolved(pr.id));
+          if (next) window.open(`https://leetcode.com/problems/${next.s}/`, '_blank', 'noopener');
+          else closeModal();
+        });
+
+        el('modal').querySelectorAll('[data-solve]').forEach((c) => {
+          c.addEventListener('change', () => {
+            const wasMastered = solvedIn(p) === tot;
+            const nowSolved = store.toggleSolved(+c.dataset.solve, c.dataset.diff);
+            // emit() inside toggleSolved already calls paintHero() via onChange listener
+
+            if (nowSolved) {
+              floatXP(xpFor(c.dataset.diff), c);
+            }
+
+            const nowMastered = solvedIn(p) === tot;
+            if (nowMastered && !wasMastered) {
+              const totalPatternXp = p.problems.reduce((s, pr) => s + xpFor(pr.d), 0);
+              burstConfetti();
+              toast(`👑 ${p.name} mastered! ${totalPatternXp} XP earned!`);
+            } else if (nowSolved) {
+              checkMilestone();
+            }
+
+            render();
+          });
+        });
+      };
+      render();
+      el('modalOverlay').classList.add('open');
+    }
+
+    function closeModal() { el('modalOverlay').classList.remove('open'); renderPath(); }
+    el('modalOverlay').addEventListener('click', (e) => { if (e.target === el('modalOverlay')) closeModal(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+
+    /* ── hero paint ── */
+    let quoteIdx = Math.floor(Math.random() * QUOTES.length);
+    function paintHero() {
+      const mood = store.mood();
+      el('mascot').innerHTML = mascot(mood);
+      el('speech').textContent = (mood === 'happy' || mood === 'fire') && store.solvedToday() >= store.dsaGoal()
+        ? QUOTES[quoteIdx] : moodLine[mood];
+
+      // Streak
+      const streak = store.streak();
+      el('streakN').textContent = streak.count || 0;
+      el('bestStreak').textContent = streak.best > 0 ? `best: ${streak.best} days` : '';
+
+      // Solved + difficulty breakdown
+      el('solvedN').textContent = store.solvedCount();
+      const solvedMap = store.dsaSolved();
+      let easy = 0, med = 0, hard = 0;
+      PATTERNS.forEach(p => p.problems.forEach(pr => {
+        if (solvedMap[pr.id]) { if (pr.d==='Easy') easy++; else if (pr.d==='Hard') hard++; else med++; }
+      }));
+      el('diffBreak').innerHTML = easy || med || hard
+        ? `<span class="de">E:${easy}</span><span class="dm">M:${med}</span><span class="dh">H:${hard}</span>` : '';
+
+      // Level + XP bar
+      const lp = store.levelProgress();
+      el('lvlN').textContent = lp.lvl;
+      el('xpBar').style.width = lp.pct + '%';
+      el('xpLabel').textContent = `${lp.xp - lp.cur} / ${lp.next - lp.cur} XP`;
+
+      // Daily goal ring
+      const goal = store.dsaGoal(), did = store.solvedToday();
+      el('goalNum').textContent = goal;
+      el('goalText').textContent = `Daily goal: ${Math.min(did, goal)} / ${goal}`;
+      const pct = Math.min(1, did / goal), circ = 163.4;
+      el('goalArc').style.strokeDashoffset = String(circ - circ * pct);
+      el('goalPct').textContent = Math.round(pct * 100) + '%';
+
+      // 7-day activity
+      paint7Day();
+      // Badges
+      paintBadges();
+      // Path
+      renderPath();
+    }
+
+    /* ── 7-day activity ── */
+    function paint7Day() {
+      const solvedMap = store.dsaSolved();
+      // Build a map of dateStr → count
+      const dateCounts = {};
+      Object.values(solvedMap).forEach(d => { dateCounts[d] = (dateCounts[d] || 0) + 1; });
+      const days = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+      const today = new Date().toISOString().slice(0,10);
+      let html = '<span class="g7day-label">7 days</span>';
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(); d.setDate(d.getDate() - i);
+        const str = d.toISOString().slice(0,10);
+        const ct = dateCounts[str] || 0;
+        const isToday = str === today;
+        const cls = `g7dot ${ct > 0 ? 'active' : 'inactive'} ${isToday ? 'today' : ''}`;
+        html += `<div class="${cls}" title="${str}: ${ct} solved">
+          <span class="g7dot-day">${days[d.getDay()]}</span>
+          <span class="g7dot-ct">${ct > 0 ? ct : '·'}</span>
+        </div>`;
+      }
+      el('activity7').innerHTML = html;
+    }
+
+    /* ── badges ── */
+    function paintBadges() {
+      const earned = store.badges();
+      const html = BADGE_ORDER.map(id => {
+        const m = BADGE_META[id];
+        if (!m) return '';
+        const isEarned = !!earned[id];
+        const date = isEarned ? ` · earned ${earned[id]}` : '';
+        return `<div class="gbadge ${isEarned ? 'earned' : 'locked'}">
+          <span class="gbadge-icon">${m.icon}</span>
+          <span>${m.name}</span>
+          <span class="gbadge-tip">${m.desc}${date}</span>
+        </div>`;
+      }).join('');
+      el('badgeShelf').innerHTML = html;
+    }
+
+    /* ── milestone checker ── */
+    const MILESTONES = [
+      [1,   "🌱 First problem solved! The journey begins."],
+      [5,   "⚡ 5 problems down! You're in the groove."],
+      [10,  "🎯 10 solved! Patterns are clicking in your head."],
+      [25,  "🏅 25 problems! Quarter century — you're serious."],
+      [50,  "🔥 50 solved! You're in the top tier of prep."],
+      [90,  "🥈 90 problems! Approaching full pattern coverage."],
+      [180, "🏆 All 180 problems solved! You're a DSA Legend."],
+    ];
+    const notifiedMilestones = new Set();
+    function checkMilestone() {
+      const count = store.solvedCount();
+      for (const [n, msg] of MILESTONES) {
+        if (count >= n && !notifiedMilestones.has(n)) {
+          notifiedMilestones.add(n);
+          setTimeout(() => toast(msg), 400);
+          if (n >= 10) setTimeout(() => burstConfetti(), 200);
+          break;
+        }
+      }
+    }
+
+    /* ── floating XP animation ── */
+    function floatXP(amount, anchor) {
+      const popup = document.createElement('div');
+      popup.className = 'xp-float';
+      popup.textContent = `+${amount} XP`;
+      const rect = anchor.getBoundingClientRect();
+      popup.style.left = (rect.left + rect.width / 2) + 'px';
+      popup.style.top = rect.top + 'px';
+      popup.style.transform = 'translateX(-50%)';
+      popup.style.opacity = '1';
+      document.body.appendChild(popup);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          popup.style.top = (rect.top - 55) + 'px';
+          popup.style.opacity = '0';
+          popup.style.transform = 'translateX(-50%) scale(1.2)';
+        });
+      });
+      setTimeout(() => popup.remove(), 750);
+    }
+
+    /* ── toast notification ── */
+    function toast(msg) {
+      const t = document.createElement('div');
+      t.className = 'gtoa';
+      t.textContent = msg;
+      document.body.appendChild(t);
+      setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .3s'; }, 2400);
+      setTimeout(() => t.remove(), 2700);
+    }
+
+    /* ── confetti ── */
+    function burstConfetti() {
+      const c = el('confetti');
+      c.style.display = 'block';
+      c.width = innerWidth; c.height = innerHeight;
+      const ctx = c.getContext('2d');
+      const cols = ['#c0c1ff','#4edea3','#ffb95f','#ffb4ab','#8083ff','#fff'];
+      const parts = Array.from({ length: 160 }, () => ({
+        x: innerWidth / 2, y: innerHeight * .35,
+        vx: (Math.random() - .5) * 15, vy: Math.random() * -14 - 5,
+        g: .42 + Math.random() * .25, s: 4 + Math.random() * 6,
+        col: cols[(Math.random() * cols.length) | 0],
+        rot: Math.random() * 6, vr: (Math.random() - .5) * .45,
+        shape: Math.random() > .5 ? 'rect' : 'circle',
+      }));
+      let f = 0;
+      (function anim() {
+        ctx.clearRect(0, 0, c.width, c.height);
+        f++;
+        parts.forEach((p) => {
+          p.vy += p.g; p.x += p.vx; p.y += p.vy; p.rot += p.vr;
+          ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+          ctx.fillStyle = p.col; ctx.globalAlpha = Math.max(0, 1 - f / 130);
+          if (p.shape === 'circle') { ctx.beginPath(); ctx.arc(0, 0, p.s * .6, 0, Math.PI*2); ctx.fill(); }
+          else ctx.fillRect(-p.s/2, -p.s/2, p.s, p.s);
+          ctx.restore();
+        });
+        if (f < 140) requestAnimationFrame(anim); else c.style.display = 'none';
+      })();
+    }
+
+    /* ── goal controls ── */
+    el('goalUp').addEventListener('click', () => { store.setDsaGoal(store.dsaGoal() + 1); paintHero(); });
+    el('goalDown').addEventListener('click', () => { store.setDsaGoal(store.dsaGoal() - 1); paintHero(); });
+    el('freeRoam').addEventListener('change', renderPath);
+
+    /* ── rotating quotes ── */
+    setInterval(() => {
+      quoteIdx = (quoteIdx + 1) % QUOTES.length;
+      const m = store.mood();
+      if ((m === 'happy' || m === 'fire') && store.solvedToday() >= store.dsaGoal()) {
+        el('speech').textContent = QUOTES[quoteIdx];
+      }
+    }, 6000);
+
+    /* ── init ── */
+    store.onChange(paintHero);
+    paintHero();
+    // pre-seed milestone set so we don't re-notify on page load
+    const currentCount = store.solvedCount();
+    for (const [n] of MILESTONES) { if (currentCount >= n) notifiedMilestones.add(n); }
+  </script>
+</BaseLayout>

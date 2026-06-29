@@ -1,0 +1,233 @@
+---
+title: "Dynamic Programming"
+track: dsa
+summary: "Spot overlapping subproblems, define the state, write the recurrence — then memoize or tabulate. Templates for 1D, 2D, knapsack, LIS, and grids."
+order: 7
+est: 36
+difficulty: hard
+priority: deep
+tags: [dp, memoization, tabulation, knapsack, lis]
+whyAsked: "DP is the differentiator between mid and senior in many loops. It tests whether you can define a state and a recurrence, not just memorize solutions."
+followUps:
+  - "What's the difference between memoization and tabulation?"
+  - "How do you reduce a 2-D DP's space to 1-D?"
+  - "How do you find the recurrence for a new problem?"
+  - "How is 0/1 knapsack different from unbounded knapsack?"
+resources:
+  - { label: "NeetCode: 1-D & 2-D DP", url: "https://neetcode.io/practice" }
+---
+
+DP applies when a problem has **overlapping subproblems** (the same smaller problem recurs) and **optimal substructure** (the answer is built from answers to subproblems). The whole skill is a 3-step recipe; the rest is bookkeeping.
+
+## When to reach for it — recognition triggers
+
+- "**Count the number of ways** to do X" / "how many distinct …".
+- "**Minimum / maximum** cost/length/value to achieve X" where greedy doesn't obviously work.
+- "Is X **achievable / can you partition / can you reach**" (boolean DP).
+- The brute force is **exponential recursion** that re-solves the same subproblems (you can draw a recursion tree with repeats).
+- Choices are made **in sequence** and each depends on a small amount of prior state.
+
+<div class="callout key">
+  <div class="ct">Pattern trigger</div>
+  "Count the ways / min-or-max over choices / can you reach" + a recursion that revisits the same subproblems → DP. Define the state, write the recurrence, then memoize or tabulate.
+</div>
+
+## The recipe
+
+1. **Define the state.** The minimal parameters describing a subproblem. e.g. `dp[i]` = "best answer using the first `i` items," or `dp[i][j]` = "answer for prefix `i` of A and prefix `j` of B."
+2. **Write the recurrence.** Express `dp[i]` in terms of smaller states. Ask: *"what's the last decision, and what subproblem remains after it?"* This is the creative step.
+3. **Choose memoization or tabulation, set base cases**, and decide the iteration order so dependencies are ready.
+
+**Memoization** = recursion + a cache; natural to write the moment you have the recurrence, fills only the states you need. **Tabulation** = fill an array iteratively from base cases up; avoids recursion overhead and usually lets you compress space.
+
+## Template 1 — 1-D DP (climbing stairs / house robber)
+
+```js
+// Climbing Stairs: ways[i] = ways[i-1] + ways[i-2].  O(n) time, O(1) space
+function climbStairs(n) {
+  let a = 1, b = 1;                 // ways to reach step 0 and step 1
+  for (let i = 2; i <= n; i++) { [a, b] = [b, a + b]; }
+  return b;
+}
+```
+
+```js
+// House Robber: at house i, rob it (+dp[i-2]) or skip it (dp[i-1]).
+// Top-down (memoized) and bottom-up (O(1) space) — same recurrence.
+function rob(nums) {
+  let prev2 = 0, prev1 = 0;        // best up to i-2, i-1
+  for (const n of nums) {
+    const cur = Math.max(prev1, n + prev2);
+    prev2 = prev1; prev1 = cur;
+  }
+  return prev1;
+}
+```
+
+```js
+// The memoized form, for contrast
+function robMemo(nums) {
+  const memo = new Map();
+  function go(i) {
+    if (i < 0) return 0;
+    if (memo.has(i)) return memo.get(i);
+    const best = Math.max(go(i - 1), nums[i] + go(i - 2));
+    memo.set(i, best); return best;
+  }
+  return go(nums.length - 1);
+}
+```
+
+Each state depends only on the last two, so we collapse the table to two variables → **O(1) space**.
+
+## Template 2 — unbounded "min coins" / count ways (coin change)
+
+```js
+// Coin Change: fewest coins to make `amount` (unlimited supply each).  O(amount * coins)
+function coinChange(coins, amount) {
+  const dp = new Array(amount + 1).fill(Infinity);
+  dp[0] = 0;                                  // 0 coins make amount 0
+  for (let a = 1; a <= amount; a++) {
+    for (const c of coins) {
+      if (c <= a) dp[a] = Math.min(dp[a], dp[a - c] + 1);
+    }
+  }
+  return dp[amount] === Infinity ? -1 : dp[amount];
+}
+```
+
+Idea: `dp[a]` = min coins for amount `a`; the last decision is "which coin did I add last?", leaving subproblem `a - c`.
+**Time** O(amount · coins) · **Space** O(amount).
+
+## Template 3 — 0/1 knapsack (each item used at most once)
+
+```js
+// 0/1 Knapsack: max value within capacity W.  O(n*W) time, O(W) space
+function knapsack(weights, values, W) {
+  const dp = new Array(W + 1).fill(0);
+  for (let i = 0; i < weights.length; i++) {
+    for (let w = W; w >= weights[i]; w--) {   // iterate capacity DOWNWARD
+      dp[w] = Math.max(dp[w], dp[w - weights[i]] + values[i]);
+    }
+  }
+  return dp[W];
+}
+```
+
+The **downward** capacity loop is the crux: it ensures each item is used at most once (an upward loop would reuse it = unbounded knapsack).
+
+## Template 4 — LIS (longest increasing subsequence)
+
+```js
+// LIS in O(n log n): patience sorting with binary search.
+function lengthOfLIS(nums) {
+  const tails = [];                 // tails[k] = smallest tail of an increasing subseq of length k+1
+  for (const x of nums) {
+    let lo = 0, hi = tails.length;
+    while (lo < hi) {               // lower bound of x
+      const mid = (lo + hi) >> 1;
+      if (tails[mid] < x) lo = mid + 1; else hi = mid;
+    }
+    tails[lo] = x;                  // extend or replace
+  }
+  return tails.length;
+}
+```
+
+The simpler O(n²) version (`dp[i] = 1 + max(dp[j])` for `j < i, nums[j] < nums[i]`) is fine to state first, then optimize.
+
+## Template 5 — 2-D grid DP (unique paths)
+
+```js
+// Unique Paths: only move right/down.  O(m*n) time, O(n) space
+function uniquePaths(m, n) {
+  const dp = new Array(n).fill(1);          // first row: one path each
+  for (let r = 1; r < m; r++)
+    for (let c = 1; c < n; c++)
+      dp[c] += dp[c - 1];                    // paths from above + from left
+  return dp[n - 1];
+}
+```
+
+Each cell needs only the row above and the cell to the left, so one row suffices → **O(n) space**.
+
+## Worked example — Longest Common Subsequence (2-D string DP)
+
+```js
+// LCS length of two strings.  O(m*n) time, O(min(m,n)) space possible
+function longestCommonSubsequence(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1] + 1                       // chars match → extend diagonal
+        : Math.max(dp[i - 1][j], dp[i][j - 1]);      // skip one char from either string
+  return dp[m][n];
+}
+```
+
+Idea: `dp[i][j]` = LCS of prefixes `a[0..i)` and `b[0..j)`. Last decision: do the current chars match? **Time** O(m·n) · **Space** O(m·n), reducible to two rows. Edit Distance is the same skeleton with three transitions (insert/delete/replace).
+
+```js
+// Edit Distance (Levenshtein): min ops to turn a into b.  O(m*n)
+function minDistance(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;     // delete all of a's prefix
+  for (let j = 0; j <= n; j++) dp[0][j] = j;     // insert all of b's prefix
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j - 1],          // replace
+                       dp[i - 1][j],              // delete
+                       dp[i][j - 1]);             // insert
+  return dp[m][n];
+}
+```
+
+## Memoization vs tabulation — when to use which
+
+| | Memoization (top-down) | Tabulation (bottom-up) |
+|---|---|---|
+| Writing | Easiest right after the recurrence | Needs an explicit fill order |
+| States computed | Only reachable ones (sparse-friendly) | All of them |
+| Space | Recursion stack + cache | Just the table (often compressible) |
+| Risk | Stack overflow on deep recursion | Wasted work if many states unused |
+
+## Complexity & why it beats brute force
+
+Plain recursion re-solves the same subproblems exponentially (e.g. naive Fibonacci is O(2ⁿ)). DP solves each distinct state **once**: total time = `(#states) × (work per transition)`. Climbing stairs/house robber: O(n). Coin change/knapsack: O(amount·coins) / O(n·W). LCS/edit distance: O(m·n). LIS: O(n log n) with the patience-sort trick.
+
+## Edge cases & common bugs
+
+- **Wrong iteration direction** in knapsack — upward reuses items (turns 0/1 into unbounded).
+- **Base cases** — `dp[0]`, empty string/array rows, and the "impossible" sentinel (`Infinity` for min, `0`/`-Infinity` for max).
+- **Off-by-one with prefixes** — `dp` indices are usually shifted by 1 (`a[i-1]` for `dp[i]`); be consistent.
+- **Infinity arithmetic** — `dp[a - c] + 1` when `dp[a-c]` is Infinity stays Infinity; fine, but don't return it as the answer.
+- **Space compression order** — when collapsing 2-D to 1-D, ensure you don't overwrite a value you still need this iteration.
+- **Counting vs optimizing** — counting DP *sums* transitions; optimizing DP takes min/max. Don't mix them.
+
+## Interview tips & questions
+
+- Interviewers probe: "What's your state and recurrence?" — say it in one sentence before coding.
+- "Can you reduce the space?" — almost always yes for 1-D and row-dependent 2-D; show the two-variable / one-row trick.
+- Start with the brute-force recursion, point out the repeated subproblems, *then* add memoization — it demonstrates the reasoning, not memorization.
+
+| Problem | Difficulty | State |
+|---|---|---|
+| [Climbing Stairs](https://leetcode.com/problems/climbing-stairs/) | Easy | dp[i] = ways to reach step i |
+| [House Robber](https://leetcode.com/problems/house-robber/) | Medium | dp[i] = best up to house i |
+| [Coin Change](https://leetcode.com/problems/coin-change/) | Medium | dp[a] = min coins for amount a |
+| [Longest Increasing Subsequence](https://leetcode.com/problems/longest-increasing-subsequence/) | Medium | tails[] / dp[i] LIS ending at i |
+| [Unique Paths](https://leetcode.com/problems/unique-paths/) | Medium | dp[r][c] = paths to cell |
+| [Coin Change II](https://leetcode.com/problems/coin-change-ii/) | Medium | dp[a] = #ways (unbounded) |
+| [Longest Common Subsequence](https://leetcode.com/problems/longest-common-subsequence/) | Medium | dp[i][j] over two prefixes |
+| [Edit Distance](https://leetcode.com/problems/edit-distance/) | Hard | dp[i][j] over two prefixes |
+| [Partition Equal Subset Sum](https://leetcode.com/problems/partition-equal-subset-sum/) | Medium | 0/1 knapsack (boolean) |
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "I look for overlapping subproblems and optimal substructure. I define the state as the minimal parameters describing a subproblem, write the recurrence by asking 'what's the last decision and what subproblem remains', then implement it as memoized recursion or bottom-up tabulation — often compressing the table to O(1) space when each state only depends on the last couple."
+</div>

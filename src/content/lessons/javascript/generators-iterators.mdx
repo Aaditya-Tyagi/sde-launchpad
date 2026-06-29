@@ -1,0 +1,160 @@
+---
+title: "Generators & Iterators"
+track: javascript
+summary: "Symbol.iterator, the iterator protocol, generator functions, lazy sequences, and async generators — the machinery behind for...of and spread."
+order: 9
+est: 20
+difficulty: hard
+priority: deep
+tags: [generators, iterators, symbol-iterator, async-generators, lazy]
+whyAsked: "Generators signal deep JS knowledge. They're the mechanism behind custom iterables, infinite sequences, and async iteration — and they underpin how async/await was originally spec'd."
+followUps:
+  - "What is the iterator protocol?"
+  - "How do you make a custom object iterable?"
+  - "What does yield* do?"
+  - "How are generators related to async/await?"
+  - "When would you use a generator over a simple array?"
+resources:
+  - { label: "javascript.info: Generators", url: "https://javascript.info/generators" }
+  - { label: "MDN: Iteration protocols", url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Iteration_protocols" }
+---
+import JsPlayground from '../../../components/JsPlayground.astro';
+
+Generators and iterators are the protocol that powers `for...of`, spread (`[...x]`), and destructuring for any object — including your own custom types.
+
+## The iterator protocol
+
+An **iterator** is an object with a `next()` method that returns `{ value, done }`. An **iterable** is any object with `[Symbol.iterator]()` that returns an iterator. Built-ins like `Array`, `String`, `Map`, `Set`, and `NodeList` implement this already.
+
+```js
+const arr = [10, 20, 30];
+const iter = arr[Symbol.iterator]();   // get the iterator
+console.log(iter.next()); // { value: 10, done: false }
+console.log(iter.next()); // { value: 20, done: false }
+console.log(iter.next()); // { value: 30, done: false }
+console.log(iter.next()); // { value: undefined, done: true }
+```
+
+**Make any object iterable** by adding `[Symbol.iterator]`:
+
+```js
+const range = {
+  from: 1, to: 5,
+  [Symbol.iterator]() {
+    let current = this.from;
+    const last = this.to;
+    return {
+      next() {
+        return current <= last
+          ? { value: current++, done: false }
+          : { value: undefined, done: true };
+      }
+    };
+  }
+};
+
+console.log([...range]); // [1, 2, 3, 4, 5]
+for (const n of range) console.log(n); // 1 2 3 4 5
+```
+
+## Generator functions
+
+A generator function (`function*`) returns a generator object, which is both an **iterator** and an **iterable**. `yield` pauses execution and produces a value; the function resumes from that point on the next `next()` call.
+
+<JsPlayground code={`function* count(start, end) {
+  for (let i = start; i <= end; i++) {
+    yield i;            // pause here, return i
+  }
+}
+
+const gen = count(1, 4);
+console.log(gen.next()); // { value: 1, done: false }
+console.log(gen.next()); // { value: 2, done: false }
+
+// Generators are also iterables
+console.log([...count(10, 13)]); // [10, 11, 12, 13]
+for (const n of count(1, 3)) console.log(n); // 1, 2, 3`} height={220} />
+
+## Infinite sequences — the killer use case
+
+Generators can produce values **lazily on demand** — no array is ever fully materialized:
+
+<JsPlayground code={`function* naturals() {
+  let n = 1;
+  while (true) yield n++;    // infinite! but yields lazily
+}
+
+function* take(n, iter) {
+  for (const val of iter) {
+    if (n-- <= 0) return;
+    yield val;
+  }
+}
+
+const first5 = [...take(5, naturals())];
+console.log(first5); // [1, 2, 3, 4, 5]
+
+// Fibonacci generator
+function* fib() {
+  let [a, b] = [0, 1];
+  while (true) { yield a; [a, b] = [b, a + b]; }
+}
+console.log([...take(8, fib())]); // [0,1,1,2,3,5,8,13]`} height={230} />
+
+## yield* delegation
+
+`yield*` delegates to another iterable, flattening it:
+
+```js
+function* concat(...arrays) {
+  for (const arr of arrays) yield* arr; // yield each item from arr
+}
+console.log([...concat([1,2], [3,4], [5])]); // [1,2,3,4,5]
+```
+
+## Two-way communication — next(value)
+
+Generators can receive values back via `next(value)`. The value becomes the result of the `yield` expression:
+
+```js
+function* adder() {
+  let sum = 0;
+  while (true) {
+    const n = yield sum;  // yield current sum, receive next number
+    sum += n ?? 0;
+  }
+}
+const g = adder();
+g.next();      // start (first yield)
+g.next(10);    // sum = 10
+g.next(5);     // sum = 15
+console.log(g.next(3).value); // 18
+```
+
+## Async generators & for await...of
+
+Async generators yield promises asynchronously — perfect for paginated APIs:
+
+```js
+async function* paginate(url) {
+  let page = 1;
+  while (true) {
+    const res = await fetch(`${url}?page=${page}`);
+    const data = await res.json();
+    if (!data.items.length) return;
+    yield data.items;
+    page++;
+  }
+}
+
+// Consume lazily
+for await (const items of paginate('/api/posts')) {
+  render(items);
+  if (shouldStop()) break; // stop at any point — no over-fetching
+}
+```
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "An iterator is any object with `next()` returning `{ value, done }`. An iterable has `[Symbol.iterator]()` returning an iterator — this is what powers `for...of` and spread. Generator functions (`function*`) produce iterators automatically: `yield` suspends execution and produces a value, and the function resumes on the next `next()` call. Generators shine for lazy sequences, infinite streams, and custom iteration. Async generators add `await` and work with `for await...of` for paginated or streaming data."
+</div>

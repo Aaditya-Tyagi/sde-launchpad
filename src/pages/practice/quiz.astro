@@ -1,0 +1,204 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { OUTPUT_QUESTIONS, OQ_CATEGORIES } from '../../data/outputQuestions';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const total = OUTPUT_QUESTIONS.length;
+---
+<BaseLayout title="Output Quiz · SDE-2 Launchpad" active="quiz">
+  <div class="wrap" style="padding-top:28px;max-width:760px">
+    <h1>Predict-the-Output Quiz</h1>
+    <p class="sub">{total} real interview snippets. Read the code, predict what it prints <b>before</b> revealing — then grade yourself honestly. This is the category that trips up even experienced JS devs.</p>
+
+    <!-- setup -->
+    <div class="panel" id="setup" style="margin-top:18px">
+      <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <b id="lifeStat" style="font-size:14px">—</b>
+        <span class="muted" style="font-size:12.5px">Pick a focus to start a round</span>
+      </div>
+      <div class="row" style="gap:8px;margin-top:14px;flex-wrap:wrap">
+        <button class="btn btn-primary qz-cat" data-cat="all">All {total}</button>
+        {OQ_CATEGORIES.map((c) => <button class="btn qz-cat" data-cat={c}>{c}</button>)}
+      </div>
+      <div class="row" style="gap:8px;margin-top:8px">
+        <button class="btn qz-cat" data-cat="__weak" style="border-color:var(--hot);color:var(--hot)">⚠ Drill my missed ones</button>
+        <button class="btn qz-cat" data-cat="__new" style="border-color:var(--accent-2);color:var(--accent-2)">✨ Only unseen</button>
+      </div>
+    </div>
+
+    <!-- quiz -->
+    <div class="hide" id="quizArea">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-top:18px">
+        <span class="tag" id="qzCat"></span>
+        <div class="row" style="gap:14px">
+          <span class="muted" style="font-size:13px;font-family:var(--mono)" id="qzProgress"></span>
+          <span class="muted" style="font-size:13px;font-family:var(--mono)" id="qzScore"></span>
+        </div>
+      </div>
+      <div class="qz-progbar"><i id="qzBar"></i></div>
+
+      <div class="panel" style="margin-top:12px">
+        <div class="qz-title" id="qzTitle"></div>
+        <div class="qz-qlabel">What does this output?</div>
+        <pre class="qz-code" id="qzCode"></pre>
+
+        <div id="qzReveal" class="hide">
+          <div class="qz-ans-label">Output</div>
+          <pre class="qz-answer" id="qzAnswer"></pre>
+          <div class="qz-why" id="qzWhy"></div>
+        </div>
+
+        <div class="row" id="qzRevealRow" style="margin-top:16px">
+          <button class="btn btn-primary" id="qzRevealBtn">Reveal output</button>
+          <button class="btn" id="qzQuit" style="margin-left:auto">End round</button>
+        </div>
+        <div class="row hide" id="qzGradeRow" style="margin-top:16px;align-items:center">
+          <span class="muted" style="font-size:13px">Did you get it right?</span>
+          <div class="spacer"></div>
+          <button class="btn" id="qzMiss" style="border-color:var(--hot);color:var(--hot)">✕ Missed it</button>
+          <button class="btn" id="qzGot" style="border-color:var(--accent-2);color:var(--accent-2)">✓ Got it</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- results -->
+    <div class="hide" id="resultArea">
+      <div class="panel center" style="margin-top:18px;padding:34px 20px">
+        <div style="font-size:46px" id="rzEmoji">🎯</div>
+        <h2 id="rzScore" style="margin-top:8px">—</h2>
+        <p class="muted" id="rzMsg" style="margin-top:6px"></p>
+        <div class="row" style="justify-content:center;margin-top:18px">
+          <button class="btn" id="rzReviewMissed">Review missed</button>
+          <button class="btn btn-primary" id="rzAgain">New round</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <style is:global>
+    .qz-progbar { height:4px; background:rgba(255,255,255,.08); border-radius:3px; overflow:hidden; margin-top:10px; }
+    .qz-progbar i { display:block; height:100%; width:0%; background:linear-gradient(90deg,var(--accent),var(--accent-2)); transition:width .3s; }
+    .qz-title { font-size:13px; color:var(--faint); font-family:var(--mono); margin-bottom:10px; }
+    .qz-qlabel { font-size:12px; text-transform:uppercase; letter-spacing:.5px; color:var(--accent); font-weight:600; margin-bottom:8px; }
+    .qz-code { background:#0b0e16; border:1px solid var(--line); border-radius:10px; padding:14px; font-family:var(--mono); font-size:13px; line-height:1.55; color:var(--text); white-space:pre-wrap; overflow-x:auto; margin:0; }
+    .qz-ans-label { font-size:12px; text-transform:uppercase; letter-spacing:.5px; color:var(--accent-2); font-weight:600; margin:18px 0 8px; }
+    .qz-answer { background:rgba(78,222,163,.07); border:1px solid rgba(78,222,163,.25); border-radius:10px; padding:12px 14px; font-family:var(--mono); font-size:13px; line-height:1.5; color:var(--accent-2-bright); white-space:pre-wrap; margin:0; }
+    .qz-why { margin-top:14px; font-size:14px; line-height:1.6; color:var(--muted); }
+    .qz-why code { background:var(--panel-3); padding:1px 5px; border-radius:4px; font-family:var(--mono); font-size:12.5px; color:var(--text); }
+    .qz-why pre { background:#0b0e16; border:1px solid var(--line); border-radius:8px; padding:10px 12px; font-family:var(--mono); font-size:12.5px; color:var(--text); white-space:pre-wrap; overflow-x:auto; margin:10px 0; }
+    .qz-why b { color:var(--text); }
+  </style>
+
+  <script define:vars={{ base, QUESTIONS: OUTPUT_QUESTIONS }}>
+    const store = window.SDE2;
+    const el = (id) => document.getElementById(id);
+    const byId = Object.fromEntries(QUESTIONS.map((q) => [q.id, q]));
+
+    let round = [], idx = 0, score = 0, missedIds = [], graded = false;
+
+    function lifeStats() {
+      const st = store.quizStats();
+      const ids = Object.keys(st);
+      const seen = ids.length;
+      const correct = ids.reduce((s, id) => s + (st[id].correct > 0 ? 1 : 0), 0);
+      el('lifeStat').textContent = `${seen} / ${QUESTIONS.length} attempted · ${seen ? Math.round(correct / seen * 100) : 0}% mastered`;
+    }
+
+    function startRound(cat) {
+      let pool;
+      if (cat === '__weak') pool = QUESTIONS.filter((q) => store.quizStat(q.id)?.last === 'miss');
+      else if (cat === '__new') pool = QUESTIONS.filter((q) => !store.quizStat(q.id));
+      else if (cat === 'all') pool = QUESTIONS.slice();
+      else pool = QUESTIONS.filter((q) => q.cat === cat);
+
+      if (!pool.length) {
+        alert(cat === '__weak' ? 'No missed questions yet — go drill some first!' : cat === '__new' ? 'You\'ve seen them all. Try "Drill my missed ones".' : 'No questions here.');
+        return;
+      }
+      round = shuffle(pool); idx = 0; score = 0; missedIds = [];
+      el('setup').classList.add('hide');
+      el('resultArea').classList.add('hide');
+      el('quizArea').classList.remove('hide');
+      showQ();
+    }
+    function shuffle(a) { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+
+    function showQ() {
+      const q = round[idx];
+      graded = false;
+      el('qzCat').textContent = q.cat;
+      el('qzTitle').textContent = `${q.title}`;
+      el('qzCode').textContent = q.code;
+      el('qzAnswer').textContent = q.answer;
+      el('qzWhy').innerHTML = mdLite(q.why);
+      el('qzReveal').classList.add('hide');
+      el('qzRevealRow').classList.remove('hide');
+      el('qzGradeRow').classList.add('hide');
+      el('qzProgress').textContent = `Q ${idx + 1} / ${round.length}`;
+      el('qzScore').textContent = `Score ${score}`;
+      el('qzBar').style.width = (idx / round.length * 100) + '%';
+    }
+    function reveal() {
+      el('qzReveal').classList.remove('hide');
+      el('qzRevealRow').classList.add('hide');
+      el('qzGradeRow').classList.remove('hide');
+    }
+    function grade(correct) {
+      if (graded) return; graded = true;
+      const q = round[idx];
+      store.recordQuiz(q.id, correct);
+      if (correct) score++; else missedIds.push(q.id);
+      idx++;
+      if (idx >= round.length) finish();
+      else showQ();
+    }
+    function finish() {
+      el('quizArea').classList.add('hide');
+      el('resultArea').classList.remove('hide');
+      const pct = Math.round(score / round.length * 100);
+      el('rzScore').textContent = `${score} / ${round.length} correct (${pct}%)`;
+      el('rzEmoji').textContent = pct >= 90 ? '🏆' : pct >= 70 ? '🎯' : pct >= 50 ? '💪' : '📚';
+      el('rzMsg').textContent = pct >= 90 ? 'Elite. You could teach this category.'
+        : pct >= 70 ? 'Strong — clean up the misses and you\'re interview-ready here.'
+        : pct >= 50 ? 'Getting there. Drill the missed ones until they\'re automatic.'
+        : 'This is exactly where the points are. Review the explanations and run it back.';
+      el('rzReviewMissed').style.display = missedIds.length ? '' : 'none';
+      lifeStats();
+    }
+
+    // tiny markdown renderer for explanations
+    function mdLite(s) {
+      let h = String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+      // fenced code blocks
+      h = h.replace(/```[a-z]*\n([\s\S]*?)```/g, (_, c) => `<pre>${c.replace(/\n$/, '')}</pre>`);
+      h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+      h = h.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+      // markdown list lines → keep as line breaks
+      h = h.replace(/\n/g, '<br>');
+      // undo <br> right after/before <pre>
+      h = h.replace(/<br>\s*<pre>/g, '<pre>').replace(/<\/pre><br>/g, '</pre>');
+      return h;
+    }
+
+    document.querySelectorAll('.qz-cat').forEach((b) => b.addEventListener('click', () => startRound(b.dataset.cat)));
+    el('qzRevealBtn').addEventListener('click', reveal);
+    el('qzGot').addEventListener('click', () => grade(true));
+    el('qzMiss').addEventListener('click', () => grade(false));
+    el('qzQuit').addEventListener('click', finish);
+    el('rzAgain').addEventListener('click', () => { el('resultArea').classList.add('hide'); el('setup').classList.remove('hide'); });
+    el('rzReviewMissed').addEventListener('click', () => {
+      round = shuffle(missedIds.map((id) => byId[id])); idx = 0; score = 0; missedIds = [];
+      el('resultArea').classList.add('hide'); el('quizArea').classList.remove('hide'); showQ();
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (el('quizArea').classList.contains('hide')) return;
+      if (e.key === ' ' || e.key === 'Enter') { if (!graded && el('qzReveal').classList.contains('hide')) { e.preventDefault(); reveal(); } }
+      if (!el('qzGradeRow').classList.contains('hide')) {
+        if (e.key === 'y' || e.key === '1') grade(true);
+        if (e.key === 'n' || e.key === '2') grade(false);
+      }
+    });
+
+    lifeStats();
+  </script>
+</BaseLayout>

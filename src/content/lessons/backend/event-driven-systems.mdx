@@ -1,0 +1,190 @@
+---
+title: "Event-Driven Systems: Kafka, Pulsar & Streaming"
+track: backend
+summary: "Decouple services with events instead of blocking calls. Messaging primitives — queue vs pub/sub vs log — and why Kafka's append-only log changes the game. Partitions, offsets, consumer groups, delivery semantics, idempotent consumers, the transactional outbox, DLQs, and stream processing with windowing and exactly-once."
+order: 5
+est: 32
+difficulty: medium
+priority: must
+tags: [events, kafka, pulsar, streaming, messaging, idempotency, outbox]
+whyAsked: "Every non-trivial backend eventually grows an async backbone. Event-driven design shows whether you can decouple services, absorb traffic spikes, reason about delivery semantics and ordering, and build consumers that survive retries — the exact failure modes that separate a queue you trust from one that double-charges customers."
+followUps:
+  - "Why a log (Kafka) instead of a traditional queue?"
+  - "What's Kafka's unit of ordering and parallelism?"
+  - "At-least-once vs exactly-once — what do you actually get?"
+  - "How do you publish an event and write the DB atomically?"
+  - "How do you handle a poison message that keeps failing?"
+resources:
+  - { label: "Apache Kafka docs", url: "https://kafka.apache.org/documentation/" }
+  - { label: "Apache Pulsar concepts", url: "https://pulsar.apache.org/docs/concepts-overview/" }
+  - { label: "Confluent: exactly-once semantics", url: "https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/" }
+---
+
+Event-driven design replaces "call you and wait" with "emit a fact and move on." Services stop knowing about each other; they publish events and consume the ones they care about. This buys **decoupling**, **spike buffering**, and **async fan-out** — at the cost of harder reasoning about ordering, duplicates, and failure. This lesson is the messaging backbone behind the broader [distributed systems](/lessons/backend/distributed-systems) picture.
+
+## Why event-driven over synchronous
+
+| Concern | Synchronous request/response | Event-driven (async) |
+|---|---|---|
+| Coupling | Caller knows callee's address + contract | Producer knows only the topic |
+| Spike handling | Backpressure propagates; caller blocks/fails | Broker buffers; consumers drain at their pace |
+| Fan-out | Caller loops over N callees | One event, N independent subscribers |
+| Latency of the action | Bounded by slowest callee | Producer returns immediately |
+| Failure blast radius | Callee down → caller fails | Callee down → events wait, processed later |
+| Read-your-write | Trivial | Eventual; harder to reason about |
+
+The tradeoff: sync is simpler and gives you an immediate answer — reach for it when the caller needs the result *now* (a price quote, an auth check). Async wins when the work can happen later and you want producers insulated from consumer health. A signup that emits `UserRegistered` lets email, analytics, and provisioning each react without the signup path waiting on any of them.
+
+## Messaging primitives: queue vs pub/sub vs log
+
+Three shapes, often confused:
+
+- **Work queue** — one message, delivered to exactly one of N competing consumers. Used to spread load (job processing). Once acked, the message is gone.
+- **Pub/sub** — one message fanned out to every subscriber. Each gets a copy. Classic topic broadcast.
+- **Log** — an append-only, ordered, *retained* sequence. Consumers track their own position (offset) and read at their own pace. The log doesn't delete on consume; it deletes on a retention policy.
+
+Kafka is a **log**, and that's the key distinction from a traditional queue like RabbitMQ:
+
+| Property | Traditional queue | Log (Kafka) |
+|---|---|---|
+| After consume | Message removed | Stays until retention expires |
+| Replay | No (gone) | Yes — reset offset and re-read |
+| Independent consumers | Hard (copies/fan-out exchange) | Native — each group has its own offsets |
+| Ordering | Per-queue, fragile under redelivery | Per-partition, strict |
+| Throughput model | Broker tracks per-message state | Sequential disk I/O, dumb broker |
+
+Because the log persists, three teams can each consume the same `orders` topic from their own position, and one can rewind a week to reprocess after a bug — impossible with a delete-on-ack queue.
+
+## Kafka model in depth
+
+A **topic** is a named log. Each topic is split into **partitions** — and the partition is the unit of *both* parallelism and ordering.
+
+- **Offsets** — each message in a partition has a monotonic offset. A consumer commits "I've processed up to offset N." On restart it resumes there.
+- **Consumer groups** — partitions are distributed across consumers *in a group*. Add consumers to scale, up to the partition count (extra consumers sit idle). Different groups are independent — each gets the full stream.
+- **Rebalancing** — when a consumer joins/leaves, partitions are reassigned. During a rebalance, processing pauses; frequent rebalances (slow consumers, short session timeouts) are a common throughput killer.
+- **Ordering** — guaranteed **only within a partition**, never across the topic. If you need all events for a customer ordered, give them the same **key** — Kafka hashes the key to choose a partition, so same key → same partition → ordered.
+
+```text
+topic: orders  (3 partitions)
+P0: [o:101][o:104][o:107]   <- key=A always lands here, in order
+P1: [o:102][o:105]
+P2: [o:103][o:106][o:108]
+group "billing":   c1->P0  c2->P1,P2   (own offsets)
+group "analytics": c1->P0,P1,P2        (own offsets, independent)
+```
+
+On the producer side:
+
+- **acks** — `acks=0` (fire-and-forget, can lose data), `acks=1` (leader wrote it), `acks=all` (all in-sync replicas wrote it — durable, slower). Production default for important data is `acks=all`.
+- **Replication factor** — copies of each partition across brokers (typically 3). One leader, the rest followers.
+- **ISR (in-sync replicas)** — followers caught up with the leader. With `acks=all` + `min.insync.replicas=2`, a write is acknowledged only once it's on enough replicas to survive a broker loss.
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Partition count caps consumer parallelism and you can't easily shrink it, so size it for peak. Choose your <b>key</b> for the ordering you actually need — over-keying (everything on one key) creates a hot partition that serializes your whole workload.
+</div>
+
+## Delivery semantics: what you actually get
+
+| Semantic | What it means | Cost | Typical use |
+|---|---|---|---|
+| At-most-once | Commit offset before processing | Lose messages on crash | Metrics where loss is OK |
+| At-least-once | Process, then commit offset | **Duplicates** on retry/crash | The common default |
+| Exactly-once | No loss, no dupes | Transactions, overhead, scope limits | Money, dedup-critical flows |
+
+**At-least-once is the default you design around.** If a consumer processes a message but crashes before committing the offset, it reprocesses on restart — so consumers **must be idempotent** (next section). The duplicate isn't a bug; it's the contract.
+
+**Exactly-once** in Kafka is real but narrow: the **idempotent producer** (sequence numbers dedupe producer retries) plus **transactions** let a consume-process-produce loop commit the output writes and the input offsets atomically (`read_committed` isolation). That covers Kafka-to-Kafka stream processing. But true *end-to-end* exactly-once — including an external DB or a third-party API — is hard, because that external system isn't in Kafka's transaction. The honest framing in an interview: "I get exactly-once *within* Kafka; for external side effects I fall back to at-least-once plus idempotent writes." This is the same async-correctness reasoning as in [concurrency and async](/lessons/backend/concurrency-and-async).
+
+## Reliability patterns
+
+**Idempotent consumers.** Make reprocessing a no-op. Carry a stable **dedup key** (event ID, or a natural key like `payment_id`) and either upsert by it or record processed IDs and skip seen ones. "Charge $50" must become "ensure a $50 charge for payment X exists" — safe to run twice.
+
+**Transactional outbox.** The classic trap: write to your DB *and* publish an event. Do them separately and a crash between them either drops the event or emits one for an aborted transaction (a dual-write problem). The fix — write the event into an `outbox` table **in the same DB transaction** as the business change, then a relay (or CDC like Debezium) reads the outbox and publishes to Kafka. The DB commit is the single source of truth; the event is guaranteed to follow.
+
+```sql
+BEGIN;
+  UPDATE accounts SET balance = balance - 50 WHERE id = 'A';
+  INSERT INTO outbox (id, topic, payload)
+    VALUES (gen_random_uuid(), 'payments', '{"acct":"A","amount":50}');
+COMMIT;
+-- relay/CDC: SELECT unpublished outbox rows -> produce to Kafka -> mark sent
+```
+
+This ties directly to transaction guarantees in [databases](/lessons/backend/databases).
+
+**Dead-letter queues & retry topics.** A poison message that always fails shouldn't block the partition behind it forever. Pattern: retry a bounded number of times (ideally on a separate **retry topic** with a delay so you don't hot-loop), and after the cap, route it to a **dead-letter queue** for inspection. Never silently drop it.
+
+**Backpressure & consumer lag.** When consumers fall behind, **lag** (latest offset minus committed offset) grows. Monitor it — rising lag is your early warning that consumers are under-provisioned or stuck. Respond by adding consumers (up to partition count), speeding up processing, or shedding load. The broker's retention buffers the spike, but only until retention expires.
+
+## Stream processing
+
+Beyond move-the-message, you often transform/aggregate the stream:
+
+- **Stateless** — map/filter/route each event independently. Easy to scale.
+- **Stateful** — aggregations, joins, counts that need to remember prior events. Requires a **state store** (often a local RocksDB backed by a changelog topic for recovery).
+
+**Windowing** groups unbounded streams into finite buckets:
+
+| Window | Shape | Example |
+|---|---|---|
+| Tumbling | Fixed, non-overlapping | Orders per 1-min bucket |
+| Sliding | Fixed size, overlapping step | 5-min count updated every 1 min |
+| Session | Closes after inactivity gap | A user's activity burst |
+
+**Tools.** **Kafka Streams** is a library embedded in your app (no separate cluster) — great for Kafka-native transforms. **Apache Flink** is a full distributed processing engine with stronger event-time handling, large state, and exactly-once via checkpointing — reach for it at scale or for complex jobs.
+
+**Event sourcing + CQRS** (briefly): event sourcing stores state as the *sequence of events* rather than current rows — the log is the source of truth, and you rebuild state by replaying. CQRS pairs a write model (commands → events) with separate read models (projections) optimized for queries. Powerful for audit and temporal queries, but the tradeoffs are real: eventual consistency, schema/event versioning forever, and replay cost. Don't propose it unless the audit/replay need justifies it.
+
+**Schema evolution.** Events outlive the code that wrote them, so manage the contract. A **schema registry** with **Avro** (or Protobuf) enforces compatibility — add optional fields, never break existing consumers — just like API versioning in [api design](/lessons/backend/api-design).
+
+## Broker comparison
+
+| Broker | Model | Ordering | Throughput | Pick when |
+|---|---|---|---|---|
+| **Kafka** | Partitioned log, pull | Per-partition | Very high | High-volume streaming, replay, multiple consumers |
+| **Pulsar** | Log + queue, segmented storage (BookKeeper) | Per-partition | Very high | Multi-tenancy, tiered storage, queue + stream in one |
+| **RabbitMQ** | Queue / exchange, push | Per-queue | Moderate | Complex routing, work queues, low-latency tasks |
+| **SQS / SNS** | Managed queue (SQS) + pub/sub (SNS) | FIFO queues only | High (auto-scaled) | AWS-native, zero-ops, simple fan-out/jobs |
+
+Kafka and Pulsar are logs (retention + replay); RabbitMQ and SQS are primarily queues (delete on ack). Pulsar separates compute (brokers) from storage (BookKeeper), easing scaling and tiered/offloaded storage; Kafka's ecosystem and operational maturity remain the safe default. SQS/SNS trades control for "no cluster to run."
+
+## Interview questions & model answers
+
+**Q: Why a log like Kafka instead of a traditional queue?**
+"A queue deletes a message on ack, so it's one-shot and single-consumer-group friendly at best. Kafka is an append-only log with retention — consumers track their own offsets, so multiple independent consumer groups read the same stream, and any of them can rewind and replay after a bug or to backfill a new service. You also get sequential-I/O throughput because the broker is dumb and doesn't track per-message state."
+
+**Q: What's the unit of ordering and parallelism in Kafka?**
+"The partition. Ordering is guaranteed only within a partition, and parallelism is capped by partition count — one consumer per partition within a group. To order events for an entity, I give them the same key; Kafka hashes the key to a partition, so they land in order. The catch is a hot key creates a hot partition that serializes work, so key choice is a real design decision."
+
+**Q: At-least-once vs exactly-once — what do you actually rely on?**
+"At-least-once is the practical default: process, then commit the offset, so a crash in between means reprocessing — duplicates are expected, and I make consumers idempotent with a dedup key. Kafka offers exactly-once within Kafka via the idempotent producer plus transactions for consume-process-produce loops. But end-to-end exactly-once across an external DB or API isn't really achievable, so for side effects I do at-least-once plus idempotent writes."
+
+**Q: How do you atomically update the DB and publish an event?**
+"Transactional outbox. I write the event into an outbox table in the same transaction as the business change, so they commit or roll back together. A relay or CDC tool like Debezium reads the outbox and publishes to Kafka. That removes the dual-write race where you commit the DB but crash before publishing, or publish for a transaction that then rolls back."
+
+**Q: A message keeps failing — what happens?**
+"I don't let a poison message block the partition behind it. Bounded retries, ideally on a separate retry topic with a delay so I'm not hot-looping, and after the retry cap it goes to a dead-letter queue for inspection and manual or automated reprocessing. I also distinguish transient failures (retry) from permanent ones (straight to DLQ)."
+
+**Q: How do you know consumers are keeping up?**
+"Consumer lag — the gap between the latest offset and the committed offset, per partition. I alert on rising lag; it's the earliest signal that consumers are under-provisioned or stuck. The remedy is more consumers up to the partition count, faster processing, or load shedding. Retention buffers the spike but only until it expires."
+
+**Q: When would you reach for event sourcing or CQRS?**
+"When I genuinely need a full audit trail, temporal queries, or to rebuild state by replay — finance, ledgers, workflow engines. The events become the source of truth and read models are projections off them. I'd push back on it for ordinary CRUD: it adds eventual consistency, permanent event versioning, and replay cost that most apps don't need."
+
+## Common mistakes / what weak candidates do
+
+- **Calling Kafka a queue** — missing that retention + offsets enable replay and multiple independent consumers.
+- **Assuming global ordering** — ordering is per-partition only; cross-partition order isn't guaranteed.
+- **Building non-idempotent consumers** — then acting surprised by double-charges under at-least-once redelivery.
+- **Claiming exactly-once everywhere** — not knowing it's scoped to Kafka and breaks across external systems.
+- **Dual-writing DB and broker separately** — instead of the transactional outbox, creating lost or phantom events.
+- **No DLQ or retry strategy** — a poison message stalls the partition or gets silently dropped.
+- **Ignoring consumer lag** — no visibility until the system is hours behind.
+- **One giant key (or no key)** — hot partition serializing everything, or losing the ordering they needed.
+- **Reaching for event sourcing/CQRS** on plain CRUD without justifying the consistency and versioning cost.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Event-driven trades an immediate answer for <b>decoupling, spike buffering, and fan-out</b>. Kafka is a <b>retained log</b>, not a queue — offsets and consumer groups give replay and many independent readers. Ordering and parallelism live in the <b>partition</b>, keyed by entity. Default delivery is <b>at-least-once</b>, so consumers are <b>idempotent</b>; I publish atomically with the <b>transactional outbox</b>, isolate poison messages with <b>retry topics + a DLQ</b>, and watch <b>consumer lag</b>. Exactly-once only <b>within</b> Kafka."
+</div>

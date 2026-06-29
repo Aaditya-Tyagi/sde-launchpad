@@ -1,0 +1,37 @@
+---
+title: "Phase 0 — Position yourself"
+track: ai-engineering
+summary: "≈1 week. Reuse the production skills you already have; close the one real gap (enough Python to read notebooks)."
+order: 1
+est: 12
+priority: must
+tags: [python, positioning, foundations]
+---
+
+**Duration: ≈1 week.**
+
+You already have what most AI learners spend months acquiring: REST/API design, Postgres, error handling and retries, queues (SQS/n8n), Docker, AWS, deployment. **Don't relearn these — reuse them.**
+
+## The one gap to close
+
+Enough **Python** to read notebooks and use Python-only tools — the ecosystem leans Python. But you can build production AI in your existing **TS/Node** stack: the **Vercel AI SDK** is excellent and JS-native.
+
+<div class="callout warn">
+  <div class="ct">Don't gate progress on "mastering Python first"</div>
+  Pick Python up as a second language <i>alongside</i> building. You only need to read notebooks and run Python tools — not become a Python expert before you start.
+</div>
+
+## What you're carrying forward
+
+| You already own | Where it pays off in AI |
+|---|---|
+| REST / API design | LLM wrapper services, tool endpoints |
+| Postgres | pgvector for RAG — zero new infra |
+| Retries & error handling | Reliable LLM calls (they fail constantly) |
+| Queues (SQS / n8n) | Async/background AI jobs, batching |
+| Docker / AWS | Deploying AI services & self-hosting tools |
+
+<div class="callout key">
+  <div class="ct">Milestone</div>
+  You can read a Python notebook, run Python-based AI tools, and you've decided your default build stack (TS/Node + Vercel AI SDK) without blocking on Python mastery.
+</div>

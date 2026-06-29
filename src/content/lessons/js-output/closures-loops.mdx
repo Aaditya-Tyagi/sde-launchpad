@@ -1,0 +1,359 @@
+---
+title: "Output Questions: Closures & Loops"
+track: js-output
+summary: "Predict the output — closure capture, stale closures, IIFE patterns, loop bugs, and memoization gotchas."
+order: 2
+est: 25
+difficulty: medium
+priority: must
+tags: [closures, loops, iife, stale-closure, capture]
+whyAsked: "Closure output questions are the most common JS interview questions. They test whether you understand that closures capture references, not values."
+followUps:
+  - "What does a closure capture — a value or a reference?"
+  - "How does IIFE fix the var loop problem?"
+  - "What is a stale closure and how do you avoid it in React?"
+  - "Can closures cause memory leaks?"
+resources:
+  - { label: "javascript.info: Closures", url: "https://javascript.info/closure" }
+---
+import JsPlayground from '../../../components/JsPlayground.astro';
+
+---
+
+## Q1 — basic closure capture
+
+<JsPlayground code={`function outer() {
+  let count = 0;
+  return function inner() {
+    count++;
+    return count;
+  };
+}
+
+const fn = outer();
+console.log(fn()); // ?
+console.log(fn()); // ?
+console.log(fn()); // ?
+
+const fn2 = outer(); // fresh closure
+console.log(fn2()); // ?`} height={200} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+1
+2
+3
+1
+```
+`inner` closes over `count` by **reference**, not by value. Each call to `fn()` reads and increments the same `count` variable in `outer`'s scope. `fn2` is a fresh invocation of `outer`, creating an independent `count` starting at `0`.
+</details>
+
+---
+
+## Q2 — classic var loop bug
+
+<JsPlayground code={`const funcs = [];
+
+for (var i = 0; i < 3; i++) {
+  funcs.push(function() { return i; });
+}
+
+console.log(funcs[0]()); // ?
+console.log(funcs[1]()); // ?
+console.log(funcs[2]()); // ?`} height={160} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+3
+3
+3
+```
+All three functions close over the **same** `i` variable (because `var` is function-scoped, not block-scoped). By the time any function is called, the loop has finished and `i === 3`.
+</details>
+
+---
+
+## Q3 — IIFE fix for the loop bug
+
+<JsPlayground code={`const funcs = [];
+
+for (var i = 0; i < 3; i++) {
+  funcs.push((function(j) {
+    return function() { return j; };
+  })(i));    // IIFE captures i as j by value
+}
+
+console.log(funcs[0]()); // ?
+console.log(funcs[1]()); // ?
+console.log(funcs[2]()); // ?`} height={165} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+0
+1
+2
+```
+The IIFE immediately invokes a new function with `i` passed as the argument `j`. Each iteration creates a **new scope** with its own `j`, freezing the current value of `i`. The inner function closes over `j`, which is independent per iteration.
+</details>
+
+---
+
+## Q4 — closure over a variable that changes
+
+<JsPlayground code={`let x = 10;
+
+function getX() {
+  return x;
+}
+
+console.log(getX()); // ?
+x = 20;
+console.log(getX()); // ?`} height={140} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+10
+20
+```
+Closures capture variables by **reference**, not snapshot. `getX` always reads the current value of `x`. When `x` changes to `20`, the next call sees `20`. This is why stale closures in React happen — a hook's closure captures the value at the time the function was created, but if the variable changes and the function isn't recreated, it sees the old value.
+</details>
+
+---
+
+## Q5 — multiple closures sharing a variable
+
+<JsPlayground code={`function makeCounter() {
+  let count = 0;
+  return {
+    increment: () => ++count,
+    decrement: () => --count,
+    value: () => count,
+  };
+}
+
+const c = makeCounter();
+c.increment();
+c.increment();
+c.increment();
+c.decrement();
+console.log(c.value()); // ?`} height={200} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+2
+```
+All three methods close over the **same `count`** — they share the binding. `increment` is called 3× (count = 3), `decrement` once (count = 2).
+</details>
+
+---
+
+## Q6 — function factory with parameter
+
+<JsPlayground code={`function multiplier(factor) {
+  return (number) => number * factor;
+}
+
+const double = multiplier(2);
+const triple = multiplier(3);
+
+console.log(double(5));  // ?
+console.log(triple(5));  // ?
+console.log(double(triple(2))); // ?`} height={155} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+10
+15
+12
+```
+`double` closes over `factor = 2`; `triple` over `factor = 3`. They're independent closures with different `factor` values. `triple(2)` = 6, then `double(6)` = 12.
+</details>
+
+---
+
+## Q7 — stale closure in setTimeout
+
+<JsPlayground code={`function test() {
+  let val = 0;
+
+  setTimeout(function() {
+    console.log(val); // ?
+  }, 100);
+
+  val = 42;
+}
+
+test();`} height={150} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+42
+```
+The callback closes over `val` by reference. By the time the `setTimeout` fires (100ms later), `val` has been updated to `42`. It reads the **current** value at execution time, not a snapshot from when `setTimeout` was called.
+</details>
+
+---
+
+## Q8 — closure inside object method
+
+<JsPlayground code={`const obj = {
+  value: 10,
+  getValue: function() {
+    return function() {
+      return this.value;  // ?
+    };
+  }
+};
+
+const fn = obj.getValue();
+console.log(fn()); // ?`} height={160} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+undefined
+```
+The inner function is a plain function, not a method. When called as `fn()` (not `obj.something()`), `this` is the global object (`window` in browser) or `undefined` in strict mode. `window.value` is `undefined`. Fix with `() =>` (arrow inherits outer `this`) or `.bind(obj)`.
+</details>
+
+---
+
+## Q9 — IIFE output
+
+<JsPlayground code={`const result = (function(a, b) {
+  return a + b;
+})(3, 4);
+
+console.log(result); // ?
+
+(function() {
+  var secret = 42;
+  console.log(secret); // ?
+})();
+
+console.log(typeof secret); // ?`} height={185} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+7
+42
+"undefined"
+```
+IIFEs execute immediately and return their value. `result` is `7`. The second IIFE logs `42` internally. `secret` is scoped inside the IIFE — it doesn't pollute the outer scope, so `typeof secret` is `"undefined"` (no ReferenceError because `typeof` on an undeclared name is safe).
+</details>
+
+---
+
+## Q10 — closure counter with reset
+
+<JsPlayground code={`function createCounter(start = 0) {
+  let count = start;
+  return {
+    next() { return ++count; },
+    peek() { return count; },
+    reset() { count = start; },
+  };
+}
+
+const c = createCounter(5);
+console.log(c.next());  // ?
+console.log(c.next());  // ?
+console.log(c.peek());  // ?
+c.reset();
+console.log(c.peek());  // ?`} height={200} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+6
+7
+7
+5
+```
+`start` and `count` are both in the closure. `reset()` sets `count` back to `start` (the original argument), which is still accessible because it's part of the outer function scope.
+</details>
+
+---
+
+## Q11 — closure over let in switch
+
+<JsPlayground code={`function test(n) {
+  switch(n) {
+    case 1:
+      let msg = 'one';
+      console.log(msg);
+      break;
+    case 2:
+      // console.log(msg); // What would this do?
+      let msg = 'two';    // ?
+      break;
+  }
+}
+
+try { test(1); } catch(e) { console.log('Error:', e.message); }`} height={190} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+Error: Identifier 'msg' has already been declared
+```
+All `case` clauses in a `switch` share **one block scope**. The two `let msg` declarations conflict — you get a `SyntaxError` at parse time. Fix: wrap each case body in `{}` to give each case its own block.
+```js
+case 1: { let msg = 'one'; ... break; }
+case 2: { let msg = 'two'; ... break; }
+```
+</details>
+
+---
+
+## Q12 — closure in class method
+
+<JsPlayground code={`class Timer {
+  constructor() {
+    this.seconds = 0;
+  }
+
+  start() {
+    setInterval(function() {
+      this.seconds++;           // ?
+      console.log(this.seconds);
+    }, 100);
+  }
+}
+
+// const t = new Timer();
+// t.start();  // What happens after 1 tick?
+console.log("What would t.start() log?");`} height={200} />
+
+<details>
+<summary><strong>Answer & why</strong></summary>
+
+```
+NaN (after each tick)
+```
+The `function()` callback loses `this` — inside a regular function passed to `setInterval`, `this` is `window`/`undefined`. `window.seconds` is `undefined`, and `undefined++` is `NaN`. Fix: use an arrow function `() => { this.seconds++; }` — arrows inherit `this` from the enclosing class method.
+</details>
+
+<div class="callout key">
+  <div class="ct">The core rule</div>
+  Closures capture variables by <strong>reference</strong>, not by value snapshot. That's what powers counters and iterators — and what causes the <code>var</code> loop bug and stale closures in React hooks. When you need to freeze a value, either use <code>let</code> (fresh binding per iteration), an IIFE (new scope with value passed as argument), or copy the value into a new variable.
+</div>

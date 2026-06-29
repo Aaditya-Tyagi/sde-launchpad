@@ -1,0 +1,253 @@
+---
+title: "Animations: Animated API vs Reanimated 3"
+track: react-native
+summary: "Why the JS thread causes animation jank, how the Animated API works, and what Reanimated's worklets change — with practical patterns for both."
+order: 8
+est: 26
+difficulty: hard
+priority: must
+tags: [animations, reanimated, animated-api, worklets, jank, useSharedValue, useAnimatedStyle]
+whyAsked: "Animation architecture is a high-signal RN question — it tests your understanding of the threading model and why native-driven animations matter."
+followUps:
+  - "Why do JS-thread animations drop frames during heavy JS work?"
+  - "What is a worklet in Reanimated?"
+  - "What's the difference between useSharedValue and useState?"
+  - "When would you use the native driver with the Animated API?"
+  - "What is LayoutAnimation used for?"
+resources:
+  - { label: "Reanimated docs", url: "https://docs.swmansion.com/react-native-reanimated/" }
+  - { label: "RN Animated docs", url: "https://reactnative.dev/docs/animated" }
+---
+
+## Why animations jank on the JS thread
+
+React Native runs JavaScript on a separate JS thread and renders on the UI thread. Normally they communicate via the bridge/JSI. When an animation is controlled from JS:
+
+1. JS thread computes the next frame value
+2. Sends it across to the UI thread
+3. UI thread applies it to the native view
+
+If the **JS thread is busy** (heavy re-renders, JSON parsing, navigation transitions), it misses frames. The UI thread — which could be running at 60fps — sits idle waiting for JS to send the next value. Result: janky animations even though the phone is capable.
+
+## Animated API — the built-in solution
+
+The Animated API lets you **declare** an animation, then hand it to a native driver that runs entirely on the UI thread, independent of JS.
+
+```jsx
+import { Animated, Easing } from 'react-native';
+
+function FadeIn({ children }) {
+  const opacity = useRef(new Animated.Value(0)).current; // Animated.Value lives in native
+
+  useEffect(() => {
+    Animated.timing(opacity, {
+      toValue: 1,
+      duration: 400,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true, // ← critical: hands animation to UI thread
+    }).start();
+  }, []);
+
+  return (
+    <Animated.View style={{ opacity }}>  {/* Animated.View, not View */}
+      {children}
+    </Animated.View>
+  );
+}
+```
+
+**`useNativeDriver: true`** — the animation config is serialized once to the native side, and the UI thread runs the full animation loop independently. JS thread doesn't need to fire for each frame.
+
+**Limitation**: `useNativeDriver: true` only supports **transform** and **opacity**. It cannot animate `width`, `height`, `backgroundColor`, `borderRadius`, etc. — those require layout recalculation on the main thread.
+
+### Animated types
+
+```js
+// Timing — duration-based, customizable easing
+Animated.timing(value, { toValue: 1, duration: 300, easing: Easing.bounce, useNativeDriver: true })
+
+// Spring — physics-based, feels natural
+Animated.spring(value, { toValue: 1, tension: 100, friction: 10, useNativeDriver: true })
+
+// Decay — velocity-based deceleration (momentum scrolling)
+Animated.decay(value, { velocity: 1.5, useNativeDriver: true })
+
+// Sequence — run animations in series
+Animated.sequence([fadeIn, slideUp]).start()
+
+// Parallel — run simultaneously
+Animated.parallel([fadeIn, scaleUp]).start()
+
+// Stagger — parallel with delay offsets
+Animated.stagger(100, items.map(v => Animated.timing(v, config))).start()
+```
+
+### Interpolation
+
+Map one range to another — very powerful for transform-based animations:
+
+```js
+const rotation = scrollY.interpolate({
+  inputRange: [0, 360],
+  outputRange: ['0deg', '360deg'],
+  extrapolate: 'clamp',  // don't go beyond the range
+});
+
+const scale = anim.interpolate({
+  inputRange: [0, 1],
+  outputRange: [0.8, 1],
+});
+```
+
+## Reanimated 3 — the modern approach
+
+[Reanimated](https://docs.swmansion.com/react-native-reanimated/) by Software Mansion runs animation logic **directly on the UI thread** via **worklets** — small JS functions that are compiled and executed in the native runtime, not the JS thread.
+
+### Core concepts
+
+```jsx
+import Animated, { 
+  useSharedValue, 
+  useAnimatedStyle, 
+  withSpring, 
+  withTiming,
+  interpolate,
+  runOnJS,
+} from 'react-native-reanimated';
+
+function PressableCard() {
+  const scale = useSharedValue(1);     // lives on UI thread, not JS thread
+  const opacity = useSharedValue(1);
+
+  // useAnimatedStyle runs as a worklet on the UI thread
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+    opacity: opacity.value,
+  }));
+
+  return (
+    <Animated.View style={[styles.card, animatedStyle]}>
+      <Pressable
+        onPressIn={() => {
+          scale.value = withSpring(0.95);   // UI thread drives this directly
+          opacity.value = withTiming(0.8, { duration: 100 });
+        }}
+        onPressOut={() => {
+          scale.value = withSpring(1);
+          opacity.value = withTiming(1, { duration: 150 });
+        }}
+      />
+    </Animated.View>
+  );
+}
+```
+
+### useSharedValue vs useState
+
+| | `useSharedValue` | `useState` |
+|---|---|---|
+| Lives on | UI thread (shared with JS) | JS thread |
+| Updating | Direct: `value.value = x` | Via setter: `setState(x)` |
+| Re-renders? | **No** — UI thread only | Yes |
+| Readable in JS? | Yes (`value.value`) | Yes |
+| For animations? | Yes — native-driven | No — causes re-renders per frame |
+
+### Gesture Handler integration
+
+```jsx
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+
+function DraggableCard() {
+  const translateX = useSharedValue(0);
+  const translateY = useSharedValue(0);
+  const startX = useSharedValue(0);
+  const startY = useSharedValue(0);
+
+  const gesture = Gesture.Pan()
+    .onStart(() => {
+      startX.value = translateX.value;
+      startY.value = translateY.value;
+    })
+    .onUpdate((e) => {
+      translateX.value = startX.value + e.translationX;
+      translateY.value = startY.value + e.translationY;
+    })
+    .onEnd(() => {
+      translateX.value = withSpring(0);
+      translateY.value = withSpring(0);
+    });
+
+  const style = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: translateX.value },
+      { translateY: translateY.value },
+    ],
+  }));
+
+  return (
+    <GestureDetector gesture={gesture}>
+      <Animated.View style={[styles.card, style]} />
+    </GestureDetector>
+  );
+}
+```
+
+### runOnJS — bridging UI thread back to JS
+
+Sometimes you need to call a JS function (setState, navigation) from a worklet:
+
+```js
+const handleAnimationEnd = () => {
+  navigation.navigate('Next'); // regular JS function
+};
+
+const gesture = Gesture.Tap().onEnd(() => {
+  scale.value = withTiming(0, { duration: 200 }, (finished) => {
+    if (finished) runOnJS(handleAnimationEnd)(); // jump back to JS thread
+  });
+});
+```
+
+## LayoutAnimation — simple transition for layout changes
+
+For simple height/position changes triggered by state, `LayoutAnimation` animates the **transition** automatically:
+
+```js
+import { LayoutAnimation, Platform } from 'react-native';
+
+function ExpandableSection({ children }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const toggle = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setExpanded(e => !e); // the next layout update will be animated
+  };
+
+  return (
+    <View>
+      <Pressable onPress={toggle}><Text>Toggle</Text></Pressable>
+      {expanded && <View>{children}</View>}
+    </View>
+  );
+}
+```
+
+`LayoutAnimation` is coarse — it animates everything in the next layout pass. For fine-grained control, use Reanimated's `Layout` prop.
+
+## Choosing between Animated API and Reanimated
+
+| | Animated API | Reanimated 3 |
+|---|---|---|
+| Setup | Built-in | Install package |
+| Transforms + opacity | `useNativeDriver: true` | Always native |
+| Layout props (width, bg) | No native driver | Yes (limited) |
+| Gesture sync | Complex | First-class |
+| Code complexity | Moderate | Higher initially |
+| Performance ceiling | Good | Excellent |
+
+Use Animated API for simple fade/slide/scale animations. Use Reanimated for gesture-driven animations, complex choreography, or when you need to animate layout properties.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "JS-thread animations jank because JS competes with rendering for time — if JS is busy, frames drop. The Animated API's `useNativeDriver: true` serializes the animation to the UI thread once, running it frame-by-frame without JS involvement — but only works for transform and opacity. Reanimated goes further: `useSharedValue` lives on the UI thread, and `useAnimatedStyle` runs as a worklet there too, so even gesture-linked animations never touch JS per frame. `runOnJS` is the escape hatch when a worklet needs to call back into JS (setState, navigation)."
+</div>

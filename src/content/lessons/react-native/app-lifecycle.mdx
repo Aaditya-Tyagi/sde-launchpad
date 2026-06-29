@@ -1,0 +1,196 @@
+---
+title: "App Lifecycle & Background Tasks"
+track: react-native
+summary: "AppState transitions, what happens when your app backgrounds, foreground/background detection, and handling tasks that must complete when the app isn't active."
+order: 11
+est: 18
+difficulty: medium
+priority: deep
+tags: [app-lifecycle, AppState, background, foreground, notifications, task-manager]
+whyAsked: "Lifecycle questions reveal whether you've built production RN apps. Handling the background/foreground transition correctly prevents data loss, wasted network calls, and security issues."
+followUps:
+  - "What are the three AppState values?"
+  - "How do you detect that the app has returned to the foreground?"
+  - "What is the difference between inactive and background on iOS?"
+  - "How would you pause/resume a timer when the app backgrounds?"
+  - "How do you run code in the background in RN?"
+resources:
+  - { label: "RN AppState docs", url: "https://reactnative.dev/docs/appstate" }
+  - { label: "Expo TaskManager", url: "https://docs.expo.dev/versions/latest/sdk/task-manager/" }
+---
+
+## AppState — the three states
+
+`AppState` tells you whether the app is in the foreground, background, or transitioning:
+
+| State | Meaning |
+|---|---|
+| `active` | App is in the foreground, receiving events |
+| `background` | App is in the background (minimized, home screen) |
+| `inactive` | **iOS only** — transitioning state (control center, incoming call) |
+
+On Android: you'll see `active` → `background` → `active`. The `inactive` state doesn't exist.
+
+## Listening to AppState changes
+
+```tsx
+import { AppState, AppStateStatus } from 'react-native';
+import { useEffect, useRef } from 'react';
+
+function useAppState(onChange?: (state: AppStateStatus) => void) {
+  const appState = useRef(AppState.currentState);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      const prevState = appState.current;
+      appState.current = nextState;
+
+      if (prevState.match(/inactive|background/) && nextState === 'active') {
+        // App came to the foreground — refresh stale data, resume timers
+        console.log('App foregrounded');
+      }
+
+      if (nextState.match(/inactive|background/)) {
+        // App went to the background — pause timers, save state
+        console.log('App backgrounded');
+      }
+
+      onChange?.(nextState);
+    });
+
+    return () => subscription.remove(); // cleanup
+  }, [onChange]);
+
+  return appState;
+}
+```
+
+## Common patterns for lifecycle events
+
+### Pause/resume an interval
+
+```tsx
+function useInterval(callback: () => void, ms: number) {
+  const savedCallback = useRef(callback);
+  const idRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => { savedCallback.current = callback; }, [callback]);
+
+  useEffect(() => {
+    const start = () => { idRef.current = setInterval(() => savedCallback.current(), ms); };
+    const stop = () => { if (idRef.current) clearInterval(idRef.current); };
+
+    start();
+
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') start();
+      else stop(); // don't burn battery when backgrounded
+    });
+
+    return () => { stop(); sub.remove(); };
+  }, [ms]);
+}
+```
+
+### Refresh data on foreground
+
+```tsx
+function useRefreshOnForeground(refresh: () => void) {
+  const appState = useRef(AppState.currentState);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      const wasBackground = appState.current.match(/inactive|background/);
+      const isNowActive = nextState === 'active';
+
+      if (wasBackground && isNowActive) {
+        refresh(); // data might be stale — refetch
+      }
+      appState.current = nextState;
+    });
+    return () => sub.remove();
+  }, [refresh]);
+}
+```
+
+### React Query / TanStack Query integration
+
+If you use React Query, it has a built-in `focusManager` that automatically refetches when the app comes to the foreground:
+
+```ts
+import { focusManager } from '@tanstack/react-query';
+import { AppState } from 'react-native';
+
+// In app setup — tell React Query to use AppState
+AppState.addEventListener('change', (state) => {
+  focusManager.setFocused(state === 'active');
+});
+```
+
+## Security: lock or clear sensitive data on background
+
+For apps that show sensitive information (banking, health, passwords):
+
+```tsx
+function useSecureBackground() {
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') {
+        // Blur sensitive content before the OS takes a screenshot
+        setSensitiveContentVisible(false);
+      } else {
+        // Re-prompt for biometrics on foreground if required
+        authenticateBeforeShowing();
+      }
+    });
+    return () => sub.remove();
+  }, []);
+}
+```
+
+On iOS, the OS takes a screenshot of your app for the app switcher — blurring or hiding sensitive content before backgrounding prevents it from appearing in that screenshot.
+
+## Background execution
+
+React Native intentionally limits background execution — the JS runtime is suspended when the app backgrounds. Options:
+
+### Expo TaskManager (background fetch)
+
+```ts
+import * as TaskManager from 'expo-task-manager';
+import * as BackgroundFetch from 'expo-background-fetch';
+
+const TASK_NAME = 'background-sync';
+
+TaskManager.defineTask(TASK_NAME, async () => {
+  try {
+    const data = await syncData(); // runs in background
+    return data ? BackgroundFetch.BackgroundFetchResult.NewData
+                : BackgroundFetch.BackgroundFetchResult.NoData;
+  } catch {
+    return BackgroundFetch.BackgroundFetchResult.Failed;
+  }
+});
+
+// Register
+await BackgroundFetch.registerTaskAsync(TASK_NAME, {
+  minimumInterval: 15 * 60, // 15 minutes minimum (OS may enforce longer)
+  stopOnTerminate: false,    // continue after app is force-closed
+  startOnBoot: true,
+});
+```
+
+**OS limitations**: iOS caps background fetch at 30 seconds and throttles frequency based on app usage. Android has Doze mode. Neither platform guarantees exact timing.
+
+### Headless JS (bare RN)
+
+For Android-specific background tasks, `AppRegistry.registerHeadlessTask` runs a JS task when the app is in the background (e.g., processing incoming FCM messages).
+
+### Push notification + silent push
+
+For "wake on event" patterns: send a **silent push notification** (content-available: 1 on iOS, data-only on Android) — the OS briefly wakes your app to handle it. Use this for incremental sync triggered by the server.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "`AppState` has three values: `active`, `background`, and `inactive` (iOS only, during transitions). I listen with `addEventListener('change', fn)` and clean up in the return function. The foreground pattern is: `prev.match(/inactive|background/) && next === 'active'` — that's when I refetch stale data, resume timers, or re-authenticate. I pause intervals and hide sensitive content on `background` or `inactive`. For actual background execution, options are Expo TaskManager (background fetch, ~15min minimum), headless JS on Android, or silent push notifications to wake the app briefly."
+</div>

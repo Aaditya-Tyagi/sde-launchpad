@@ -1,0 +1,202 @@
+---
+title: "Stack & Queue"
+track: dsa
+summary: "LIFO/FIFO mechanics, the monotonic stack for next-greater problems, min-stack, and sliding-window-max via a deque."
+order: 10
+est: 30
+difficulty: medium
+priority: must
+tags: [stack, queue, monotonic-stack, deque]
+whyAsked: "Stacks and queues underpin parsing, traversal, and a whole family of 'next greater / nearest smaller' problems that the monotonic stack solves in O(n)."
+followUps:
+  - "What is a monotonic stack and when do you use it?"
+  - "How do you build a min-stack with O(1) getMin?"
+  - "How do you implement a queue from two stacks?"
+  - "How does the deque solve sliding-window maximum in O(n)?"
+resources:
+  - { label: "NeetCode: Stack", url: "https://neetcode.io/practice" }
+---
+
+A **stack** is LIFO (last in, first out); a **queue** is FIFO (first in, first out). Beyond the basics, the high-value interview tool is the **monotonic stack/queue** — it answers a whole class of "next greater / nearest smaller / span" questions in a single O(n) pass.
+
+## When to reach for each tool — recognition triggers
+
+- "**Valid parentheses / matching / nesting / undo / backtrack-able state**" → stack.
+- "**Next greater / next smaller / nearest warmer / span / largest rectangle**" → monotonic stack.
+- "**Process in arrival order / BFS / level-by-level**" → queue.
+- "**Sliding window max/min**" in O(n) → monotonic deque.
+- "**getMin/getMax in O(1)** alongside push/pop" → min-stack (auxiliary stack).
+
+<div class="callout key">
+  <div class="ct">Pattern trigger</div>
+  "Next greater/smaller element", "daily temperatures", "largest rectangle", "stock span" → monotonic stack (one O(n) pass). Matching/nesting → plain stack. Sliding-window extreme → monotonic deque.
+</div>
+
+## Worked examples
+
+### Valid Parentheses — the canonical stack
+
+Push opens; on a close, the top must be the matching open.
+
+```js
+// O(n) time, O(n) space
+function isValid(s) {
+  const pairs = { ')': '(', ']': '[', '}': '{' };
+  const stack = [];
+  for (const c of s) {
+    if (c === '(' || c === '[' || c === '{') stack.push(c);
+    else if (stack.pop() !== pairs[c]) return false;  // mismatch or empty
+  }
+  return stack.length === 0;   // leftover opens → invalid
+}
+```
+
+Idea: a stack naturally models nesting — the most recent open must close first.
+**Time** O(n) · **Space** O(n).
+
+### Min Stack — O(1) getMin with an auxiliary stack
+
+Track the running minimum in a parallel stack so `getMin` is O(1).
+
+```js
+// All operations O(1)
+class MinStack {
+  constructor() { this.stack = []; this.mins = []; }
+  push(x) {
+    this.stack.push(x);
+    this.mins.push(this.mins.length ? Math.min(x, this.mins[this.mins.length - 1]) : x);
+  }
+  pop() { this.mins.pop(); return this.stack.pop(); }
+  top() { return this.stack[this.stack.length - 1]; }
+  getMin() { return this.mins[this.mins.length - 1]; }
+}
+```
+
+Idea: each entry remembers the min *at or below* it, so popping restores the previous min for free.
+**Time** O(1) per op · **Space** O(n).
+
+### Daily Temperatures — monotonic (decreasing) stack
+
+For each day, find how many days until a warmer one. Keep a stack of **indices** whose temperatures are still waiting for a warmer day.
+
+```js
+// O(n) time, O(n) space
+function dailyTemperatures(temps) {
+  const res = new Array(temps.length).fill(0);
+  const stack = [];                          // indices, temps decreasing down the stack
+  for (let i = 0; i < temps.length; i++) {
+    while (stack.length && temps[i] > temps[stack[stack.length - 1]]) {
+      const j = stack.pop();                 // today is the warmer day for index j
+      res[j] = i - j;
+    }
+    stack.push(i);
+  }
+  return res;
+}
+```
+
+Idea: each index is pushed and popped at most once → O(n) despite the inner `while`. The stack stays monotonically decreasing in temperature. The same skeleton solves Next Greater Element.
+**Time** O(n) · **Space** O(n).
+
+### Largest Rectangle in Histogram — monotonic increasing stack
+
+For each bar, the widest rectangle of its height extends until a shorter bar on each side. A monotonic increasing stack finds those boundaries.
+
+```js
+// O(n) time, O(n) space
+function largestRectangleArea(heights) {
+  const stack = [];                          // indices, heights increasing
+  let best = 0;
+  for (let i = 0; i <= heights.length; i++) {
+    const h = i === heights.length ? 0 : heights[i];   // sentinel flushes the stack
+    while (stack.length && heights[stack[stack.length - 1]] >= h) {
+      const height = heights[stack.pop()];
+      const left = stack.length ? stack[stack.length - 1] : -1;
+      const width = i - left - 1;            // bars strictly between the boundaries
+      best = Math.max(best, height * width);
+    }
+    stack.push(i);
+  }
+  return best;
+}
+```
+
+Idea: when a bar shorter than the stack top appears, the popped bar's rectangle is bounded on the right by `i` and on the left by the new stack top. The trailing `0` sentinel flushes everything.
+**Time** O(n) · **Space** O(n).
+
+### Implement Queue using Two Stacks — amortized O(1)
+
+Use an `in` stack for pushes and an `out` stack for pops; move elements only when `out` is empty.
+
+```js
+class MyQueue {
+  constructor() { this.in = []; this.out = []; }
+  push(x) { this.in.push(x); }
+  pop() { this.peek(); return this.out.pop(); }
+  peek() {
+    if (!this.out.length) while (this.in.length) this.out.push(this.in.pop()); // reverse once
+    return this.out[this.out.length - 1];
+  }
+  empty() { return !this.in.length && !this.out.length; }
+}
+```
+
+Idea: each element moves from `in` to `out` at most once, so the amortized cost per op is O(1) even though a single transfer is O(n).
+**Time** O(1) amortized · **Space** O(n).
+
+### Sliding Window Maximum — monotonic deque
+
+Maintain a deque of **indices** whose values are decreasing; the front is always the window's max.
+
+```js
+// O(n) time, O(k) space
+function maxSlidingWindow(nums, k) {
+  const dq = [];          // indices, nums decreasing front->back
+  const res = [];
+  for (let i = 0; i < nums.length; i++) {
+    while (dq.length && nums[dq[dq.length - 1]] < nums[i]) dq.pop();  // drop smaller tails
+    dq.push(i);
+    if (dq[0] <= i - k) dq.shift();                                   // drop out-of-window front
+    if (i >= k - 1) res.push(nums[dq[0]]);                           // front is the max
+  }
+  return res;
+}
+```
+
+Idea: a value smaller than the incoming one can never be a future maximum, so we discard it immediately. Each index is added and removed once → O(n).
+**Time** O(n) · **Space** O(k).
+
+## Complexity & why it beats brute force
+
+The monotonic stack/deque is the headline: it turns the naive O(n·k) or O(n²) "scan forward/backward for each element" into **O(n)** by ensuring each element is pushed and popped at most once. Min-stack gives O(1) `getMin` versus O(n) scanning. Queue-from-stacks achieves amortized O(1) despite occasional O(n) transfers.
+
+## Edge cases & common bugs
+
+- **Storing values vs indices** — monotonic problems usually need *indices* to compute distances/widths; storing raw values loses position.
+- **Empty stack pop** — guard `stack.length` before `pop()`/peeking (valid parentheses on a lone close).
+- **Strict vs non-strict comparison** — `>` vs `>=` decides how equal heights are handled; in largest-rectangle, `>=` avoids double counting.
+- **Sentinel flush** — largest rectangle needs a trailing `0` (and sometimes a leading one) so the stack fully drains.
+- **Deque window expiry** — remove the front *by index* (`dq[0] <= i - k`), not by value.
+- **`shift()` is O(n)** on arrays — fine for interviews; for huge inputs use a real deque with head/tail pointers.
+- **Leftover opens** — valid parentheses must end with an empty stack, not just survive every close.
+
+## Interview tips & questions
+
+- Interviewers probe: "Why is the monotonic stack O(n) when there's a nested loop?" — amortization: each element pushed/popped once.
+- "Indices or values on the stack?" — almost always indices for span/width problems.
+- For min-stack, mention the single-stack pair-encoding variant as a space optimization.
+
+| Problem | Difficulty | Pattern |
+|---|---|---|
+| [Valid Parentheses](https://leetcode.com/problems/valid-parentheses/) | Easy | stack matching |
+| [Min Stack](https://leetcode.com/problems/min-stack/) | Medium | auxiliary stack |
+| [Implement Queue using Stacks](https://leetcode.com/problems/implement-queue-using-stacks/) | Easy | two stacks |
+| [Daily Temperatures](https://leetcode.com/problems/daily-temperatures/) | Medium | monotonic stack |
+| [Next Greater Element II](https://leetcode.com/problems/next-greater-element-ii/) | Medium | monotonic stack (circular) |
+| [Largest Rectangle in Histogram](https://leetcode.com/problems/largest-rectangle-in-histogram/) | Hard | monotonic stack |
+| [Sliding Window Maximum](https://leetcode.com/problems/sliding-window-maximum/) | Hard | monotonic deque |
+
+<div class="callout tip">
+  <div class="ct">Template</div>
+  Monotonic stack: for each <code>i</code>, while the stack top breaks monotonicity, pop <code>j</code> and record the answer for <code>j</code> using <code>i</code>; then push <code>i</code>. Store indices, and pick <code>&gt;</code> vs <code>&gt;=</code> for the ordering you need.
+</div>

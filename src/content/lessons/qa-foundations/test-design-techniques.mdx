@@ -1,0 +1,250 @@
+---
+title: "Test design techniques"
+track: qa-foundations
+summary: "How to derive a strong, minimal set of test cases — equivalence partitioning, boundary values, decision tables, state transitions, pairwise, use-case, error guessing and exploratory testing — with fully worked examples."
+order: 2
+est: 30
+difficulty: medium
+priority: must
+tags: [test-design, bva, equivalence, decision-table, state-transition, pairwise]
+whyAsked: "These techniques prove you can get maximum coverage from minimum tests. 'Write test cases for a login / an age field' is one of the most common QA interview tasks."
+followUps:
+  - "Write test cases for a field that accepts ages 18-60."
+  - "When would you use a decision table over BVA?"
+  - "What's the difference between positive and negative testing?"
+  - "Two-value vs three-value boundary analysis?"
+resources:
+  - { label: "ISTQB techniques (CTFL v4)", url: "https://www.istqb.org/certifications/certified-tester-foundation-level" }
+  - { label: "Pairwise testing (Microsoft PICT)", url: "https://github.com/microsoft/pict" }
+  - { label: "James Bach — Exploratory testing", url: "https://www.satisfice.com/exploratory-testing" }
+---
+
+You can never test everything (principle 2), so you test **smart**. Test design techniques turn requirements into a small, high-coverage set of cases — and they're the single most-asked practical topic in QA interviews. Split them into three families:
+
+- **Black-box (specification-based):** EP, BVA, decision tables, state transition, use-case, pairwise. Derived from requirements, no code knowledge.
+- **White-box (structure-based):** statement, branch/decision, path coverage. Derived from code.
+- **Experience-based:** error guessing, exploratory, checklist-based. Derived from tester skill and intuition.
+
+Most QA interviews focus on black-box plus experience-based. Let's go deep.
+
+## Equivalence Partitioning (EP)
+
+Group inputs that the system should treat the *same way* into partitions, then test **one representative value per partition** — testing more from the same partition adds little. Always partition both valid and invalid ranges.
+
+For an age field accepting `18-60`:
+
+| Partition | Type | Representative |
+|---|---|---|
+| `< 18` | Invalid (too low) | 10 |
+| `18-60` | Valid | 35 |
+| `> 60` | Invalid (too high) | 75 |
+| Non-numeric / empty | Invalid (wrong type) | "abc", blank |
+
+Three-to-four tests instead of dozens. The art is spotting *all* the partitions — including the invalid and "wrong type" ones weak candidates forget.
+
+## Boundary Value Analysis (BVA)
+
+Bugs cluster at the **edges** of partitions — off-by-one errors live at boundaries (`<` vs `<=`). BVA tests the values right at and around each boundary.
+
+- **Two-value BVA:** test the boundary value and the value just *outside* it. For `18-60`: `17, 18` and `60, 61`.
+- **Three-value BVA:** test just below, on, and just above each boundary — more thorough. For `18-60`: `17, 18, 19` and `59, 60, 61`.
+
+Two-value is the modern ISTQB default (fewer cases, same boundary coverage when paired with EP); three-value is more rigorous for high-risk fields. Mention you'd choose based on risk.
+
+EP + BVA together are the workhorses of test design — EP picks the partitions, BVA hardens the edges.
+
+## Decision tables (cause-effect)
+
+Use when an output depends on **combinations of conditions**. They guarantee you cover every meaningful combination and expose contradictory or missing rules in the spec.
+
+Example — discount eligibility (member status × order size):
+
+| Rule | Member? | Order > $100? | Discount |
+|---|---|---|---|
+| 1 | Yes | Yes | 20% |
+| 2 | Yes | No | 10% |
+| 3 | No | Yes | 5% |
+| 4 | No | No | 0% |
+
+With *n* binary conditions there are up to 2ⁿ rules; **collapse** rules where a condition doesn't affect the outcome (a "don't care", marked `-`) to keep the table minimal. Each surviving rule becomes one test case. This is the technique to name when the question is "the behavior depends on several flags at once."
+
+## State transition testing
+
+Use when behavior depends on the **current state** and the history of events, not just the current input. Model states, events, and transitions; then test valid transitions, invalid transitions, and the entry/exit points.
+
+Example — an order's lifecycle:
+
+```
+[Created] --pay--> [Paid] --ship--> [Shipped] --deliver--> [Delivered]
+   |                  |
+ cancel             cancel/refund
+   v                  v
+[Cancelled] <---------+
+```
+
+Valid transitions to cover:
+
+| From | Event | To |
+|---|---|---|
+| Created | pay | Paid |
+| Created | cancel | Cancelled |
+| Paid | ship | Shipped |
+| Paid | cancel/refund | Cancelled |
+| Shipped | deliver | Delivered |
+
+**Invalid transitions** (the part weak candidates skip) — these must be rejected gracefully:
+
+| From | Event | Expected |
+|---|---|---|
+| Shipped | pay | Rejected — already paid |
+| Delivered | cancel | Rejected — terminal state |
+| Cancelled | ship | Rejected — terminal state |
+| Created | deliver | Rejected — cannot deliver unpaid/unshipped |
+
+Coverage levels: "0-switch" covers each single transition once; "1-switch" covers pairs of consecutive transitions. State-transition testing is the answer for workflows, wizards, payment states, session/auth states, and media players (play/pause/stop).
+
+## Pairwise / combinatorial (orthogonal arrays)
+
+When several parameters each have several values, full combinations explode: 4 browsers × 3 OSes × 3 payment methods × 2 currencies = 72 combinations. Empirically, most defects are triggered by a single value or an **interaction of two values**, rarely by three-way combos. **Pairwise** testing picks a minimal set of cases such that *every pair* of values appears together at least once — often shrinking 72 to ~12 while keeping the defect-finding power that matters.
+
+**Orthogonal arrays** are a structured way to achieve this balance. Tools: Microsoft PICT, ACTS, or `allpairs`. Name pairwise whenever the question is "huge config matrix, limited time."
+
+## Use-case testing
+
+Derive tests from **use cases / user flows** — the main success scenario plus alternative and exception flows. Great for end-to-end and acceptance testing because it tests the system the way a real user exercises it.
+
+Example — "withdraw cash" use case: main flow (card in → PIN → amount → dispense → receipt), alternatives (insufficient funds, wrong PIN, daily limit exceeded, printer out of paper, network down mid-transaction). Each flow is a test.
+
+## Error guessing & checklist-based
+
+**Error guessing** uses experience to anticipate where defects hide: empty inputs, zero, negative numbers, very long strings, special characters/emoji, leading/trailing spaces, duplicate submissions, browser back-button, expired sessions, concurrent edits, time-zone and DST edges, currency rounding. Pair it with **fault attacks** — deliberately feed the inputs developers forget to handle.
+
+## Exploratory & session-based testing
+
+**Exploratory testing** is simultaneous learning, test design, and execution — you investigate the app, form hypotheses, and chase them, rather than following a pre-written script. It's not "random clicking"; it's structured and skill-driven.
+
+**Session-based test management (SBTM)** makes it accountable: time-boxed sessions (typically 60–90 min) against a written **charter** ("Explore checkout with invalid promo codes to discover validation gaps"), producing session notes, bugs found, and coverage observations. This is how you answer "how do you test without detailed requirements?"
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  Scripted/automated checks confirm what you *expect*; exploratory testing discovers what you *didn't think to script*. Mature teams do both — automation for regression, exploration for discovery.
+</div>
+
+## Positive vs negative testing
+
+- **Positive (happy path):** valid input, expected to succeed.
+- **Negative:** invalid input, expected to fail *gracefully* — clear error message, no crash, no data corruption, no security leak. Strong testers spend real effort here; it's where most real defects live.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  Don't just check that valid input works. Check that invalid input fails *safely*. "Graceful failure" — a helpful error, preserved data, no stack trace exposed — is a quality signal interviewers listen for.
+</div>
+
+## Worked example 1 — Age field (accepts 18–60, integer)
+
+Combining EP + three-value BVA + error guessing:
+
+| TC | Input | Technique | Expected |
+|---|---|---|---|
+| 1 | 35 | EP valid | Accepted |
+| 2 | 10 | EP invalid low | Rejected, "must be 18+" |
+| 3 | 75 | EP invalid high | Rejected, "must be 60 or under" |
+| 4 | 17 | BVA below lower | Rejected |
+| 5 | 18 | BVA on lower | Accepted |
+| 6 | 19 | BVA above lower | Accepted |
+| 7 | 59 | BVA below upper | Accepted |
+| 8 | 60 | BVA on upper | Accepted |
+| 9 | 61 | BVA above upper | Rejected |
+| 10 | (empty) | Error guess | Rejected, "required" |
+| 11 | "abc" | Error guess (type) | Rejected, numeric only |
+| 12 | 35.5 | Error guess (decimal) | Rejected, integer only |
+| 13 | -5 | Error guess (negative) | Rejected |
+| 14 | " 25 " (spaces) | Error guess (trim) | Accepted or rejected per spec — clarify |
+
+## Worked example 2 — Login form
+
+| TC | Scenario | Technique | Expected |
+|---|---|---|---|
+| 1 | Valid username + valid password | Positive | Logged in |
+| 2 | Valid username + wrong password | Negative | Generic "invalid credentials" (no hint which is wrong) |
+| 3 | Non-existent username | Negative | Same generic error (don't leak account existence) |
+| 4 | Empty username / empty password | EP invalid | Field-level validation |
+| 5 | Password at min/max length boundaries | BVA | Per policy |
+| 6 | 5 wrong attempts in a row | State transition | Account locked |
+| 7 | Login while account is locked | State transition | "Account locked" message |
+| 8 | `' OR 1=1 --` in username | Security / negative | Rejected, no injection |
+| 9 | `<script>` in fields | Security (XSS) | Sanitized/escaped |
+| 10 | Remember-me, close browser, return | State | Session restored |
+| 11 | Session timeout after inactivity | State | Re-auth required |
+| 12 | Keyboard-only + screen reader | Accessibility | Fully operable, labeled fields |
+| 13 | Caps Lock on / leading-trailing spaces | Error guess | Handled per spec |
+| 14 | Concurrent login on two devices | Error guess | Per policy |
+
+## Worked example 3 — File upload (max 5 MB, PDF/PNG only)
+
+| TC | Input | Technique | Expected |
+|---|---|---|---|
+| 1 | 2 MB PDF | Positive | Uploaded |
+| 2 | Exactly 5 MB file | BVA on limit | Accepted |
+| 3 | 5 MB + 1 byte | BVA above | Rejected, "too large" |
+| 4 | 0-byte file | BVA / error guess | Rejected, "empty file" |
+| 5 | .exe renamed to .pdf | Security | Rejected — validate real content type, not extension |
+| 6 | .txt file | EP invalid type | Rejected |
+| 7 | Filename with spaces/unicode/emoji | Error guess | Handled, no corruption |
+| 8 | Upload, then cancel mid-transfer | State | Clean cancel, no partial file |
+| 9 | Two files same name | Error guess | Per spec (overwrite/rename) |
+| 10 | Network drop during upload | Error guess | Graceful failure + retry |
+
+## Worked example 4 — ATM cash withdrawal
+
+| TC | Scenario | Technique | Expected |
+|---|---|---|---|
+| 1 | Valid card, correct PIN, amount ≤ balance and ≤ daily limit | Use-case main flow | Cash dispensed, balance updated, receipt |
+| 2 | Wrong PIN once | State transition | Re-prompt |
+| 3 | Wrong PIN 3 times | State transition | Card blocked/retained |
+| 4 | Withdraw > balance | Decision table | Rejected, "insufficient funds" |
+| 5 | Withdraw > daily limit | Decision table | Rejected, "limit exceeded" |
+| 6 | Amount not a multiple of note denomination | EP/error guess | Rejected |
+| 7 | ATM out of cash | Negative | Graceful message, no debit |
+| 8 | Network down mid-transaction | Error guess | No debit without dispense (atomicity) |
+| 9 | Card removed mid-flow | State | Transaction aborted safely |
+| 10 | Receipt printer out of paper | Use-case alternate | Offer on-screen confirmation, still dispense |
+
+## Interview questions & model answers
+
+**Q: Walk me through testing an age field for 18–60.**
+"I'd partition into invalid-low, valid, invalid-high, plus non-numeric/empty (EP), then apply boundary analysis on 17/18/19 and 59/60/61. I'd add error-guessing cases: empty, decimals, negatives, and leading/trailing spaces — clarifying with the spec how trimming should behave." (Then sketch the table.)
+
+**Q: When would you use a decision table over BVA?**
+"BVA is for a single input with a continuous range — it hardens the edges. A decision table is for outputs that depend on combinations of several conditions, like discount = member status AND order size. Different problems: ranges vs combinations."
+
+**Q: Two-value vs three-value boundary analysis?**
+"Two-value tests the boundary and the value just outside it; three-value also adds the value just inside. Three-value is more thorough for high-risk fields; two-value is the leaner ISTQB default. I pick based on the field's risk."
+
+**Q: How do you keep a config matrix from exploding?**
+"Pairwise testing. Most defects come from single values or two-way interactions, so I generate a minimal set covering every pair of values at least once — e.g., with PICT — turning 72 combinations into about a dozen."
+
+**Q: What's the difference between positive and negative testing?**
+"Positive feeds valid input expecting success; negative feeds invalid input expecting *graceful* failure — a clear error, no crash, no data loss, no security leak. Negative testing finds most real bugs."
+
+**Q: How do you test with no requirements?**
+"Exploratory testing under session-based management — time-boxed sessions against written charters, taking notes and logging bugs. I combine it with error guessing and reference standards/heuristics so it's structured, not random."
+
+**Q: What's state transition testing good for?**
+"Anything where behavior depends on current state and history — order/payment workflows, auth/session states, wizards, media players. I test valid transitions and, crucially, invalid ones, to confirm they're rejected gracefully."
+
+## Common mistakes / what weak candidates say
+
+- Listing only valid (happy-path) cases and forgetting negative/invalid partitions.
+- Naming a technique but not applying it ("I'd use BVA" with no actual boundary values).
+- Forgetting boundaries entirely — most field bugs are off-by-one at the edge.
+- Calling exploratory testing "random clicking."
+- Skipping invalid transitions in state-transition testing.
+- Not partitioning the *invalid* and *wrong-type* inputs in EP.
+- Trying to test every combination when pairwise would do.
+- Ignoring security inputs (SQL/XSS) on text fields and content-type spoofing on uploads.
+
+<div class="callout tip">
+  <div class="ct">Interview-ready summary</div>
+  "I use EP to slice inputs into behaviorally-equivalent groups, BVA to harden the edges, decision tables for combinations of conditions, and state-transition testing for workflows — covering invalid transitions too. For big config matrices I go pairwise, and I always pair scripted checks with exploratory sessions and error guessing to find what I didn't think to script."
+</div>

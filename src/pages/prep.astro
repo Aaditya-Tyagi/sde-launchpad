@@ -1,0 +1,136 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { COMPANIES } from '../data/companies';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+---
+<BaseLayout title="Company Prep · SDE-2 Launchpad" active="prep">
+  <div class="wrap" style="padding-top:28px;max-width:860px">
+    <h1>Company prep packs</h1>
+    <p class="sub">Different companies weight the loop differently. Pick where you're interviewing to get a focused emphasis breakdown, the typical rounds, and a tailored checklist. Set one as your target and it drives your dashboard countdown.</p>
+
+    <div class="prep-grid" id="prepGrid">
+      {COMPANIES.map((c) => (
+        <button class="prep-card" data-id={c.id}>
+          <div class="prep-ico">{c.icon}</div>
+          <b>{c.name}</b>
+          <small>{c.blurb}</small>
+        </button>
+      ))}
+    </div>
+
+    <!-- detail -->
+    <div id="prepDetail" class="hide" style="margin-top:18px"></div>
+  </div>
+
+  <style is:global>
+    .prep-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; margin-top:18px; }
+    .prep-card { text-align:left; padding:16px; border:1px solid var(--line); border-radius:13px; background:var(--panel); cursor:pointer; transition:.15s; display:flex; flex-direction:column; gap:4px; color:var(--text); }
+    .prep-card:hover { border-color:var(--accent); transform:translateY(-2px); background:var(--panel-2); }
+    .prep-card.sel { border-color:var(--accent-2); box-shadow:0 0 0 1px var(--accent-2); }
+    .prep-ico { font-size:26px; }
+    .prep-card b { font-size:16px; }
+    .prep-card small { font-size:12.5px; color:var(--muted); line-height:1.45; }
+
+    .prep-emph { display:flex; flex-direction:column; gap:10px; margin-top:6px; }
+    .prep-emph-row { display:flex; align-items:center; gap:12px; }
+    .prep-emph-row span { width:120px; font-size:13px; flex:0 0 auto; }
+    .prep-emph-track { flex:1; height:9px; background:var(--panel-4); border-radius:5px; overflow:hidden; }
+    .prep-emph-fill { height:100%; border-radius:5px; background:linear-gradient(90deg,var(--accent),var(--accent-2)); }
+    .prep-emph-lvl { width:64px; text-align:right; font-family:var(--mono); font-size:11px; color:var(--muted); flex:0 0 auto; }
+    .prep-list { margin:8px 0 0; padding-left:20px; }
+    .prep-list li { font-size:14px; line-height:1.6; margin-bottom:5px; }
+    .prep-check { display:flex; align-items:flex-start; gap:10px; padding:9px 0; border-top:1px solid var(--line); font-size:14px; }
+    .prep-check:first-child { border-top:none; }
+    .prep-check input { margin-top:3px; accent-color:var(--accent-2); width:17px; height:17px; flex:0 0 auto; }
+  </style>
+
+  <script define:vars={{ base, COMPANIES }}>
+    const store = window.SDE2;
+    const el = (id) => document.getElementById(id);
+    const byId = Object.fromEntries(COMPANIES.map((c) => [c.id, c]));
+    function esc(s) { return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+
+    const EMPH = [['behavioral', 'Behavioral'], ['dsa', 'DSA / coding'], ['systemDesign', 'System design'], ['frontend', 'Front-end']];
+    const lvlLabel = (n) => ['—', 'minor', 'important', 'dominant'][n] || '';
+
+    function daysToTarget() {
+      const p = store.profile();
+      if (!p || !p.targetDate) return null;
+      return Math.ceil((new Date(p.targetDate) - new Date(new Date().toISOString().slice(0, 10))) / 86400000);
+    }
+
+    function detail(c) {
+      const days = daysToTarget();
+      const target = store.profile()?.targetCompany;
+      const isTarget = target && target.id === c.id;
+
+      // build a focused checklist
+      const checklist = [];
+      if (c.emphasis.behavioral >= 2) checklist.push(`Have ${c.emphasis.behavioral === 3 ? '6–8' : '4–5'} STAR stories ready for ${c.name}`);
+      if (c.emphasis.dsa >= 2) checklist.push(`Master the core DSA patterns (${c.emphasis.dsa === 3 ? 'incl. graphs, DP, hard mediums' : 'arrays, hashing, two-pointers, BFS/DFS'})`);
+      if (c.emphasis.systemDesign >= 2) checklist.push('Run 2+ full system-design passes on the Canvas under a timer');
+      if (c.emphasis.frontend >= 2) checklist.push('Rehearse building a UI component live (state, events, a11y)');
+      checklist.push('Do 2–3 timed mock rounds in your weak area');
+      checklist.push(`Research ${c.name}'s products and have sharp "why ${c.name}" + questions ready`);
+
+      el('prepDetail').innerHTML = `
+        <div class="panel">
+          <div class="row" style="justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+            <div style="display:flex;gap:12px;align-items:center">
+              <span style="font-size:30px">${c.icon}</span>
+              <div><h2 style="font-size:22px">${esc(c.name)}</h2><p class="muted" style="font-size:13px;margin-top:2px">${esc(c.blurb)}</p></div>
+            </div>
+            <button class="btn ${isTarget ? '' : 'btn-primary'}" id="setTarget">${isTarget ? '✓ Your target' : '🎯 Set as my target'}</button>
+          </div>
+
+          <h3 style="font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);margin:20px 0 10px">What they weight</h3>
+          <div class="prep-emph">
+            ${EMPH.map(([k, lbl]) => `<div class="prep-emph-row"><span>${lbl}</span><div class="prep-emph-track"><div class="prep-emph-fill" style="width:${c.emphasis[k] / 3 * 100}%"></div></div><span class="prep-emph-lvl">${lvlLabel(c.emphasis[k])}</span></div>`).join('')}
+          </div>
+
+          <h3 style="font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);margin:22px 0 8px">Typical rounds</h3>
+          <ul class="prep-list">${c.rounds.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>
+
+          <h3 style="font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);margin:22px 0 8px">How to prep here</h3>
+          <ul class="prep-list">${c.tips.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>
+
+          <h3 style="font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);margin:22px 0 8px">Your checklist${days != null ? ` · ${days} day${days === 1 ? '' : 's'} out` : ''}</h3>
+          <div id="prepChecklist">
+            ${checklist.map((item, i) => `<label class="prep-check"><input type="checkbox" data-ck="${c.id}:${i}">${esc(item)}</label>`).join('')}
+          </div>
+
+          <h3 style="font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);margin:22px 0 8px">Jump to focused practice</h3>
+          <div class="row" style="gap:8px;flex-wrap:wrap">
+            ${c.focus.map((f) => `<a class="btn" href="${base}${f.href}">${esc(f.label)} →</a>`).join('')}
+          </div>
+        </div>`;
+
+      el('prepDetail').classList.remove('hide');
+
+      // checklist persistence (reuse the generic done store, namespaced)
+      el('prepChecklist').querySelectorAll('[data-ck]').forEach((cb) => {
+        const key = 'prep:' + cb.dataset.ck;
+        cb.checked = store.isDone(key);
+        cb.addEventListener('change', () => store.setDone(key, cb.checked));
+      });
+
+      el('setTarget').addEventListener('click', () => {
+        if (isTarget) { store.saveProfile({ targetCompany: null }); }
+        else { store.saveProfile({ targetCompany: { id: c.id, name: c.name } }); }
+        select(c.id);
+      });
+    }
+
+    function select(id) {
+      document.querySelectorAll('.prep-card').forEach((b) => b.classList.toggle('sel', b.dataset.id === id));
+      detail(byId[id]);
+      window.scrollTo({ top: el('prepDetail').offsetTop - 70, behavior: 'smooth' });
+    }
+
+    document.querySelectorAll('.prep-card').forEach((b) => b.addEventListener('click', () => select(b.dataset.id)));
+
+    // open the user's target by default, else the first card
+    const t = store.profile()?.targetCompany;
+    if (t && byId[t.id]) select(t.id);
+  </script>
+</BaseLayout>

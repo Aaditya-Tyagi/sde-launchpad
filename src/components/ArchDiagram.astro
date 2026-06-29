@@ -1,0 +1,43 @@
+---
+const id = 'arch_' + Math.random().toString(36).slice(2, 8);
+---
+<div class="viz" data-arch={id}>
+  <div class="viz-title">Anatomy of a scalable web service</div>
+  <div class="viz-desc">The building blocks behind almost every backend system-design answer. Click any box for its job and the tradeoff it represents — assemble these and you can design most things.</div>
+  <div class="viz-stage">
+    <svg viewBox="0 0 720 320" width="100%" id={`${id}-svg`}></svg>
+  </div>
+  <div class="viz-status" id={`${id}-status`}>Click a component to see its role and the decision behind it.</div>
+</div>
+<script define:vars={{ id }}>
+  (function () {
+    const root = document.querySelector(`[data-arch="${id}"]`); if (!root) return;
+    const svg = document.getElementById(`${id}-svg`);
+    const statusEl = document.getElementById(`${id}-status`);
+    const boxes = [
+      { k: 'client', x: 20, y: 135, w: 100, h: 48, t: 'Client', d: 'Browser or mobile app. Wants low latency. Often holds a WebSocket for real-time pushes so it does not poll.' },
+      { k: 'cdn', x: 150, y: 60, w: 110, h: 44, t: 'CDN', d: 'Caches static assets (JS, images, video) at edge locations near users. Offloads traffic from your origin and cuts latency. Tradeoff: cache invalidation is hard — version your asset URLs.' },
+      { k: 'lb', x: 150, y: 135, w: 110, h: 48, t: 'Load balancer', d: 'Spreads requests across app servers (round-robin / least-connections). Enables horizontal scaling and health-checks out dead nodes. Keep app servers stateless so any node can serve any request.' },
+      { k: 'app', x: 300, y: 135, w: 120, h: 48, t: 'App servers', d: 'Stateless business logic, scaled horizontally. No session in memory — put session/state in a shared cache so you can add/remove nodes freely.' },
+      { k: 'cache', x: 470, y: 70, w: 110, h: 44, t: 'Cache (Redis)', d: 'In-memory cache in front of the DB for hot reads. Strategy: cache-aside (read DB on miss, then populate). Watch TTLs and invalidation. Also used for rate-limiting, sessions, and pub/sub.' },
+      { k: 'db', x: 470, y: 135, w: 110, h: 48, t: 'Database', d: 'Source of truth. Primary takes writes; read replicas scale reads. Index your query patterns. Shard when one box cannot hold the data/write load. SQL for relations & transactions; NoSQL for scale & flexible schema.' },
+      { k: 'queue', x: 300, y: 215, w: 120, h: 46, t: 'Message queue', d: 'Decouples slow/async work (emails, image processing, notifications) from the request path. Absorbs traffic spikes. Choose at-least-once + idempotent consumers, or exactly-once if ordering/correctness matters.' },
+      { k: 'worker', x: 470, y: 215, w: 110, h: 46, t: 'Workers', d: 'Background consumers that pull jobs off the queue and scale on queue depth. Keep them idempotent so retries are safe.' },
+      { k: 'blob', x: 470, y: 270, w: 110, h: 40, t: 'Object store (S3)', d: 'Large blobs — uploads, images, backups — live here, not in the DB. Store only the key/URL in the DB. Cheap, durable, infinitely scalable.' },
+    ];
+    const arrows = [['client', 'lb'], ['client', 'cdn'], ['lb', 'app'], ['app', 'cache'], ['app', 'db'], ['app', 'queue'], ['queue', 'worker'], ['worker', 'db'], ['worker', 'blob']];
+    const c = (b) => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
+    function draw(active) {
+      let h = '<defs><marker id="ah" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#6ea8fe"/></marker></defs>';
+      arrows.forEach(([a, b]) => { const A = c(boxes.find((x) => x.k === a)); const B = c(boxes.find((x) => x.k === b)); h += `<line x1="${A.x}" y1="${A.y}" x2="${B.x}" y2="${B.y}" stroke="#6ea8fe" stroke-width="2" marker-end="url(#ah)" opacity=".55"/>`; });
+      boxes.forEach((b) => {
+        const lit = b.k === active;
+        h += `<rect data-k="${b.k}" x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="9" fill="${lit ? 'rgba(126,231,135,.16)' : '#1f2330'}" stroke="${lit ? '#7ee787' : '#2a2f3d'}" stroke-width="2" style="cursor:pointer"/>`;
+        h += `<text data-k="${b.k}" x="${b.x + b.w / 2}" y="${b.y + b.h / 2 + 5}" text-anchor="middle" font-size="12.5" font-weight="700" fill="#e7eaf0" style="cursor:pointer">${b.t}</text>`;
+      });
+      svg.innerHTML = h;
+    }
+    svg.addEventListener('click', (e) => { const k = e.target.getAttribute('data-k'); if (!k) return; const b = boxes.find((x) => x.k === k); draw(k); statusEl.innerHTML = `<b>${b.t}:</b> ${b.d}`; });
+    draw(null);
+  })();
+</script>

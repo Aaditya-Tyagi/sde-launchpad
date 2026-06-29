@@ -1,0 +1,203 @@
+---
+title: "Platform APIs, Native Modules & Platform-Specific Code"
+track: react-native
+summary: "How to write platform-specific UI and logic, when and how to create a native module, and the Platform API patterns every RN dev must know."
+order: 15
+est: 20
+difficulty: medium
+priority: deep
+tags: [platform, native-modules, Platform.select, ios, android, turbomodules, platform-files]
+whyAsked: "Platform-specific code is unavoidable in production RN apps. Interviewers use this to confirm you've built real apps, not just followed tutorials."
+followUps:
+  - "What is Platform.select and when do you use it?"
+  - "What is a native module and when do you need one?"
+  - "How do platform-specific file extensions work?"
+  - "What is a TurboModule in the new architecture?"
+  - "How do you handle different keyboard behaviors on iOS vs Android?"
+resources:
+  - { label: "RN Platform docs", url: "https://reactnative.dev/docs/platform" }
+  - { label: "RN Native Modules", url: "https://reactnative.dev/docs/native-modules-intro" }
+---
+
+## The Platform API
+
+`Platform` tells you which OS the code is running on. Use it for conditional values, not conditional components (keep the tree clean):
+
+```tsx
+import { Platform, StyleSheet } from 'react-native';
+
+// Platform.OS — 'ios' | 'android' | 'web' | 'macos' | 'windows'
+const isIOS = Platform.OS === 'ios';
+const isAndroid = Platform.OS === 'android';
+
+// Platform.select — clean way to provide per-platform values
+const styles = StyleSheet.create({
+  container: {
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.25,
+        shadowRadius: 4,
+      },
+      android: {
+        elevation: 4,
+      },
+    }),
+    backgroundColor: '#fff',
+  },
+  header: {
+    paddingTop: Platform.select({ ios: 44, android: 24 }),
+    fontSize: Platform.select({ ios: 17, android: 20 }),
+  },
+});
+
+// Platform.Version — OS version (iOS: number string, Android: integer)
+const iosVersion = parseInt(Platform.Version as string, 10);
+if (Platform.OS === 'ios' && iosVersion >= 17) {
+  // iOS 17+ specific behavior
+}
+```
+
+## Platform-specific files
+
+Append `.ios.tsx` or `.android.tsx` to completely swap out a file's implementation per platform. The bundler picks the right one automatically:
+
+```
+src/
+  components/
+    DatePicker.tsx           ← fallback
+    DatePicker.ios.tsx       ← used on iOS
+    DatePicker.android.tsx   ← used on Android
+```
+
+```tsx
+// DatePicker.ios.tsx — use iOS native date picker
+import DateTimePicker from '@react-native-community/datetimepicker';
+export function DatePicker({ value, onChange }) {
+  return <DateTimePicker value={value} onChange={onChange} mode="date" />;
+}
+
+// DatePicker.android.tsx — Android bottom sheet picker
+export function DatePicker({ value, onChange }) {
+  // showDatePicker is Android-specific
+  return <Pressable onPress={() => showAndroidDatePicker(value, onChange)}>
+    <Text>{value.toLocaleDateString()}</Text>
+  </Pressable>;
+}
+
+// Import — no need to specify the platform
+import { DatePicker } from './DatePicker';
+```
+
+Use platform files when the component structure differs significantly. For minor style differences, `Platform.select` is cleaner.
+
+## Keyboard behavior differences
+
+iOS and Android handle keyboard appearance differently — a common source of bugs:
+
+```tsx
+import { KeyboardAvoidingView, Platform } from 'react-native';
+
+// iOS: shift the whole view up (padding)
+// Android: resize the window (OS handles it when windowSoftInputMode="adjustResize")
+function LoginScreen() {
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      style={{ flex: 1 }}
+    >
+      <TextInput placeholder="Email" />
+      <TextInput placeholder="Password" secureTextEntry />
+      <Button title="Login" />
+    </KeyboardAvoidingView>
+  );
+}
+```
+
+In `AndroidManifest.xml`, set `android:windowSoftInputMode="adjustResize"` so the OS resizes the window when the keyboard appears.
+
+## Safe areas — notches and home indicators
+
+```tsx
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+function Header() {
+  const insets = useSafeAreaInsets();
+  return (
+    <View style={{ paddingTop: insets.top, paddingHorizontal: 16 }}>
+      <Text style={{ fontSize: 20 }}>My App</Text>
+    </View>
+  );
+}
+
+// Or use SafeAreaView
+import { SafeAreaView } from 'react-native-safe-area-context';
+function Screen({ children }) {
+  return <SafeAreaView style={{ flex: 1 }}>{children}</SafeAreaView>;
+}
+```
+
+## Native Modules — when JS can't do it
+
+Native modules are the bridge between JavaScript and platform-specific code written in Swift/Obj-C (iOS) or Kotlin/Java (Android). You need them for:
+
+- Accessing hardware APIs not exposed by RN (Bluetooth, NFC, custom camera features)
+- Using existing native SDKs (payment, maps, analytics)
+- Performance-critical code that must run on the native thread
+
+### Old architecture — Native Module
+
+```swift
+// iOS — ExampleModule.swift
+@objc(ExampleModule)
+class ExampleModule: NSObject {
+  @objc func getBatteryLevel(_ resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    UIDevice.current.isBatteryMonitoringEnabled = true
+    resolve(UIDevice.current.batteryLevel)
+  }
+  
+  @objc static func requiresMainQueueSetup() -> Bool { return false }
+}
+```
+
+```ts
+// JS side
+import { NativeModules } from 'react-native';
+const { ExampleModule } = NativeModules;
+const level = await ExampleModule.getBatteryLevel();
+```
+
+### New architecture — TurboModule
+
+TurboModules add TypeScript spec files and code generation, plus synchronous access via JSI:
+
+```ts
+// NativeExampleModule.ts — the spec
+import type { TurboModule } from 'react-native';
+import { TurboModuleRegistry } from 'react-native';
+
+export interface Spec extends TurboModule {
+  getBatteryLevel(): Promise<number>;
+  getDeviceModel(): string; // synchronous — possible with JSI!
+}
+
+export default TurboModuleRegistry.getEnforcing<Spec>('ExampleModule');
+```
+
+TurboModules are:
+- **Lazily loaded** — only initialized when first accessed (faster startup)
+- **Type-safe** — spec file generates native stubs
+- **Synchronous-capable** — can expose sync methods via JSI (not possible with the old bridge)
+
+### When NOT to write a native module
+
+Before writing a native module, check:
+1. [reactnative.directory](https://reactnative.directory) — community module catalog
+2. Expo SDK — covers most common APIs (Camera, Location, Contacts, etc.)
+3. Expo Modules API — allows writing native modules in Swift/Kotlin with much less boilerplate
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "`Platform.OS` and `Platform.select` handle per-platform values inline. Platform-specific files (`.ios.tsx`, `.android.tsx`) swap entire implementations — good when structure differs significantly. `KeyboardAvoidingView` with `behavior='padding'` on iOS and `'height'` on Android handles keyboard layout. `useSafeAreaInsets` accounts for notches and home indicators. Native modules are the JS-to-native bridge for APIs RN doesn't expose — old architecture uses `NativeModules`, new architecture uses TurboModules with a typed spec file and JSI access for synchronous calls and lazy loading."
+</div>

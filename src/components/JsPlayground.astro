@@ -1,0 +1,49 @@
+---
+const { code = "console.log('A');\nsetTimeout(() => console.log('B'), 0);\nPromise.resolve().then(() => console.log('C'));\nconsole.log('D');", height = 160 } = Astro.props;
+const id = 'pg_' + Math.random().toString(36).slice(2, 8);
+---
+<div class="viz" data-pg={id}>
+  <div class="viz-title">Run it yourself</div>
+  <div class="viz-desc">Edit and run. Output is captured from <code>console.log</code>. Async logs (setTimeout/Promise) appear in real execution order.</div>
+  <textarea class="pg-code" id={`${id}-code`} spellcheck="false" style={`height:${height}px;font-family:var(--mono);font-size:13px`}>{code}</textarea>
+  <div class="viz-controls">
+    <button class="btn btn-primary" data-act="run">▶ Run</button>
+    <button class="btn" data-act="clear">Clear output</button>
+  </div>
+  <div class="viz-stage" style="margin-top:10px">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--faint);margin-bottom:6px">Console</div>
+    <pre class="pg-out" id={`${id}-out`} style="margin:0;font-family:var(--mono);font-size:12.5px;color:var(--accent-2);white-space:pre-wrap;min-height:24px"></pre>
+  </div>
+</div>
+<style>
+  .pg-code { width: 100%; background: #0b0e16; border: 1px solid var(--line); border-radius: 10px; color: var(--text); padding: 12px; resize: vertical; }
+</style>
+<script define:vars={{ id }}>
+  (function () {
+    const root = document.querySelector(`[data-pg="${id}"]`); if (!root) return;
+    const codeEl = document.getElementById(`${id}-code`);
+    const outEl = document.getElementById(`${id}-out`);
+    function fmt(args) { return args.map((a) => { try { return typeof a === 'object' ? JSON.stringify(a) : String(a); } catch { return String(a); } }).join(' '); }
+    function run() {
+      outEl.textContent = '';
+      const orig = console.log;
+      const append = (s) => { outEl.textContent += s + '\n'; };
+      console.log = (...a) => { append(fmt(a)); };
+      try {
+        // eslint-disable-next-line no-new-func
+        const fn = new Function(codeEl.value);
+        fn();
+        // allow async logs to flush
+        setTimeout(() => { console.log = orig; }, 300);
+      } catch (e) {
+        append('⚠ ' + e.message);
+        console.log = orig;
+      }
+    }
+    root.addEventListener('click', (e) => {
+      const a = e.target.getAttribute('data-act'); if (!a) return;
+      if (a === 'run') run();
+      if (a === 'clear') outEl.textContent = '';
+    });
+  })();
+</script>

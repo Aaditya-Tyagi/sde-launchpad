@@ -1,0 +1,210 @@
+---
+title: "Using LLMs for QA work (hands-on)"
+track: qa-ai
+summary: "A practical playbook for using ChatGPT/Claude/Copilot in real QA work — generating test cases from a user story, test data, automation code, Gherkin, SQL/regex, and debugging — with good vs bad prompts and the risks that bite you."
+order: 2
+est: 20
+difficulty: medium
+priority: deep
+tags: [llm, chatgpt, claude, copilot, prompting, test-cases, gherkin]
+whyAsked: "Day-to-day QA productivity now runs through LLMs. Interviewers want to see you can extract good output, write disciplined prompts, and — critically — verify what the model gives you instead of trusting it."
+followUps:
+  - "Show me a good prompt vs a bad one for test cases."
+  - "How do you stop the model from hallucinating?"
+  - "What should you never paste into an LLM?"
+resources:
+  - { label: "OpenAI prompt guide", url: "https://platform.openai.com/docs/guides/prompt-engineering" }
+  - { label: "Anthropic prompting docs", url: "https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/overview" }
+  - { label: "GitHub Copilot", url: "https://github.com/features/copilot" }
+---
+
+LLMs are now part of the QA toolbelt — but they reward **discipline**, not magic. The tester who gets value writes precise prompts, grounds the model in real context, and verifies every output. The tester who copy-pastes blindly ships hallucinated tests. This lesson is the hands-on playbook.
+
+<div class="callout key">
+  <div class="ct">Key idea</div>
+  An LLM is a fast, confident, sometimes-wrong junior teammate. You delegate the typing, never the judgment. Every output is a draft you review before it counts.
+</div>
+
+## The high-value QA use cases
+
+### 1. Generating test cases from a user story
+
+This is the bread-and-butter use. A worked example:
+
+**The prompt (good — context, role, format, constraints):**
+
+```
+You are a senior QA engineer. From this user story, write test cases.
+
+User story: "As a registered user, I can reset my password via a
+'Forgot password' link. I enter my email; if it matches an account,
+we email a reset link valid for 30 minutes. The new password must be
+8+ chars with one number and one symbol."
+
+Output a table with columns: ID | Title | Type (positive/negative/edge/
+security) | Preconditions | Steps | Expected result.
+Cover boundary, negative, and security cases. Do NOT invent rules that
+aren't in the story — if something is ambiguous, list it under 'Open
+questions' instead of assuming.
+```
+
+**Representative output (abridged):**
+
+```
+ID    Title                          Type      Expected
+TC1   Valid email gets reset link    positive  Email sent with link
+TC2   Unknown email                  security  Generic message, no link,
+                                               no account-existence leak
+TC3   Password exactly 8 chars,      edge      Accepted
+      1 number, 1 symbol
+TC4   Password 7 chars               negative  Rejected, clear error
+TC5   Reset link used at 31 min      edge      Link expired, rejected
+TC6   Reset link reused after use    security  Rejected (single-use?)
+TC7   Empty email field              negative  Validation error
+
+Open questions:
+- Is the reset link single-use? Not stated.
+- Rate limiting on requests? Not stated.
+- What exact message for unknown email?
+```
+
+Notice the model surfaced *boundary* (8 vs 7 chars, 30-min expiry), *security* (account enumeration, link reuse), and — because we told it to — flagged ambiguities instead of inventing answers. You now curate: confirm the open questions with the PM, drop duplicates, add domain cases the model missed.
+
+### 2. Generating test data
+
+Great for realistic and adversarial data quickly.
+
+```
+Generate 15 test inputs for an email validation field: 5 clearly valid,
+5 clearly invalid, 5 tricky edge cases (e.g. plus-addressing, unicode,
+very long local part, leading/trailing spaces, quoted strings).
+Return as a table with input and expected (valid/invalid) and why.
+```
+
+Also useful for: realistic-but-fake user records (respecting a schema), CSV fixtures, JSON payloads matching an API contract, and boundary numerics.
+
+### 3. Writing and refactoring automation code
+
+```
+Write a Playwright test in TypeScript for this flow: log in with
+valid creds, navigate to Settings, change display name, assert the
+new name shows in the header. Use role-based locators (getByRole),
+add a web-first assertion (expect(...).toHaveText), and put the login
+in a beforeEach. No hardcoded waits.
+```
+
+Or refactor: "Refactor this test into the Page Object pattern; extract a LoginPage class." LLMs are strong at boilerplate, conversions, and applying patterns — but verify selectors against the *real* DOM (it guesses them).
+
+### 4. Converting manual cases to automated
+
+Paste a manual test case table and ask for a Cypress/Playwright/Selenium implementation. The structure translates well; the locators and exact assertions need your verification against the app.
+
+### 5. Generating Gherkin / BDD
+
+```
+Convert these test cases to Gherkin (Given/When/Then) feature files.
+Use a Scenario Outline with Examples for the password-length boundary
+cases. Keep steps reusable and business-readable.
+```
+
+LLMs are excellent at Gherkin structure and parameterized Examples tables — a real time-saver for BDD teams.
+
+### 6. Debugging failures
+
+Paste a stack trace, the failing test, and relevant code:
+
+```
+This Playwright test fails intermittently with "locator resolved to
+2 elements". Here's the test and the component. What's the likely
+cause and how do I fix it robustly (not with a sleep)?
+```
+
+The model reasons well over errors and suggests fixes (more specific locator, `.first()` is a smell, scope the locator). Verify the fix actually addresses the race, not just silences it.
+
+### 7. Reviewing test coverage
+
+"Here are my 12 test cases for checkout. What scenarios am I missing?" The model is good at spotting gaps — concurrency, permissions, error states, payment failures, network drops — that a tired human skips.
+
+### 8. Writing SQL and regex
+
+```
+Write a SQL query to find users who registered in the last 7 days
+but have never logged in. Tables: users(id, created_at),
+sessions(user_id, started_at). Explain it.
+```
+
+And: "Write a regex for a valid Indian mobile number (10 digits, starts 6-9), with test strings that should pass and fail." Always run the regex/SQL against real samples — models get edge cases wrong.
+
+### 9. Summarizing requirements
+
+Paste a long PRD or thread: "Summarize the testable requirements as a bullet list, and flag anything ambiguous or untestable." Turns a wall of text into a coverage checklist.
+
+## Good vs bad prompts
+
+<div class="callout tip">
+  <div class="ct">Rule of thumb</div>
+  A good prompt gives <strong>role, context, format, and constraints</strong>, and tells the model what to do when it's unsure. A bad prompt is a vague one-liner that forces the model to guess.
+</div>
+
+| Bad | Good |
+|---|---|
+| "Write test cases for login." | "As a senior QA, write positive/negative/edge/security test cases for this login spec [paste], as a table, and list open questions for anything ambiguous." |
+| "Make this test better." | "Refactor this Playwright test: replace hardcoded waits with web-first assertions, use getByRole locators, and extract a LoginPage Page Object. Keep behavior identical." |
+| "Generate test data." | "Generate 10 boundary inputs for an age field (integer, 18–120 valid). Include below-min, at-min, at-max, above-max, non-numeric, empty. Table: input, expected, reason." |
+| "Why is my test flaky?" | "This test fails ~1 in 5 runs with [trace]. Here's the test and component [paste]. Give likely root causes ranked by probability and a non-sleep fix." |
+
+**Prompt-engineering tips for testers:**
+- **Give it the spec, not your memory of the spec.** Paste the actual story/contract. Ungrounded prompts hallucinate.
+- **Assign a role** ("senior QA," "security tester") to shift the kinds of cases it produces.
+- **Specify output format** (table, Gherkin, JSON) — saves cleanup and makes review easier.
+- **Add anti-hallucination instructions:** "don't invent rules; flag ambiguities as open questions."
+- **Iterate.** Generate, then "add security cases," "now negative cases for concurrency," "make these into Playwright tests."
+- **Ask for reasoning** ("explain why") so you can judge the output instead of trusting it.
+- **Few-shot it** — show one example test case in your house style and it'll match the format.
+
+## The risks (say these in interviews)
+
+- **Hallucination.** Models invent plausible-but-false specifics — a validation rule, an API field, a selector that doesn't exist. Ground every prompt and verify every concrete claim.
+- **Verifying AI output is non-negotiable.** A generated test that passes proves nothing until you've confirmed it asserts the right thing *and fails when you break the behavior*. Run it; mutate the code; watch it go red.
+- **Data privacy / confidential code.** Never paste proprietary source, real customer data (PII), secrets, or unreleased product details into a public/consumer LLM. Use approved enterprise tooling with the right data-handling agreement, redact, or work from synthetic examples.
+- **Over-reliance / skill atrophy.** If you can't review the code the model wrote, you can't use it safely. Keep your fundamentals sharp; the model is leverage on top of skill, not a replacement for it.
+- **Confidently wrong.** LLMs state mistakes with the same tone as facts. Treat fluent output as a hypothesis, not authority.
+
+## Interview questions & model answers
+
+**Q1. Walk me through using an LLM to generate test cases from a user story.**
+I paste the actual story/acceptance criteria (not a paraphrase), assign a senior-QA role, ask for a structured table covering positive/negative/edge/security, and explicitly tell it not to invent rules but to list ambiguities as open questions. Then I curate: confirm the open questions with the PM, remove duplicates, and add domain-specific cases the model missed. The model gives breadth fast; I own correctness and prioritization.
+
+**Q2. How do you reduce hallucination?**
+Ground the prompt in the real spec/contract instead of relying on the model's assumptions, ask it to flag ambiguities rather than guess, request reasoning so I can judge the output, and verify every concrete claim (selectors, rules, fields) against the actual system. Ungrounded, open-ended prompts are where hallucination thrives.
+
+**Q3. What's a good prompt vs a bad one?**
+Bad: "write test cases for login" — forces the model to guess everything. Good: role + the actual spec + desired output format + constraints + an instruction for handling ambiguity. The difference is whether the model is reasoning over *your* context or making things up.
+
+**Q4. How do you verify AI-generated automation code?**
+I check the selectors against the real DOM (the model guesses them), confirm the assertions match the true expected behavior, and — most importantly — I deliberately break the feature and confirm the test fails. A green generated test that doesn't fail on a real bug is worse than no test, because it gives false confidence.
+
+**Q5. What would you never paste into a public LLM?**
+Proprietary source code, real customer data or PII, secrets/API keys, and unreleased product details. For those I use approved enterprise tooling with a proper data agreement, redact sensitive bits, or work from synthetic data. Data privacy is a hard line, not a judgment call.
+
+**Q6. Where do LLMs help most and least in your QA workflow?**
+Most: drafting test cases and data, writing boilerplate/Page Objects, converting manual to automated, Gherkin, SQL/regex, summarizing requirements, and coverage gap-finding. Least: deciding what's worth testing (strategy/risk), knowing the true expected behavior (the oracle), and anything needing real system or domain knowledge it doesn't have.
+
+**Q7. Aren't you worried AI makes testers obsolete or lazy?**
+Obsolete, no — it automates the mechanical parts and raises the value of judgment, verification, and strategy. Lazy is the real risk: over-reliance and skill atrophy. I mitigate by keeping my fundamentals sharp enough to review what the model produces — you can only safely use AI for work you could check yourself.
+
+## Common mistakes
+
+- **Vague one-line prompts** that force the model to guess, then complaining the output is generic.
+- **Not grounding the prompt** in the real spec — the #1 cause of hallucinated rules.
+- **Shipping generated tests without watching them fail** on a real bug — false confidence.
+- **Trusting model-guessed selectors** instead of checking them against the actual DOM.
+- **Pasting confidential code or PII** into a consumer LLM.
+- **Believing fluent output** — confidence is not correctness.
+- **Letting fundamentals atrophy** so you can no longer review what the AI wrote.
+- **One-shot prompting** when iterating (generate, then refine) gives far better results.
+
+<div class="callout warn">
+  <div class="ct">The winning stance</div>
+  "I use LLMs as a fast junior teammate — grounded prompts with role, context, format, and constraints — to draft cases, data, and code. I verify everything: selectors against the DOM, assertions against the spec, and I always confirm a generated test fails on a real bug before I trust it. I never paste confidential code or PII into public tools."
+</div>

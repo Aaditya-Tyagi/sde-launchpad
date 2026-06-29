@@ -1,0 +1,303 @@
+---
+title: "Playwright: the 2026 frontrunner"
+track: qa-web
+summary: "Architecture (CDP, browser contexts), config, auto-wait & web-first assertions, getBy* locators, fixtures, context isolation, storageState auth reuse, network mocking, tracing, parallelism & sharding, API testing and codegen."
+order: 3
+est: 30
+difficulty: medium
+priority: must
+tags: [playwright, auto-wait, trace-viewer, fixtures, network-mocking]
+whyAsked: "Playwright adoption has overtaken Selenium and pays more. Knowing it deeply — auto-waiting, contexts, storageState, network interception, tracing — is a 2026 differentiator."
+followUps:
+  - "Why is Playwright less flaky than Selenium?"
+  - "What are web-first assertions?"
+  - "How do you reuse a logged-in session across tests?"
+  - "How does Playwright isolate tests from each other?"
+resources:
+  - { label: "Playwright docs", url: "https://playwright.dev/docs/intro" }
+  - { label: "Locators", url: "https://playwright.dev/docs/locators" }
+  - { label: "Auto-waiting", url: "https://playwright.dev/docs/actionability" }
+  - { label: "Trace viewer", url: "https://playwright.dev/docs/trace-viewer" }
+  - { label: "Network", url: "https://playwright.dev/docs/network" }
+---
+
+Playwright is a modern automation framework from Microsoft. One API drives **Chromium, Firefox and WebKit** in JS/TS, Python, Java and C#. It's the 2026 frontrunner because it's fast, deeply parallel, and far less flaky than Selenium.
+
+## Architecture — contexts and the CDP-style channel
+
+```
+Test (Node/TS)
+   │  Playwright client, ONE persistent WebSocket
+   ▼
+Playwright server / browser process
+   ├── BrowserContext A  (cookies, storage, cache — isolated)
+   │      ├── Page 1
+   │      └── Page 2
+   └── BrowserContext B  (fully separate "incognito" profile)
+```
+
+- Playwright launches a **Browser**, then creates lightweight **BrowserContexts** — each is an isolated profile (its own cookies, localStorage, cache). A context is created and destroyed in milliseconds, so every test gets a clean slate cheaply.
+- A context contains one or more **Pages** (tabs).
+- It communicates over a **single persistent WebSocket** using the browser's DevTools-style protocol (CDP for Chromium; equivalent channels for Firefox/WebKit via patched builds). That single in-process-adjacent channel — versus Selenium's per-command HTTP round-trips — is a big reason Playwright is faster and less timing-sensitive.
+
+## Install & config
+
+```bash
+npm init playwright@latest      # scaffolds tests/, config, installs browsers
+npx playwright install          # download browser binaries
+```
+
+`playwright.config.ts` is the control centre:
+
+```ts
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './tests',
+  fullyParallel: true,
+  retries: process.env.CI ? 2 : 0,
+  workers: process.env.CI ? 4 : undefined,
+  reporter: 'html',
+  use: {
+    baseURL: 'https://www.saucedemo.com',
+    trace: 'on-first-retry',     // capture a trace when a test retries
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
+  },
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'firefox',  use: { ...devices['Desktop Firefox'] } },
+    { name: 'webkit',   use: { ...devices['Desktop Safari'] } },
+  ],
+});
+```
+
+## First test & auto-wait
+
+```ts
+import { test, expect } from '@playwright/test';
+
+test('checkout flow', async ({ page }) => {
+  await page.goto('/');
+  await page.getByPlaceholder('Username').fill('standard_user');
+  await page.getByPlaceholder('Password').fill('secret_sauce');
+  await page.getByRole('button', { name: 'Login' }).click();
+  await expect(page.getByText('Products')).toBeVisible();
+});
+```
+
+No explicit waits. Before every action Playwright runs **actionability checks** — the element must be attached, visible, stable (not animating), enabled, and receiving events (not covered) — retrying until they pass or the timeout hits. This auto-wait is the core reason Playwright is far less flaky than raw Selenium.
+
+## Web-first assertions
+
+`expect(locator)` assertions **retry** until the condition holds or the timeout expires — they're built for async UIs:
+
+```ts
+await expect(page.getByText('Order placed')).toBeVisible();
+await expect(page.getByRole('button', { name: 'Pay' })).toBeEnabled();
+await expect(page.getByTestId('cart-count')).toHaveText('2');
+await expect(page.locator('.item')).toHaveCount(3);
+await expect(page).toHaveURL(/checkout/);
+await expect(page).toHaveTitle(/Products/);
+await expect(input).toHaveValue('hello');
+```
+
+Contrast with a plain `expect(await locator.textContent()).toBe(...)` which reads **once** and is race-prone. Always prefer the retrying `expect(locator)` form.
+
+## Locators & getBy*
+
+Locators are lazy and re-resolve on each use (no stale-element problem). Prefer user-facing locators:
+
+```ts
+page.getByRole('button', { name: 'Sign in' });
+page.getByLabel('Email');
+page.getByPlaceholder('Search…');
+page.getByText('Welcome', { exact: false });
+page.getByTestId('login-btn');
+
+// Filtering and chaining solve "one of many"
+page.getByRole('listitem').filter({ hasText: 'Widget' })
+    .getByRole('button', { name: 'Delete' });
+page.getByRole('row').nth(2);
+
+// Escape hatches
+page.locator('css=.price');
+page.locator('xpath=//span[@class="price"]');
+```
+
+## Fixtures
+
+Fixtures provide test dependencies (page, context, your own helpers) with automatic setup/teardown — cleaner than before/after hooks. `page` and `context` are built in; you extend `test` for custom ones:
+
+```ts
+import { test as base } from '@playwright/test';
+import { LoginPage } from './pages/LoginPage';
+
+export const test = base.extend<{ loginPage: LoginPage }>({
+  loginPage: async ({ page }, use) => {
+    const lp = new LoginPage(page);
+    await lp.goto();
+    await use(lp);          // hand the fixture to the test
+    // teardown after the test runs here
+  },
+});
+```
+
+Each test gets a **fresh `page` in a fresh `context`** by default — that's automatic isolation.
+
+## Browser contexts & isolation
+
+```ts
+test('two isolated users', async ({ browser }) => {
+  const buyerCtx  = await browser.newContext();
+  const sellerCtx = await browser.newContext();
+  const buyer  = await buyerCtx.newPage();
+  const seller = await sellerCtx.newPage();
+  // buyer and seller have completely separate cookies/storage
+});
+```
+
+Because contexts are cheap and isolated, parallel tests don't bleed state into each other — a major flakiness reducer versus sharing one browser profile.
+
+## Auth state reuse (storageState) — big speed win
+
+Log in once, save cookies + localStorage, then start every test already authenticated:
+
+```ts
+// global-setup.ts (or a setup project)
+import { chromium } from '@playwright/test';
+const browser = await chromium.launch();
+const page = await browser.newPage();
+await page.goto('/login');
+await page.getByLabel('Username').fill('standard_user');
+await page.getByLabel('Password').fill('secret_sauce');
+await page.getByRole('button', { name: 'Login' }).click();
+await page.context().storageState({ path: 'auth.json' });
+await browser.close();
+```
+
+```ts
+// playwright.config.ts
+use: { storageState: 'auth.json' }
+```
+
+No per-test login → faster and less flaky. Use a **setup project** with dependencies so the auth file is produced before the suite runs.
+
+## Network interception & mocking
+
+`page.route` intercepts requests so you can stub responses, force errors, or assert calls:
+
+```ts
+// Stub a JSON response (test empty/error states deterministically)
+await page.route('**/api/cart', route =>
+  route.fulfill({ status: 200, json: { items: [] } }));
+
+// Force a 500 to test error handling
+await page.route('**/api/checkout', route =>
+  route.fulfill({ status: 500, body: 'boom' }));
+
+// Block analytics/images to speed tests up
+await page.route('**/*.{png,jpg}', route => route.abort());
+
+// Inspect / modify and continue
+await page.route('**/api/**', async route => {
+  console.log(route.request().url());
+  await route.continue();
+});
+
+// Wait for a specific response
+const resp = await page.waitForResponse('**/api/orders');
+expect(resp.status()).toBe(201);
+```
+
+## Tracing, video & screenshots
+
+The **trace viewer** is Playwright's killer debugging tool — a time-travel recording of the run with DOM snapshots, network, console and the locator used per step:
+
+```bash
+npx playwright show-trace trace.zip
+```
+
+Configure capture via `trace`, `screenshot`, `video` in config (above). On a CI failure you download the trace and replay exactly what happened.
+
+```ts
+await page.screenshot({ path: 'shot.png', fullPage: true });
+await expect(page).toHaveScreenshot('home.png');   // visual regression baseline
+```
+
+## Parallelism & sharding
+
+- Playwright runs test **files** in parallel across worker processes; `fullyParallel: true` also parallelises tests **within** a file.
+- Workers each get isolated browser contexts, so parallel is safe by default.
+- **Sharding** splits the suite across machines in CI:
+
+```bash
+npx playwright test --shard=1/4   # machine 1 of 4
+```
+
+Combine sharding (across machines) with workers (within a machine) for fast suites.
+
+## API testing via request
+
+Playwright's `request` fixture/context hits HTTP APIs directly — great for setup/teardown and pure API checks, sharing cookies with the browser when needed:
+
+```ts
+test('create order via API', async ({ request }) => {
+  const res = await request.post('/api/orders', { data: { sku: 'W1', qty: 2 } });
+  expect(res.ok()).toBeTruthy();
+  expect(await res.json()).toMatchObject({ status: 'created' });
+});
+```
+
+Use API calls to seed data fast, then verify in the UI — far quicker than clicking through setup.
+
+## Codegen & debugging
+
+```bash
+npx playwright codegen https://example.com   # record clicks into code
+npx playwright test --ui                       # interactive UI mode (watch + time travel)
+npx playwright test --debug                    # step with the Inspector
+PWDEBUG=1 npx playwright test                   # pause at each action
+```
+
+Codegen is a great starting point, but refine the generated locators toward the resilient hierarchy.
+
+## Interview questions & model answers
+
+**Q: Why is Playwright less flaky than Selenium?**
+Auto-waiting (actionability checks before every action), retrying web-first assertions, a single persistent protocol channel instead of per-command HTTP round-trips, and cheap isolated browser contexts so tests don't share state.
+
+**Q: What are web-first assertions?**
+`expect(locator).toBeVisible()` style assertions that auto-retry until the condition is true or the timeout hits, instead of evaluating a value once. They eliminate most manual waits.
+
+**Q: How do contexts give isolation?**
+Each BrowserContext is a separate profile with its own cookies, storage and cache, created in milliseconds. Each test gets a fresh context+page, so no state leaks between tests — even in parallel.
+
+**Q: How do you reuse a logged-in session?**
+Log in once in global/setup, save `storageState` to a JSON file, and point `use.storageState` at it so every test starts authenticated. Saves the per-test login.
+
+**Q: How do you mock a backend response?**
+`page.route('**/api/...', route => route.fulfill({ json }))` to stub, `route.abort()` to block, or `route.continue()` to pass through after inspecting. Lets you test empty/error states deterministically.
+
+**Q: How does parallelism work and how do you scale in CI?**
+Files run in parallel across workers; `fullyParallel` parallelises within files too. For more machines, shard with `--shard=i/n`. Contexts keep parallel runs isolated.
+
+**Q: When would you use the request API instead of the UI?**
+For fast data setup/teardown and pure API assertions — seeding an order via POST is far quicker and more stable than driving the UI, then I verify the outcome in the browser.
+
+**Q: Selenium's findElement vs Playwright's locator — key difference?**
+Selenium returns a `WebElement` snapshot that can go stale; a Playwright locator is a lazy query re-resolved on each action, so there's no stale-element problem and it pairs with auto-wait.
+
+## Common mistakes
+
+- Adding `page.waitForTimeout(ms)` (hard sleep) instead of trusting auto-wait / using `expect(locator)`.
+- Using `expect(await locator.textContent()).toBe(...)` (reads once) instead of the retrying `expect(locator).toHaveText(...)`.
+- Storing the result of a query and treating it like a Selenium element — locators are meant to be re-used as lazy queries.
+- Forgetting to set `trace`/`video` so CI failures are undebuggable.
+- Re-logging-in every test instead of using `storageState`.
+- Over-using CSS/XPath locators when `getByRole`/`getByLabel` would be more resilient.
+
+<div class="callout tip">
+  <div class="ct">Do this</div>
+  Re-build your Selenium SauceDemo test in Playwright. Note how much shorter it is, that you deleted every explicit wait, and add a <code>storageState</code> auth setup plus one <code>page.route</code> mock. That contrast is exactly what to say in interviews.
+</div>

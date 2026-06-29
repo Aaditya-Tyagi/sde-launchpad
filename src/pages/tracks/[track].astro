@@ -1,0 +1,54 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { getCollection } from 'astro:content';
+import { TRACKS } from '../../data/curriculum';
+
+export async function getStaticPaths() {
+  return TRACKS.map((t) => ({ params: { track: t.id }, props: { track: t } }));
+}
+const { track } = Astro.props;
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const program = track.program ?? 'sde2';
+const learnHref = program === 'qa' ? '/qa/tracks' : '/tracks';
+const brandSuffix = program === 'qa' ? 'QA · Automation Launchpad' : 'SDE-2 Launchpad';
+const lessons = (await getCollection('lessons'))
+  .filter((l) => !l.data.draft && l.data.track === track.id)
+  .sort((a, b) => a.data.order - b.data.order);
+---
+<BaseLayout title={`${track.name} · ${brandSuffix}`} active="tracks" program={program}>
+  <div class="wrap" style="padding-top:28px;max-width:880px">
+    <div class="crumbs muted" style="font-size:13px"><a href={`${base}${learnHref}`}>Learn</a> › {track.name}</div>
+    <h1 style="margin-top:8px">{track.icon} {track.name}</h1>
+    <p class="sub">{track.blurb}</p>
+    <div class="callout key" style="margin-top:14px"><div class="ct">Goal</div>{track.goal}</div>
+
+    <div style="margin-top:18px">
+      {lessons.map((l, i) => (
+        <a class="panel" href={`${base}/lessons/${l.id}`} style="display:flex;gap:14px;align-items:center;margin-bottom:10px;text-decoration:none;color:var(--text)">
+          <span style="font-family:var(--mono);color:var(--faint);font-size:13px;width:24px">{String(i + 1).padStart(2, '0')}</span>
+          <span class="side-check2" data-done={l.id} style="width:18px;color:var(--accent-2)"></span>
+          <div style="flex:1">
+            <b style="font-size:15px">{l.data.title}</b>
+            <div class="muted" style="font-size:13px">{l.data.summary}</div>
+          </div>
+          <span class="mastery" data-mastery={l.id}><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+          {l.data.difficulty && <span class={`pill p-${l.data.difficulty}`}>{l.data.difficulty}</span>}
+          <span class="tag">⏱ {l.data.est}m</span>
+        </a>
+      ))}
+      {lessons.length === 0 && <p class="muted">Lessons coming soon for this track.</p>}
+    </div>
+  </div>
+  <script is:inline>
+    const store = window.SDE2;
+    function paint() {
+      const done = store.allDone();
+      document.querySelectorAll('[data-done]').forEach((el) => { el.textContent = done[el.getAttribute('data-done')] ? '✓' : '○'; });
+      document.querySelectorAll('[data-mastery]').forEach((el) => {
+        const m = store.mastery(el.getAttribute('data-mastery'));
+        el.querySelectorAll('.dot').forEach((d, i) => d.classList.toggle('on', i < m));
+      });
+    }
+    store.onChange(paint); paint();
+  </script>
+</BaseLayout>

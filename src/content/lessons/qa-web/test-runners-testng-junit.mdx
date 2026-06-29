@@ -1,0 +1,297 @@
+---
+title: "Test runners: TestNG & JUnit 5"
+track: qa-web
+summary: "The runner layer beneath your framework — annotations & lifecycle, hard vs soft assertions, groups, priorities, dependsOn, data providers / parameterized tests, parallel config, testng.xml, listeners and retry analyzers, with brief pytest equivalents."
+order: 7
+est: 24
+difficulty: medium
+priority: must
+tags: [testng, junit5, runners, data-provider, parallel]
+whyAsked: "Every Selenium/Java UI suite runs on TestNG or JUnit. Interviewers expect you to explain lifecycle, data-driven tests, parallelism, and how you wire retries and listeners."
+followUps:
+  - "TestNG vs JUnit 5 — when do you pick each?"
+  - "Hard vs soft assertion — when do you use a soft assert?"
+  - "How do you run data-driven tests?"
+  - "How do you configure parallel execution?"
+resources:
+  - { label: "TestNG docs", url: "https://testng.org/doc/documentation-main.html" }
+  - { label: "JUnit 5 user guide", url: "https://docs.junit.org/current/user-guide/" }
+  - { label: "pytest docs", url: "https://docs.pytest.org/" }
+---
+
+The **test runner** is the layer beneath your Page Object framework: it discovers tests, runs lifecycle hooks, manages assertions, parameterises, parallelises and reports. For Java UI suites that means **TestNG** or **JUnit 5**; in Python it's **pytest**.
+
+## Annotations & lifecycle
+
+### TestNG
+
+```java
+@BeforeSuite  / @AfterSuite     once per suite (e.g. start Grid/reporter)
+@BeforeTest   / @AfterTest      per <test> tag in testng.xml
+@BeforeClass  / @AfterClass     once per class (e.g. create driver)
+@BeforeMethod / @AfterMethod    before/after EACH @Test (e.g. fresh login)
+@Test                           a test method
+```
+
+```java
+public class CheckoutTest {
+  WebDriver driver;
+  @BeforeMethod public void setUp()  { driver = new ChromeDriver(); }
+  @Test        public void canLogin(){ /* ... */ }
+  @AfterMethod public void tearDown(){ driver.quit(); }
+}
+```
+
+### JUnit 5
+
+```java
+@BeforeAll   / @AfterAll       static, once per class
+@BeforeEach  / @AfterEach      before/after each @Test
+@Test                          a test
+@DisplayName("...")            readable name
+@Disabled                      skip
+```
+
+<div class="callout key">
+  <div class="ct">Key mapping</div>
+  TestNG <code>@BeforeMethod</code> ≈ JUnit <code>@BeforeEach</code>; TestNG <code>@BeforeClass</code> ≈ JUnit <code>@BeforeAll</code> (JUnit's is <code>static</code>). For UI tests, create the driver in the per-method/each hook so each test gets a clean browser, unless you deliberately share for speed.
+</div>
+
+## Assertions: hard vs soft
+
+A **hard** assertion stops the test immediately on failure. A **soft** assertion records the failure but continues, then reports all failures at the end — useful when you want to verify many independent fields in one flow.
+
+```java
+// TestNG hard
+Assert.assertEquals(actual, "Products");
+Assert.assertTrue(banner.isDisplayed());
+
+// TestNG soft — MUST call assertAll() or failures are swallowed
+SoftAssert soft = new SoftAssert();
+soft.assertEquals(price.getText(), "$9.99");
+soft.assertTrue(addToCart.isEnabled());
+soft.assertAll();   // <-- reports collected failures here
+```
+
+```java
+// JUnit 5 — assertions are hard; group with assertAll()
+import static org.junit.jupiter.api.Assertions.*;
+assertAll("product",
+  () -> assertEquals("$9.99", price.getText()),
+  () -> assertTrue(addToCart.isEnabled()));
+// AssertJ for fluent: assertThat(title).isEqualTo("Products");
+```
+
+<div class="callout warn">
+  <div class="ct">Watch out</div>
+  Forgetting <code>soft.assertAll()</code> means a "passing" test silently hid failures. Soft asserts are for verifying multiple independent things in one test — not an excuse to cram unrelated checks together.
+</div>
+
+## Priorities, groups, dependsOn (TestNG)
+
+```java
+@Test(priority = 1)               public void login() {}
+@Test(priority = 2)               public void addToCart() {}
+
+@Test(groups = {"smoke"})         public void smokeCheck() {}
+@Test(groups = {"regression"})    public void deepCheck() {}
+
+@Test(dependsOnMethods = "login") public void checkout() {}   // skipped if login fails
+@Test(enabled = false)            public void wip() {}        // skip
+```
+
+- **priority** orders methods (lower runs first); default is 0/alphabetical.
+- **groups** let you run subsets (smoke vs regression) via testng.xml or the CLI.
+- **dependsOnMethods/Groups** skips a test if its dependency failed — handy for genuine prerequisites, but overusing it creates fragile ordering. Prefer independent tests.
+
+JUnit 5 equivalents: `@Tag("smoke")` for groups, `@Order(n)` with `@TestMethodOrder(OrderAnnotation.class)` for ordering. JUnit has no built-in dependsOn (by design — tests should be independent).
+
+## Data providers / parameterized tests
+
+### TestNG @DataProvider
+
+```java
+@DataProvider(name = "logins")
+public Object[][] logins() {
+  return new Object[][] {
+    {"standard_user", "secret_sauce", true},
+    {"locked_out_user", "secret_sauce", false},
+  };
+}
+
+@Test(dataProvider = "logins")
+public void login(String user, String pass, boolean expectSuccess) {
+  // runs once per row
+}
+```
+
+Add `@DataProvider(parallel = true)` to run rows concurrently. You can also parameterise from `testng.xml` with `@Parameters({"browser"})`.
+
+### JUnit 5 parameterized
+
+```java
+@ParameterizedTest
+@CsvSource({ "standard_user, secret_sauce, true",
+             "locked_out_user, secret_sauce, false" })
+void login(String user, String pass, boolean ok) { /* ... */ }
+
+@ParameterizedTest
+@ValueSource(strings = {"chrome", "firefox"})
+void onBrowser(String b) { /* ... */ }
+
+@ParameterizedTest
+@MethodSource("loginData")   // a static Stream<Arguments>
+void fromMethod(String user, String pass) { /* ... */ }
+```
+
+(Requires the `junit-jupiter-params` artifact.)
+
+## Parallel execution
+
+### TestNG (testng.xml)
+
+```xml
+<suite name="ui" parallel="methods" thread-count="4">
+  <test name="checkout">
+    <classes><class name="tests.CheckoutTest"/></classes>
+  </test>
+</suite>
+```
+
+`parallel` can be `methods`, `classes`, `tests`, or `instances`. Critical rule: with a shared WebDriver field you'll get cross-talk — use a **ThreadLocal&lt;WebDriver&gt;** so each thread has its own driver.
+
+```java
+ThreadLocal<WebDriver> tlDriver = new ThreadLocal<>();
+@BeforeMethod public void setUp(){ tlDriver.set(new ChromeDriver()); }
+public WebDriver getDriver(){ return tlDriver.get(); }
+@AfterMethod  public void tearDown(){ getDriver().quit(); tlDriver.remove(); }
+```
+
+### JUnit 5
+
+```
+# junit-platform.properties
+junit.jupiter.execution.parallel.enabled = true
+junit.jupiter.execution.parallel.mode.default = concurrent
+```
+
+## testng.xml — the suite descriptor
+
+Controls which classes/groups/packages run, parameters, listeners and parallelism — your CI entry point.
+
+```xml
+<suite name="Regression" parallel="classes" thread-count="3">
+  <listeners>
+    <listener class-name="utils.ScreenshotListener"/>
+  </listeners>
+  <test name="smoke">
+    <groups><run><include name="smoke"/></run></groups>
+    <packages><package name="tests.*"/></packages>
+  </test>
+</suite>
+```
+
+## Listeners
+
+Listeners hook into test events for cross-cutting concerns — screenshot on failure, logging, reporting.
+
+```java
+public class ScreenshotListener implements ITestListener {
+  @Override public void onTestFailure(ITestResult result) {
+    // grab driver, take screenshot, attach to report
+  }
+}
+// Register via testng.xml <listeners> or @Listeners(ScreenshotListener.class) on the class
+```
+
+JUnit 5 uses **Extensions** (the `Extension` API, `@ExtendWith`) for the same purpose — e.g. a `TestWatcher` to screenshot on failure.
+
+## Retry analyzer (TestNG)
+
+Auto-retry a failed test N times to absorb genuine infra noise (use sparingly — see the Flakiness lesson).
+
+```java
+public class Retry implements IRetryAnalyzer {
+  private int count = 0; private static final int MAX = 2;
+  @Override public boolean retry(ITestResult r) {
+    return count++ < MAX;   // true = run again
+  }
+}
+@Test(retryAnalyzer = Retry.class) public void flaky() {}
+```
+
+A `IAnnotationTransformer` listener can apply the analyzer to every test globally. JUnit 5 has no built-in retry; use the `junit-pioneer` `@RetryingTest` extension or a custom extension.
+
+## Suites & test selection in CI
+
+- TestNG: point Maven Surefire at the `testng.xml` suite, or use `-Dgroups=smoke`.
+- JUnit 5: `-Dgroups=smoke` / `--include-tag`, or the JUnit Platform suite engine (`@Suite` + `@SelectPackages`).
+
+## pytest equivalents (brief)
+
+```python
+# Fixtures replace before/after hooks; scope controls lifecycle
+@pytest.fixture
+def driver():
+    d = webdriver.Chrome(); yield d; d.quit()
+
+# Parameterize = data provider
+@pytest.mark.parametrize("user,pwd,ok", [
+    ("standard_user","secret_sauce",True),
+    ("locked_out_user","secret_sauce",False)])
+def test_login(driver, user, pwd, ok): ...
+
+@pytest.mark.smoke      # markers = groups (@Tag)
+def test_x(): ...
+# parallel: pytest -n 4 (pytest-xdist);  retry: pytest-rerunfailures --reruns 2
+```
+
+## TestNG vs JUnit 5 — how to choose
+
+| | TestNG | JUnit 5 |
+|---|---|---|
+| Built-in groups | `groups` | `@Tag` |
+| Built-in dependsOn | Yes | No (by design) |
+| Built-in retry | IRetryAnalyzer | No (extension needed) |
+| Data-driven | @DataProvider (supports parallel) | @ParameterizedTest |
+| Parallelism | Mature, XML-configured | Properties-based, newer |
+| Ecosystem | Long-standing in Selenium suites | Modern, extension model, dominant in app dev |
+
+Pick **TestNG** for classic Selenium suites needing rich suite config, groups, dependsOn and built-in retry. Pick **JUnit 5** for modern projects, a clean extension model, and teams already standardised on JUnit — adding the params and pioneer libs for the gaps.
+
+## Interview questions & model answers
+
+**Q: TestNG vs JUnit 5 — when each?**
+TestNG for established Selenium suites needing groups, dependsOn, data providers and built-in retry via XML config; JUnit 5 for modern projects with its extension model. Functionally close; choice often follows the existing stack.
+
+**Q: Hard vs soft assertion?**
+Hard stops the test on first failure; soft collects failures and reports them at `assertAll()`, letting you verify several independent fields in one flow. I use soft asserts deliberately, never to merge unrelated tests.
+
+**Q: How do you run data-driven tests?**
+TestNG `@DataProvider` returning `Object[][]` (one run per row, optionally parallel), or JUnit `@ParameterizedTest` with `@CsvSource`/`@MethodSource`. I externalise data (CSV/Excel/JSON) for larger sets.
+
+**Q: How do you configure parallel execution safely?**
+Set `parallel`/`thread-count` in testng.xml (or JUnit properties) and store the WebDriver in a `ThreadLocal` so each thread has its own browser — otherwise threads share one driver and collide.
+
+**Q: How do you screenshot on failure for the whole suite?**
+A TestNG `ITestListener.onTestFailure` (or JUnit 5 `TestWatcher` extension) that grabs the driver, captures a screenshot, and attaches it to the report — registered globally so every test is covered.
+
+**Q: When is a retry analyzer appropriate?**
+For absorbing genuine, rare infra noise (1–2 retries), always paired with tracking and fixing the underlying flake — not as a permanent mask.
+
+**Q: BeforeClass vs BeforeMethod for the driver?**
+BeforeMethod gives each test a clean browser (most isolated, slightly slower); BeforeClass shares one driver across the class (faster, but tests can leak state). I default to per-method isolation unless speed forces sharing.
+
+## Common mistakes
+
+- Forgetting `soft.assertAll()` — failures vanish and the test "passes".
+- Sharing a single WebDriver across parallel threads instead of ThreadLocal.
+- Over-using `dependsOnMethods`, creating brittle ordered chains.
+- Hard-coding test data instead of using data providers/parameterized tests.
+- Treating retries as a fix for flakiness rather than a stopgap.
+- Mixing TestNG and JUnit annotations in one class (they're not interchangeable).
+
+<div class="callout tip">
+  <div class="ct">Do this</div>
+  Take your SauceDemo test, add a TestNG <code>@DataProvider</code> for the four user types, run it <code>parallel="methods"</code> with a ThreadLocal driver, and wire an <code>ITestListener</code> that screenshots on failure. That's a production-shaped runner setup interviewers love to hear.
+</div>

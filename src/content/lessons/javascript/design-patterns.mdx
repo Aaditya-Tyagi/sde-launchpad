@@ -1,0 +1,200 @@
+---
+title: "Design Patterns in JavaScript"
+track: javascript
+summary: "Observer, Module, Singleton, Factory, and Strategy — the classic patterns reframed for modern JS/TS, with real-world React/Node parallels."
+order: 13
+est: 22
+difficulty: medium
+priority: deep
+tags: [design-patterns, observer, singleton, factory, module, strategy, pub-sub]
+whyAsked: "SDE-2 interviewers test whether you think in patterns. Knowing these by name + showing where they appear in code you already write is a strong signal of seniority."
+followUps:
+  - "What pattern does the EventEmitter use?"
+  - "How is the module pattern related to closures?"
+  - "What's the difference between Observer and Pub/Sub?"
+  - "When would you use a Factory instead of a constructor?"
+  - "What problem does the Strategy pattern solve?"
+resources:
+  - { label: "javascript.info: Mixins", url: "https://javascript.info/mixins" }
+  - { label: "Refactoring Guru: Design Patterns", url: "https://refactoring.guru/design-patterns" }
+---
+
+Design patterns are named solutions to recurring design problems. Knowing their names lets you communicate architecture decisions clearly. More importantly, recognizing them in existing code (React context = Observer, reducers = Strategy) signals real seniority.
+
+## Observer / Pub-Sub
+
+The **Observer** pattern: an object (subject/publisher) maintains a list of dependents (observers/subscribers) and notifies them when state changes.
+
+```js
+class EventEmitter {
+  #listeners = new Map();
+
+  on(event, fn) {
+    if (!this.#listeners.has(event)) this.#listeners.set(event, new Set());
+    this.#listeners.get(event).add(fn);
+    return () => this.off(event, fn); // return unsubscribe function
+  }
+
+  off(event, fn) {
+    this.#listeners.get(event)?.delete(fn);
+  }
+
+  emit(event, ...args) {
+    this.#listeners.get(event)?.forEach(fn => fn(...args));
+  }
+}
+
+const bus = new EventEmitter();
+const unsub = bus.on('login', user => console.log('User logged in:', user.name));
+bus.emit('login', { name: 'Alex' }); // "User logged in: Alex"
+unsub(); // unsubscribe
+bus.emit('login', { name: 'Sam' });  // nothing — unsubscribed
+```
+
+**You already use this**: `addEventListener`, `EventEmitter` in Node, `zustand` subscribers, React's `useEffect` cleanup pattern, Redux's `store.subscribe`.
+
+The distinction between Observer and Pub/Sub: in Observer, subjects know about observers directly. In Pub/Sub, a **broker** (message bus) decouples publishers from subscribers — they never reference each other.
+
+## Module pattern
+
+Private state via closures — the pattern behind ES modules and the IIFE:
+
+```js
+// IIFE Module — private state, public API
+const counter = (() => {
+  let count = 0;          // private
+  const MIN = 0;          // private constant
+
+  return {
+    increment() { count = Math.max(MIN, count + 1); },
+    decrement() { count = Math.max(MIN, count - 1); },
+    reset() { count = 0; },
+    get value() { return count; },
+  };
+})();
+
+counter.increment();
+counter.increment();
+console.log(counter.value); // 2
+console.log(counter.count); // undefined — truly private
+```
+
+In modern code, ES modules (`import/export`) replace the IIFE pattern — the file boundary itself provides the private scope.
+
+## Singleton
+
+Ensure only **one instance** of a class exists. In JS, this is often a module-level variable (since a module is loaded once):
+
+```js
+// Module-level singleton — the idiomatic JS approach
+// db.js
+let instance = null;
+
+class Database {
+  #connection;
+  constructor(url) {
+    this.#connection = createConnection(url);
+  }
+  query(sql) { /* ... */ }
+}
+
+export function getDatabase(url) {
+  if (!instance) instance = new Database(url);
+  return instance;
+}
+
+// Usage
+const db1 = getDatabase('postgres://localhost/mydb');
+const db2 = getDatabase(); // same instance
+console.log(db1 === db2); // true
+```
+
+**In React**: React Context is a singleton provider — one instance at the tree root, consumed anywhere below.
+
+## Factory
+
+A **Factory** is a function that creates and returns objects without using `new` directly — useful when the exact class depends on runtime conditions, or when you want to hide constructor complexity:
+
+```js
+// Without factory — caller must know which class to use
+const btn = new PrimaryButton({ label: 'Save' });
+const icon = new IconButton({ icon: 'trash' });
+
+// With factory — caller asks for what they want, factory decides
+function createButton(config) {
+  const { variant = 'primary', ...rest } = config;
+  const map = {
+    primary: PrimaryButton,
+    icon: IconButton,
+    ghost: GhostButton,
+  };
+  const Cls = map[variant] ?? PrimaryButton;
+  return new Cls(rest);
+}
+
+const btn = createButton({ variant: 'icon', icon: 'trash' });
+```
+
+**In React**: `React.createElement` is a factory. `React.createContext`, `createStore` (Redux) are factories.
+
+## Strategy
+
+The **Strategy** pattern defines a family of algorithms, encapsulates each, and makes them interchangeable — letting you swap behavior at runtime without changing the calling code:
+
+```js
+// Without strategy — messy conditionals
+function sortData(data, mode) {
+  if (mode === 'date') return [...data].sort((a, b) => a.date - b.date);
+  if (mode === 'price') return [...data].sort((a, b) => a.price - b.price);
+  if (mode === 'name') return [...data].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// With strategy — each sort is a composable function
+const strategies = {
+  date:  (a, b) => a.date - b.date,
+  price: (a, b) => a.price - b.price,
+  name:  (a, b) => a.name.localeCompare(b.name),
+};
+
+function sortData(data, strategy) {
+  return [...data].sort(strategies[strategy]);
+}
+```
+
+**In React**: Redux reducers are strategies — the action type selects which strategy handles the state update. Form validators are strategies.
+
+## Decorator
+
+The **Decorator** pattern wraps an object/function to add behavior:
+
+```js
+// Function decorator
+function withLogging(fn, name = fn.name) {
+  return function (...args) {
+    console.log(`${name} called with`, args);
+    const result = fn.apply(this, args);
+    console.log(`${name} returned`, result);
+    return result;
+  };
+}
+
+const add = withLogging((a, b) => a + b, 'add');
+add(2, 3); // logs the call and result
+
+// TypeScript decorators (class/method level)
+function log(target, key, descriptor) {
+  const original = descriptor.value;
+  descriptor.value = function (...args) {
+    console.log(`${key} called`);
+    return original.apply(this, args);
+  };
+  return descriptor;
+}
+```
+
+**In React**: HOCs (Higher-Order Components) are the decorator pattern. `React.memo`, `connect()` from Redux, `withRouter` from React Router all wrap components to add behavior.
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Observer: a publisher notifies a list of subscribers — EventEmitter, Redux subscribe, React context updates. Module: closures provide private state with a controlled public API — today that's just ES module files. Singleton: one global instance, typically a module-level variable in JS — Redux store, DB connection. Factory: a function that creates objects, hiding which class is chosen — React.createElement, createStore. Strategy: swap algorithms at runtime — Redux reducers, sort functions, validators. Decorator: wrap to add behavior — HOCs, React.memo, middleware."
+</div>

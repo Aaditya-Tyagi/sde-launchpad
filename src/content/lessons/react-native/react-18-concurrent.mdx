@@ -1,0 +1,169 @@
+---
+title: "React 18: Concurrent Rendering & New Hooks"
+track: react-native
+summary: "What concurrent rendering actually means, how useTransition and useDeferredValue let you keep UIs responsive, and where Suspense now fits."
+order: 10
+est: 22
+difficulty: hard
+priority: must
+tags: [react-18, concurrent, useTransition, useDeferredValue, suspense, startTransition]
+whyAsked: "React 18 is the current major version and concurrent rendering fundamentally changes how we think about UI responsiveness. Interviewers use this to test whether you keep up with the ecosystem."
+followUps:
+  - "What is concurrent rendering and how does it differ from before?"
+  - "What is a transition in React 18?"
+  - "Difference between useTransition and useDeferredValue?"
+  - "What does Suspense do and when should you use it?"
+  - "What is automatic batching?"
+resources:
+  - { label: "react.dev: React 18", url: "https://react.dev/blog/2022/03/29/react-v18" }
+  - { label: "react.dev: useTransition", url: "https://react.dev/reference/react/useTransition" }
+---
+
+## What concurrent rendering changes
+
+Before React 18, rendering was **synchronous and uninterruptible**. Once React started rendering a component tree, it had to finish before the browser (or UI thread in RN) could handle any user input. A large re-render meant the UI froze for its duration.
+
+**Concurrent rendering** makes rendering **interruptible**. React can:
+- Start rendering a new tree
+- Pause if a higher-priority update arrives (user input, urgent state update)
+- Abandon the work-in-progress tree and restart with the new update
+- Resume paused work later
+
+This is the mechanism behind all the React 18 features. The key insight: not all state updates are equally urgent. A user typing should feel instant; filtering a large list can take a moment.
+
+## Automatic batching
+
+Before React 18, state updates in `setTimeout`, native event handlers, or Promises were flushed individually — each caused a separate re-render:
+
+```js
+// Before React 18 — 2 re-renders
+setTimeout(() => {
+  setCount(c => c + 1); // re-render 1
+  setFlag(f => !f);     // re-render 2
+}, 1000);
+
+// React 18 — automatically batched — 1 re-render
+setTimeout(() => {
+  setCount(c => c + 1);
+  setFlag(f => !f);     // one re-render total
+}, 1000);
+```
+
+This is automatic — no code changes needed. In RN, upgrade to React Native 0.71+ which ships with React 18.
+
+## useTransition — mark updates as non-urgent
+
+`useTransition` gives you a way to mark a state update as a **transition** (non-urgent). React can interrupt it if a more urgent update arrives.
+
+```jsx
+import { useTransition, useState } from 'react';
+
+function SearchPage() {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [isPending, startTransition] = useTransition();
+
+  function handleSearch(text) {
+    setQuery(text); // urgent: update the input immediately
+
+    startTransition(() => {
+      // non-urgent: filter 10,000 items — React can interrupt this
+      const filtered = expensiveFilter(allItems, text);
+      setResults(filtered);
+    });
+  }
+
+  return (
+    <>
+      <TextInput value={query} onChangeText={handleSearch} />
+      {isPending && <ActivityIndicator />}  {/* shows while transition is pending */}
+      <FlatList data={results} renderItem={renderItem} />
+    </>
+  );
+}
+```
+
+The input stays responsive because `setQuery` is outside the transition — it's urgent and gets painted immediately. The expensive filtering happens in a concurrent, interruptible way. If the user types again while filtering is in progress, React throws away the in-progress render and restarts with the new query.
+
+**`isPending`** is `true` while the transition is in progress — use it to show a loading indicator.
+
+## useDeferredValue — defer a prop or derived state
+
+`useDeferredValue` is the "receive" side of the same concept — useful when you don't control where the update comes from:
+
+```jsx
+function ExpensiveList({ query }) {
+  const deferredQuery = useDeferredValue(query);
+  // deferredQuery lags behind query — shows the old list while computing new
+
+  const filtered = useMemo(
+    () => expensiveFilter(allItems, deferredQuery),
+    [deferredQuery]
+  );
+
+  const isStale = query !== deferredQuery; // showing outdated results
+
+  return (
+    <View style={{ opacity: isStale ? 0.5 : 1 }}>
+      <FlatList data={filtered} renderItem={renderItem} />
+    </View>
+  );
+}
+```
+
+`useDeferredValue` keeps showing the previous value until React has time to render the new one — avoiding the UI freeze during the expensive update.
+
+## useTransition vs useDeferredValue
+
+| | `useTransition` | `useDeferredValue` |
+|---|---|---|
+| You control the state setter? | Yes | No (prop from parent) |
+| What you wrap | The `setState` call | The value itself |
+| `isPending` available | Yes | No (compare old vs new) |
+| Typical use | Search, filter, navigation | Derived data, received props |
+
+## Suspense for data fetching
+
+Suspense lets a component "suspend" (pause rendering) while waiting for async data, showing a fallback:
+
+```jsx
+// With a Suspense-compatible data source (React Query, SWR, Relay, use())
+function PostList() {
+  const posts = use(fetchPosts()); // throws a Promise — Suspense catches it
+  return <FlatList data={posts} renderItem={renderItem} />;
+}
+
+function App() {
+  return (
+    <Suspense fallback={<ActivityIndicator />}>
+      <PostList />
+    </Suspense>
+  );
+}
+```
+
+The `use()` hook (React 18.3+) is the recommended way to consume promises inside components. Libraries like React Query expose Suspense mode explicitly (`suspense: true`).
+
+**Nested Suspense boundaries**: put boundaries at every async "chunk" to get granular loading states:
+
+```jsx
+<Suspense fallback={<PageSkeleton />}>
+  <UserProfile userId={id} />
+  <Suspense fallback={<PostsSkeleton />}>
+    <PostFeed userId={id} />
+  </Suspense>
+</Suspense>
+```
+
+## React 18 in React Native
+
+React 18's concurrent features ship with React Native 0.71+. To enable the new renderer:
+
+- Set `newArchEnabled=true` in `gradle.properties` (Android) and `RCT_NEW_ARCH_ENABLED=1` in Podfile (iOS)
+- Concurrent features (`useTransition`, automatic batching) work regardless
+- Suspense for data fetching is stable in RN as of React 18
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "Concurrent rendering makes rendering interruptible — React can pause work and prioritize urgent updates. `useTransition` marks a `setState` call as non-urgent: React renders it when it has time, showing `isPending` while it works, and can interrupt it if the user types again. `useDeferredValue` does the same for values you receive as props — it shows the old value until React can render the new one. Both prevent the UI from freezing during expensive renders. Automatic batching in React 18 combines multiple `setState` calls in async contexts into one re-render automatically."
+</div>

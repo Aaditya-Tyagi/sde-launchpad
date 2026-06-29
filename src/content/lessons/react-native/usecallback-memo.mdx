@@ -1,0 +1,149 @@
+---
+title: "useCallback vs useMemo — when they actually help"
+track: react-native
+summary: "The precise difference between the two hooks, what 'referential stability' means, and the honest truth about when memoization helps vs when it's just noise."
+order: 5
+est: 18
+difficulty: medium
+priority: must
+tags: [useCallback, useMemo, memoization, referential-equality, performance]
+whyAsked: "This is the most commonly misunderstood hook pair. Interviewers ask because overuse of useMemo/useCallback is a widespread code smell, and knowing when NOT to use them is the senior signal."
+followUps:
+  - "What's the difference between useCallback and useMemo?"
+  - "Why doesn't useCallback on every function improve performance?"
+  - "When does React.memo actually skip a re-render?"
+  - "What is referential equality and why does it matter?"
+  - "When should you NOT use useMemo?"
+resources:
+  - { label: "react.dev: useCallback", url: "https://react.dev/reference/react/useCallback" }
+  - { label: "react.dev: useMemo", url: "https://react.dev/reference/react/useMemo" }
+---
+
+Both hooks memoize things across renders. The distinction is **what** they memoize:
+
+- **`useMemo`** — memoizes a **computed value** (the result of calling a function).
+- **`useCallback`** — memoizes a **function itself** (so its identity is stable).
+
+```js
+// useMemo: cache an expensive computed result
+const sorted = useMemo(
+  () => [...items].sort(compareByDate), // fn runs only when items changes
+  [items]
+);
+
+// useCallback: keep a function's identity stable across renders
+const handlePress = useCallback(
+  (id) => dispatch({ type: 'SELECT', id }),
+  [dispatch]
+);
+
+// useCallback is exactly equivalent to:
+const handlePress = useMemo(
+  () => (id) => dispatch({ type: 'SELECT', id }),
+  [dispatch]
+);
+```
+
+## Why referential equality matters
+
+JavaScript functions and objects are compared **by reference**, not by value. On every render, a function literal creates a new function object:
+
+```js
+const a = () => {};
+const b = () => {};
+console.log(a === b); // false — different objects in memory
+```
+
+This matters because:
+1. `React.memo` compares props with shallow equality (`===`). A new function reference every render means `memo` always sees "props changed" → no bail-out.
+2. Effect dependency arrays use `Object.is` (essentially `===`). A new function reference every render means the effect re-runs every render.
+
+## The only situations where useCallback helps
+
+**Situation 1: Passing a callback to a memoized child**
+
+```js
+function Parent() {
+  // Without useCallback: new function every render → memo is useless
+  // With useCallback: same function reference → memo can bail out
+  const handleSelect = useCallback((id) => setSelected(id), []);
+  return <MemoizedList onSelect={handleSelect} />;
+}
+const MemoizedList = React.memo(({ onSelect }) => { /* ... */ });
+```
+
+**Situation 2: A function is in an effect's dependency array**
+
+```js
+// Without useCallback: fetchData is new every render → effect re-runs every render → infinite loop
+const fetchData = useCallback(async () => {
+  const data = await api.get('/items');
+  setItems(data);
+}, []); // stable reference
+
+useEffect(() => {
+  fetchData();
+}, [fetchData]); // effect only re-runs when fetchData changes
+```
+
+## When useCallback does NOT help (most of the time)
+
+```js
+// Scenario: inline event handlers on non-memoized children
+// The child re-renders because the PARENT re-renders, regardless of the prop value
+function Parent() {
+  const handleClick = useCallback(() => console.log('click'), []);
+  return <div onClick={handleClick}>Click me</div>; // div is not React.memo'd
+  // useCallback here adds cost (the comparison) with zero benefit
+}
+```
+
+If the child is:
+- A native host component (`<div>`, `<View>`, `<Text>`) — host components don't do prop comparisons
+- A React component that's NOT wrapped in `React.memo`
+
+...then `useCallback` does **nothing useful** and just adds overhead.
+
+## When useMemo helps vs when it's premature
+
+```js
+// GOOD: genuinely expensive computation
+const processedData = useMemo(() => {
+  return hugeDataset.flatMap(item =>      // O(n log n) sort
+    item.entries.filter(e => e.active)
+  ).sort(compareByScore);
+}, [hugeDataset]);
+
+// GOOD: stable object reference for memoized child
+const options = useMemo(
+  () => ({ locale: 'en-US', currency: 'USD' }),
+  [] // never recreated — stable for downstream React.memo
+);
+
+// BAD: trivial computation — memo cost > compute cost
+const doubled = useMemo(() => count * 2, [count]); // just write count * 2
+
+// BAD: the "memoize everything" habit — costs memory and comparison overhead
+const message = useMemo(() => `Hello, ${name}!`, [name]); // not worth it
+```
+
+## The decision flowchart
+
+```
+Is the computation expensive (>1ms, large arrays, complex transforms)?
+  YES → useMemo it
+
+Is the function passed to a React.memo-wrapped child?
+  YES → useCallback it
+
+Is the function in a useEffect dependency array?
+  YES → useCallback it
+
+Otherwise?
+  Write it inline. Memoize after profiling shows it's a problem.
+```
+
+<div class="callout key">
+  <div class="ct">Say it out loud</div>
+  "`useMemo` caches a computed value; `useCallback` caches a function's identity — they're the same mechanism. Memoization only helps when a child uses `React.memo` and you're passing it a prop, or when a function is in an effect's deps array. For everything else, the memo overhead costs more than re-creating the value. The rule: measure first, then memoize the real hotspot. Wrapping every callback in `useCallback` is a code smell, not a performance win."
+</div>

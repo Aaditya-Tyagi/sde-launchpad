@@ -1,0 +1,184 @@
+---
+title: "HLD Interview Framework"
+track: hld
+summary: "A 6-step framework for backend system design interviews — requirements, estimation, API, data model, architecture, and deep-dives."
+order: 1
+est: 25
+difficulty: medium
+priority: must
+tags: [hld, framework, system-design, requirements, estimation, scalability]
+whyAsked: "Every HLD round rewards structure over trivia. A clear framework signals senior-level thinking and keeps you from rambling."
+followUps:
+  - "How do you estimate scale before designing?"
+  - "What is the difference between functional and non-functional requirements?"
+  - "How do you decide between SQL and NoSQL?"
+  - "When would you add a message queue?"
+resources:
+  - { label: "System Design Primer", url: "https://github.com/donnemartin/system-design-primer" }
+  - { label: "ByteByteGo", url: "https://bytebytego.com" }
+---
+
+## The 6-step framework
+
+### Step 1: Clarify requirements (5 min)
+
+Split into two types:
+
+**Functional requirements** — what the system does:
+- Core features only (3–4 max for the interview)
+- Who are the users? What are their primary journeys?
+
+**Non-functional requirements** — the quality of how it does it:
+- Scale: DAU, peak RPS, data volume
+- Latency: real-time? < 200ms p99? eventual consistency ok?
+- Availability: 99.9%? 99.99%? (9s = downtime/year)
+- Consistency: strong vs eventual
+- Durability: can we lose a few events?
+
+**What to scope out:** "I'll skip auth, GDPR handling, and payment processing for this design."
+
+---
+
+### Step 2: Capacity estimation (3 min)
+
+Quick back-of-envelope. The goal is to know the **order of magnitude** — not to be precise.
+
+**Useful numbers to memorize:**
+```
+1 day = 86,400 seconds ≈ 100K seconds
+1 month = 2.5M seconds
+
+Traffic:
+  1M DAU × 10 req/day = 10M req/day = 100 RPS
+  
+Storage:
+  1M users × 1KB/user = 1 GB
+  1B users × 1KB = 1 TB
+
+Bandwidth:
+  100 RPS × 1KB/request = 100 KB/s (negligible)
+  100 RPS × 1MB/request = 100 MB/s (significant)
+```
+
+**Template:**
+```
+DAU: __M
+Read RPS: __   Write RPS: __
+Storage per record: __ KB
+New records/day: __
+Total storage (5 years): __ GB / TB
+```
+
+---
+
+### Step 3: API design
+
+Define the core REST (or GraphQL) API surface:
+
+```
+# Resource endpoints — noun-based, plural
+GET    /api/v1/posts?cursor=xxx&limit=20     → 200 { items, nextCursor }
+POST   /api/v1/posts                         → 201 { id, ... }
+GET    /api/v1/posts/:id                     → 200 Post
+PATCH  /api/v1/posts/:id                     → 200 Post
+DELETE /api/v1/posts/:id                     → 204
+
+# Actions
+POST   /api/v1/posts/:id/like               → 200 { likeCount }
+POST   /api/v1/posts/:id/share              → 201 Share
+```
+
+Mention:
+- Versioning (`/v1/`)
+- Auth header (`Authorization: Bearer <token>`)
+- Pagination strategy (cursor, not offset, for live feeds)
+- Rate limiting headers
+
+---
+
+### Step 4: Data model & storage
+
+Define the primary entities and choose a storage engine per use case:
+
+```
+User:    { id, username, email, passwordHash, createdAt }
+Post:    { id, authorId, content, mediaUrls[], likeCount, createdAt }
+Like:    { postId, userId, createdAt }          ← composite primary key
+Follow:  { followerId, followeeId, createdAt }  ← composite PK
+```
+
+**Storage decision matrix:**
+
+| Need | Technology | Why |
+|---|---|---|
+| Structured relational data | PostgreSQL | ACID, joins, mature |
+| Flexible documents / catalog | MongoDB | Schema-less, horizontal scale |
+| High-throughput time-series | Cassandra | Wide-column, append-only optimized |
+| Session / cache / ephemeral | Redis | Sub-millisecond reads, TTL support |
+| Full-text search | Elasticsearch | Inverted index, relevance scoring |
+| Blob storage | S3 | Cheap, durable, CDN-friendly |
+| Graph relationships | Neo4j | Traversal-optimized (rarely needed) |
+
+---
+
+### Step 5: High-level architecture
+
+Draw the components and connections. A standard web-scale architecture:
+
+```
+Clients (web/mobile)
+        │
+        ▼
+[ CDN — static assets + cached API responses ]
+        │
+        ▼
+[ Load Balancer (L7 — nginx / AWS ALB) ]
+        │
+   ┌────┴────┐
+   ▼         ▼
+[App Server] [App Server]   ← stateless, horizontally scalable
+   │         │
+   ▼         ▼
+[ Cache — Redis ]           ← read-through for hot data
+   │
+   ▼
+[ Primary DB ] ──replicate──▶ [ Read Replica(s) ]
+   │
+   ▼
+[ Message Queue (Kafka / SQS) ]
+   │
+   ▼
+[ Async Workers ]           ← emails, notifications, thumbnails, analytics
+```
+
+Label the arrows with protocols (HTTP/2, gRPC, TCP) and data sizes where relevant.
+
+---
+
+### Step 6: Deep-dive (10 min)
+
+Pick **one or two components** the interviewer asks about, or where your design has interesting tradeoffs:
+
+Common deep-dives:
+- **Database schema + indexing** — how do you avoid slow queries at scale?
+- **Caching strategy** — cache-aside? write-through? what's the TTL? what do you cache?
+- **Message queue fanout** — push vs pull model; at-least-once vs exactly-once delivery
+- **Rate limiting** — token bucket vs sliding window; distributed rate limiter
+- **Consistency tradeoffs** — eventual vs strong; what breaks if a user's feed is 1s stale?
+
+---
+
+## Trade-off cheat sheet
+
+| Scenario | Push toward | Away from |
+|---|---|---|
+| Read-heavy (10:1) | Cache, read replicas, CDN | Normalize excessively |
+| Write-heavy | Async queues, batching, Cassandra | Sync writes to multiple tables |
+| Low-latency reads | Redis, denormalize, pre-compute | Real-time JOINs |
+| Global users | CDN, multi-region, eventual consistency | Single-region, strong consistency |
+| Auditability / compliance | Append-only log, event sourcing | In-place updates |
+
+<div class="callout key">
+  <div class="ct">The senior signal in HLD</div>
+  Don't just describe the happy path. Interviewers give senior-level credit for: (1) stating a failure mode before they ask, (2) offering two options for a decision with a genuine trade-off, and (3) knowing when <strong>not</strong> to add complexity ("I'd start with a single Postgres instance — at 10K RPS I'd add read replicas, not shard yet").
+</div>
