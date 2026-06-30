@@ -53,12 +53,22 @@
     var cards = document.querySelectorAll('.tcard, .path-card, .panel');
     if (!cards.length) return;
     cards.forEach(function (el) { el.classList.add('spotlight'); });
+    // rAF-throttle: getBoundingClientRect() forces a synchronous layout, so
+    // reading it on every raw mousemove caused reflow-driven cursor lag. Coalesce
+    // to at most one rect read + write per animation frame.
+    var pendingCard = null, lastX = 0, lastY = 0, scheduled = false;
+    function flush() {
+      scheduled = false;
+      if (!pendingCard) return;
+      var r = pendingCard.getBoundingClientRect();
+      pendingCard.style.setProperty('--mx', (lastX - r.left) + 'px');
+      pendingCard.style.setProperty('--my', (lastY - r.top) + 'px');
+    }
     document.addEventListener('mousemove', function (e) {
       var card = e.target.closest && e.target.closest('.spotlight');
       if (!card) return;
-      var r = card.getBoundingClientRect();
-      card.style.setProperty('--mx', (e.clientX - r.left) + 'px');
-      card.style.setProperty('--my', (e.clientY - r.top) + 'px');
+      pendingCard = card; lastX = e.clientX; lastY = e.clientY;
+      if (!scheduled) { scheduled = true; requestAnimationFrame(flush); }
     }, { passive: true });
   }
 
