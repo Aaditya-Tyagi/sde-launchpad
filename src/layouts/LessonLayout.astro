@@ -20,8 +20,9 @@ const diffClass = d.difficulty ? `p-${d.difficulty}` : '';
 const priClass = d.priority ? `p-${d.priority}` : '';
 ---
 <BaseLayout title={`${d.title} · ${brandSuffix}`} desc={d.summary} active="tracks" program={program}>
-  <!-- Visualizer registry is only loaded on lesson pages that can use it. -->
-  <script is:inline slot="head" src={`${base}/viz-algos.js`}></script>
+  <!-- Visualizer registry, only on lesson pages. `defer`: it just assigns a
+       data/function registry (no DOM at load), so it must not block head parse. -->
+  <script is:inline slot="head" src={`${base}/viz-algos.js`} defer></script>
   <div class="wrap" style="max-width:1180px">
     <div class="lesson-shell">
       <aside class="lesson-side">

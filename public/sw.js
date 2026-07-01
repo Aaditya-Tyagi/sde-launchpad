@@ -1,7 +1,7 @@
 /* SDE-2 Launchpad service worker — offline-first.
    App-shell + visited pages cached at runtime so the whole guide
    works with no network after the first visit. */
-const CACHE = 'sde2-v10';
+const CACHE = 'sde2-v11';
 
 self.addEventListener('install', (e) => {
   self.skipWaiting();
